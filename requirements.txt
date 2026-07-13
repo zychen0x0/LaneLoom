@@ -1,0 +1,11 @@
+# Published Python packages; no external project source tree is imported.
+torch
+torchvision
+mmengine
+mmcv
+mmdet
+mmdet3d
+numpy
+scipy
+Pillow
+albumentations
