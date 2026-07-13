@@ -78,6 +78,31 @@ def test_anchor_metric_reports_category_accuracy_for_geometric_matches():
     assert values['Category Accuracy'] == 0.0
 
 
+def test_anchor_metric_uses_assigned_indices_for_category_accuracy():
+    metric = METRICS.build(dict(type='OpenLaneAnchorMetric', prefix=None))
+    sample = _sample()
+    second_lane = sample['gt_lanes_3d'][0].clone()
+    second_lane[:, 0] += 10.0
+    sample['gt_lanes_3d'][1] = second_lane
+    sample['gt_lanes_visibility'][1] = 1.0
+    sample['gt_lanes_category'] = torch.tensor([2, 7])
+    sample['pred_x'] = torch.stack((
+        sample['gt_lanes_3d'][1, :, 0],
+        sample['gt_lanes_3d'][0, :, 0]))
+    sample['pred_z'] = torch.stack((
+        sample['gt_lanes_3d'][1, :, 2],
+        sample['gt_lanes_3d'][0, :, 2]))
+    sample['pred_visibility'] = torch.ones(2, 4)
+    sample['pred_scores'] = torch.ones(2)
+    sample['pred_category'] = torch.tensor([7, 2])
+
+    metric.process(None, [sample])
+    values = metric.compute_metrics(metric.results)
+
+    assert values['F1'] == 1.0
+    assert values['Category Accuracy'] == 1.0
+
+
 def test_anchor_metric_uses_temporal_supplement_by_default_and_can_disable_it():
     sample = _sample()
     enhanced = sample['gt_lanes_3d'].clone()
@@ -95,6 +120,20 @@ def test_anchor_metric_uses_temporal_supplement_by_default_and_can_disable_it():
         use_temporal_gt_supplement=False))
     current_metric.process(None, [sample])
     assert current_metric.compute_metrics(current_metric.results)['F1'] == 1.0
+
+
+def test_anchor_metric_uses_temporal_supplement_category():
+    sample = _sample(category=2, predicted_category=7)
+    sample['gt_lanes_3d_enhanced'] = sample['gt_lanes_3d'].clone()
+    sample['gt_lanes_visibility_enhanced'] = sample['gt_lanes_visibility'].clone()
+    sample['gt_lanes_category_enhanced'] = torch.tensor([7, 0])
+    metric = METRICS.build(dict(type='OpenLaneAnchorMetric', prefix=None))
+
+    metric.process(None, [sample])
+    values = metric.compute_metrics(metric.results)
+
+    assert values['F1'] == 1.0
+    assert values['Category Accuracy'] == 1.0
 
 
 def test_config_enables_mmengine_validation_and_test_evaluators():
@@ -156,6 +195,8 @@ def test_logger_reports_validation_progress_and_final_lane_metrics():
            'OpenLane/Precision': 0.6, 'OpenLane/Category Accuracy': 0.7},
         **{'OpenLane/x_error_near': 0.1, 'OpenLane/z_error_near': 0.2,
            'OpenLane/x_error_far': 0.3, 'OpenLane/z_error_far': 0.4},
+        **{'OpenLane/num_gt': 100.0, 'OpenLane/num_pred': 120.0,
+           'OpenLane/num_tp': 40.0},
     ))
 
     assert any('Val: [50/100]' in message for message in messages)
@@ -164,6 +205,7 @@ def test_logger_reports_validation_progress_and_final_lane_metrics():
     assert 'Recall: 0.40000000' in summary
     assert 'Precision: 0.60000000' in summary
     assert 'Category Accuracy: 0.70000000' in summary
+    assert 'GT / Pred / TP: 100 / 120 / 40' in summary
 
 
 def test_train_experiment_layout_uses_a_dated_laneformer_directory(tmp_path):

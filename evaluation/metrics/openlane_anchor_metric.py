@@ -80,7 +80,11 @@ class OpenLaneAnchorMetric(BaseMetric):
             sample[f'gt_lanes_3d{target_suffix}']).astype(np.float64)
         gt_vis = self._numpy(
             sample[f'gt_lanes_visibility{target_suffix}']).astype(np.float64)
-        gt_category = self._numpy(sample['gt_lanes_category']).astype(np.int64)
+        category_key = (
+            'gt_lanes_category_enhanced'
+            if use_supplement and sample.get('gt_lanes_category_enhanced') is not None
+            else 'gt_lanes_category')
+        gt_category = self._numpy(sample[category_key]).astype(np.int64)
         anchor_y = self._numpy(sample['anchor_y_steps']).astype(np.float64)
 
         prediction_mask = pred_scores >= self.score_threshold
@@ -106,6 +110,8 @@ class OpenLaneAnchorMetric(BaseMetric):
             for row, col in zip(rows.tolist(), cols.tolist()):
                 pair = pair_data[row, col]
                 if pair['is_tp']:
+                    gt_idx = gt_indices[row]
+                    pred_idx = pred_indices[col]
                     summary['tp'] += 1
                     summary['category_count'] += 1
                     summary['category_correct'] += int(

@@ -1263,6 +1263,7 @@ class OpenLaneDataset(Dataset):
         anchors = self.anchor_y_steps
         gt_lanes = current_packed['gt_lanes_3d'].numpy().copy()
         gt_visibility = current_packed['gt_lanes_visibility'].numpy().copy()
+        gt_categories = current_packed['gt_lanes_category'].numpy().copy()
         gt_track_ids = current_packed['gt_lane_track_ids'].numpy().copy()
         gt_memory_mask = np.zeros((self.max_lanes, len(anchors)), dtype=np.float32)
         associations = []
@@ -1369,6 +1370,7 @@ class OpenLaneDataset(Dataset):
             gt_lanes[lane_idx, :, 1] = anchors
             gt_lanes[lane_idx, :, 2] = history_xz[:, 1]
             gt_visibility[lane_idx] = history_valid.astype(np.float32)
+            gt_categories[lane_idx] = history_record['category']
             gt_track_ids[lane_idx] = track_id
             gt_memory_mask[lane_idx] = history_valid.astype(np.float32)
             added_track_ids.add(track_id)
@@ -1381,6 +1383,7 @@ class OpenLaneDataset(Dataset):
         return dict(
             gt_lanes_3d_enhanced=torch.from_numpy(gt_lanes),
             gt_lanes_visibility_enhanced=torch.from_numpy(gt_visibility),
+            gt_lanes_category_enhanced=torch.from_numpy(gt_categories),
             gt_lane_track_ids_enhanced=torch.from_numpy(gt_track_ids),
             gt_lanes_memory_mask=torch.from_numpy(gt_memory_mask),
             temporal_gt_associations=associations,
@@ -1565,6 +1568,7 @@ def openlane_collate(batch):
         'gt_lanes_memory_mask',
         'gt_lanes_3d_enhanced',
         'gt_lanes_visibility_enhanced',
+        'gt_lanes_category_enhanced',
         'gt_lane_track_ids_enhanced',
         'ground_lanes',
     ):

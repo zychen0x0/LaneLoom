@@ -305,6 +305,7 @@ class LaneFormer(BaseModel):
             'gt_lanes_3d', 'gt_lanes_uv', 'gt_lanes_visibility',
             'gt_lanes_category', 'gt_lane_track_ids', 'gt_lanes_memory_mask',
             'gt_lanes_3d_enhanced', 'gt_lanes_visibility_enhanced',
+            'gt_lanes_category_enhanced',
             'gt_lane_track_ids_enhanced', 'ground_lanes', 'raw_lanes_3d',
             'raw_lanes_uv', 'raw_lanes_uvy')
         return {key: batch[key] for key in target_keys if key in batch}
@@ -363,6 +364,9 @@ class LaneFormer(BaseModel):
                 gt_lanes_visibility_enhanced=(
                     batch['gt_lanes_visibility_enhanced'][index]
                     if 'gt_lanes_visibility_enhanced' in batch else None),
+                gt_lanes_category_enhanced=(
+                    batch['gt_lanes_category_enhanced'][index]
+                    if 'gt_lanes_category_enhanced' in batch else None),
                 scene_name=meta.get('scene_name', ''),
                 scenario_name=meta.get('scenario_name', ''),
                 frame_key=meta.get('current_key', ''),

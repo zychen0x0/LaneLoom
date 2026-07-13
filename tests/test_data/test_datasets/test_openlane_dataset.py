@@ -140,6 +140,8 @@ def test_openlane_getitem_loads_multimodal_temporal_sample():
     assert data['gt_lanes_uv'].shape == (cfg.max_lanes, cfg.num_y_steps, 2)
     assert data['gt_lanes_visibility'].shape == (cfg.max_lanes, cfg.num_y_steps)
     assert data['gt_lanes_category'].shape == (cfg.max_lanes,)
+    if cfg.temporal_gt_augmentation:
+        assert data['gt_lanes_category_enhanced'].shape == (cfg.max_lanes,)
     assert data['ground_lanes'].shape[0] == cfg.max_lanes
     assert dataset.metainfo['dataset_name'] == 'OpenLane'
     assert dataset.metainfo['classes'] == tuple(cfg.class_names)
