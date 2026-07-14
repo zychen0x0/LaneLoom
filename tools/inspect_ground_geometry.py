@@ -2,6 +2,7 @@
 
 import argparse
 import json
+import shutil
 from pathlib import Path
 
 import matplotlib
@@ -23,8 +24,12 @@ def parse_args():
         'config', help='LaneFormer config containing ground_prior_extractor.')
     parser.add_argument('--split', choices=('train', 'val', 'test'),
                         default='train')
-    parser.add_argument('--index', type=int, default=0)
-    parser.add_argument(
+    selection = parser.add_mutually_exclusive_group()
+    selection.add_argument('--index', type=int, default=None)
+    selection.add_argument(
+        '--image-path', default=None,
+        help='Select an OpenLane sample directly from its original image.')
+    selection.add_argument(
         '--lidar-file', default=None,
         help='Optional .npy point cloud; bypasses the OpenLane dataset loader.')
     parser.add_argument(
@@ -33,47 +38,97 @@ def parse_args():
         help='Coordinate frame of --lidar-file (default: raw Waymo vehicle).')
     parser.add_argument(
         '--output-prefix', default=None,
-        help='Write <prefix>.json, <prefix>.npz and <prefix>.png.')
+        help=('Write <prefix>.png, <prefix>_image.<ext>, and '
+              '<prefix>_lidar_current_ground.ply.'))
     return parser.parse_args()
+
+
+def resolve_image_sample(cfg, image_path):
+    """Resolve an original OpenLane image to its label and loader split."""
+    image_path = Path(image_path).expanduser().resolve()
+    image_root = Path(cfg.dataset_cfg.data_image_dir).expanduser().resolve()
+    label_root = Path(cfg.dataset_cfg.data_label_dir).expanduser().resolve()
+    try:
+        relative = image_path.relative_to(image_root)
+    except ValueError as error:
+        raise ValueError(
+            f'image must be under configured image root: {image_root}') from error
+    if len(relative.parts) < 3:
+        raise ValueError(
+            'image path must include split/segment/frame below image root.')
+    split_directory = relative.parts[0]
+    split_names = {
+        str(cfg.dataset_cfg.train_split): 'train',
+        str(cfg.dataset_cfg.val_split): 'val',
+        str(cfg.dataset_cfg.test_split): 'test',
+    }
+    if split_directory not in split_names:
+        raise ValueError(f'unknown OpenLane split directory: {split_directory}')
+    label_path = (label_root / relative).with_suffix('.json')
+    if not label_path.is_file():
+        matches = [
+            path for path in (label_root / split_directory).rglob(
+                f'{image_path.stem}.json')
+            if image_path.parent.name in path.parts
+        ]
+        if len(matches) != 1:
+            raise FileNotFoundError(
+                f'expected one label for {image_path}, found {len(matches)}')
+        label_path = matches[0]
+    return label_path.resolve(), split_names[split_directory]
+
+
+def _dataset_source(sample, split, index=None):
+    meta = sample['img_metas']
+    current = meta.get('current', {})
+    image_paths = current.get('img_filename', ())
+    return {
+        'source': 'OpenLaneDataset',
+        'split': split,
+        'index': index,
+        'scene_name': meta.get('scene_name', ''),
+        'frame_key': meta.get('current_key', ''),
+        'frame_keys': meta.get('frame_keys', []),
+        'image_path': str(image_paths[0]) if image_paths else None,
+        'lidar_path': current.get('pts_filename'),
+        'lidar_frame': 'waymo_vehicle',
+    }
 
 
 def load_points(cfg, args):
     if args.lidar_file:
-        array = np.load(Path(args.lidar_file).expanduser().resolve())
-        if array.ndim != 2 or array.shape[1] < 3:
-            raise ValueError('LiDAR file must have shape [N, >=3].')
-        if array.shape[1] >= 6:
-            valid_return = array[:, 5] <= 0
-            if np.any(valid_return):
-                array = array[valid_return]
-        array = array.astype(np.float32)
-        if args.lidar_frame == 'waymo_vehicle':
-            array[:, :3] = (
-                WAYMO_VEHICLE_TO_GROUND_AXES @ array[:, :3].T).T
-        return torch.from_numpy(array.astype(np.float32)), {
+        array = _load_lidar_points(args.lidar_file, args.lidar_frame)
+        return torch.from_numpy(array), {
             'source': str(Path(args.lidar_file).resolve()),
             'input_frame': args.lidar_frame,
-            'analysis_frame': 'openlane_ground'}
+            'analysis_frame': 'openlane_ground',
+            'lidar_path': str(Path(args.lidar_file).resolve()),
+            'lidar_frame': args.lidar_frame}
 
+    if args.image_path:
+        label_path, split = resolve_image_sample(cfg, args.image_path)
+        loader_cfg = cfg[f'{split}_dataloader']
+        dataset_cfg = dict(loader_cfg['dataset'])
+        dataset_cfg['dataset_cfg'] = dict(dataset_cfg['dataset_cfg'])
+        dataset_cfg['dataset_cfg']['load_interval'] = 1
+        dataset_cfg['max_samples'] = 1
+        dataset = DATASETS.build(dataset_cfg)
+        dataset.label_files = [label_path]
+        sample = dataset[0]
+        return sample['lidar'], _dataset_source(sample, split)
+
+    index = 0 if args.index is None else args.index
     loader_cfg = cfg[f'{args.split}_dataloader']
     dataset_cfg = dict(loader_cfg['dataset'])
     load_interval = int(dataset_cfg.get('dataset_cfg', {}).get(
         'load_interval', 1))
-    dataset_cfg['max_samples'] = (args.index + 1) * load_interval
+    dataset_cfg['max_samples'] = (index + 1) * load_interval
     dataset = DATASETS.build(dataset_cfg)
-    if args.index >= len(dataset):
+    if index >= len(dataset):
         raise IndexError(
-            f'index {args.index} is outside dataset length {len(dataset)}')
-    sample = dataset[args.index]
-    meta = sample['img_metas']
-    return sample['lidar'], {
-        'source': 'OpenLaneDataset',
-        'split': args.split,
-        'index': args.index,
-        'scene_name': meta.get('scene_name', ''),
-        'frame_key': meta.get('current_key', ''),
-        'frame_keys': meta.get('frame_keys', []),
-    }
+            f'index {index} is outside dataset length {len(dataset)}')
+    sample = dataset[index]
+    return sample['lidar'], _dataset_source(sample, args.split, index=index)
 
 
 def summarize(points, result, source):
@@ -100,22 +155,39 @@ def summarize(points, result, source):
     return summary
 
 
-def save_outputs(prefix, points, result, summary):
+def _load_lidar_points(path, coordinate_frame):
+    array = np.load(Path(path).expanduser().resolve())
+    if array.ndim != 2 or array.shape[1] < 3:
+        raise ValueError('LiDAR file must have shape [N, >=3].')
+    if array.shape[1] >= 6:
+        valid_return = array[:, 5] <= 0
+        if np.any(valid_return):
+            array = array[valid_return]
+    array = array.astype(np.float32)
+    if coordinate_frame == 'waymo_vehicle':
+        array[:, :3] = (
+            WAYMO_VEHICLE_TO_GROUND_AXES @ array[:, :3].T).T
+    return array
+
+
+def _write_xyz_ply(path, xyz, source_path=None):
+    with Path(path).open('w', encoding='utf-8') as handle:
+        handle.write('ply\nformat ascii 1.0\n')
+        if source_path is not None:
+            handle.write(f'comment source {Path(source_path).resolve()}\n')
+        handle.write('comment content current_frame_unsegmented_valid_returns\n')
+        handle.write(
+            'comment coordinates openlane_ground_x_lateral_y_forward_z_up\n')
+        handle.write(f'element vertex {xyz.shape[0]}\n')
+        handle.write('property float x\nproperty float y\nproperty float z\n')
+        handle.write('end_header\n')
+        np.savetxt(handle, xyz[:, :3], fmt='%.6f')
+
+
+def save_outputs(prefix, points, result, source):
     prefix = Path(prefix).expanduser().resolve()
     prefix.parent.mkdir(parents=True, exist_ok=True)
-    prefix.with_suffix('.json').write_text(
-        json.dumps(summary, indent=2, ensure_ascii=False) + '\n')
     valid = result['road_valid'][0]
-    np.savez_compressed(
-        prefix.with_suffix('.npz'),
-        points=points.cpu().numpy(),
-        ground_mask=result['ground_masks'][0].cpu().numpy(),
-        road_controls=result['road_controls'][0][valid].cpu().numpy(),
-        road_samples=result['road_samples'][0][valid].cpu().numpy(),
-        horizontal_curvature=(
-            result['horizontal_curvature'][0][valid].cpu().numpy()),
-        vertical_curvature=(
-            result['vertical_curvature'][0][valid].cpu().numpy()))
 
     point_array = points.cpu().numpy()
     ground_mask = result['ground_masks'][0].cpu().numpy()
@@ -148,10 +220,34 @@ def save_outputs(prefix, points, result, summary):
     axes[1].axhline(0, color='0.5', linewidth=.5)
     axes[1].set(title='Road curvature priors', xlabel='y anchor [m]',
                 ylabel='curvature [1/m]')
-    axes[1].legend(loc='best')
+    if valid.any():
+        axes[1].legend(loc='best')
+    scene_name = source.get('scene_name')
+    frame_key = source.get('frame_key')
+    if scene_name or frame_key:
+        figure.suptitle(f'{scene_name} / {frame_key}'.strip(' /'))
     figure.tight_layout()
-    figure.savefig(prefix.with_suffix('.png'), dpi=160)
+    visualization_path = prefix.with_suffix('.png')
+    figure.savefig(visualization_path, dpi=160)
     plt.close(figure)
+
+    outputs = {'visualization': visualization_path}
+    image_path = source.get('image_path')
+    if image_path:
+        image_path = Path(image_path).expanduser().resolve()
+        copied_image = prefix.parent / f'{prefix.name}_image{image_path.suffix}'
+        shutil.copy2(image_path, copied_image)
+        outputs['original_image'] = copied_image
+    lidar_path = source.get('lidar_path')
+    if lidar_path:
+        lidar_points = _load_lidar_points(
+            lidar_path, source.get('lidar_frame', 'waymo_vehicle'))
+    else:
+        lidar_points = point_array
+    lidar_output = prefix.parent / f'{prefix.name}_lidar_current_ground.ply'
+    _write_xyz_ply(lidar_output, lidar_points, source_path=lidar_path)
+    outputs['original_lidar_current_ground'] = lidar_output
+    return outputs
 
 
 def main():
@@ -164,7 +260,10 @@ def main():
     summary = summarize(points, result, source)
     print(json.dumps(summary, indent=2, ensure_ascii=False))
     if args.output_prefix:
-        save_outputs(args.output_prefix, points, result, summary)
+        outputs = save_outputs(args.output_prefix, points, result, source)
+        print('Outputs:')
+        for name, path in outputs.items():
+            print(f'  {name}: {path}')
 
 
 if __name__ == '__main__':

@@ -38,6 +38,7 @@ Thumbs.db
 
 # Training, evaluation, and experiment outputs
 work_dirs/
+/tmp/
 outputs/
 output/
 results/
