@@ -17,7 +17,6 @@ class LaneFormerLaneQueryDecoder(nn.Module):
                  visibility_temperature=0.75,
                  visibility_start_prior=0.14,
                  visibility_end_prior=0.58,
-                 road_prior_weight=1.0,
                  **kwargs):
         super().__init__()
         self.pc_range = pc_range
@@ -44,9 +43,6 @@ class LaneFormerLaneQueryDecoder(nn.Module):
             raise ValueError('dn_num_groups must be non-negative.')
         self.dn_noise_scale = float(dn_noise_scale)
         self.visibility_temperature = float(visibility_temperature)
-        self.road_prior_weight = float(road_prior_weight)
-        if not 0 <= self.road_prior_weight <= 1:
-            raise ValueError('road_prior_weight must be in [0, 1].')
         if self.visibility_temperature <= 0:
             raise ValueError('visibility_temperature must be positive.')
         visibility_start_prior = float(visibility_start_prior)
@@ -64,9 +60,6 @@ class LaneFormerLaneQueryDecoder(nn.Module):
         self.decoder = nn.TransformerDecoder(layer, num_layers)
         self.query = nn.Embedding(num_query, embed_dims)
         self.query_pos = nn.Embedding(num_query, embed_dims)
-        self.road_prior_encoder = nn.Sequential(
-            nn.Linear(3, embed_dims), nn.ReLU(inplace=True),
-            nn.Linear(embed_dims, embed_dims))
         if self.dn_num_groups > 0:
             self.dn_query = nn.Sequential(
                 nn.Linear(self.num_control_points * 2, embed_dims),
@@ -157,22 +150,12 @@ class LaneFormerLaneQueryDecoder(nn.Module):
         x_logits = x_head(query)
         z_logits = z_head(query)
         if reference_controls is not None:
-            reference_x, reference_z = reference_controls[:2]
+            reference_x, reference_z = reference_controls
             normalized_x = ((reference_x - self.pc_range[0]) / x_range).clamp(
                 1e-4, 1 - 1e-4)
             normalized_z = (reference_z / z_range).clamp(-1 + 1e-4, 1 - 1e-4)
-            reference_weight = (
-                self.road_prior_weight if len(reference_controls) == 3 else 1.)
-            refined_x = (x_logits + reference_weight
-                         * torch.logit(normalized_x))
-            refined_z = (z_logits + reference_weight
-                         * torch.atanh(normalized_z))
-            if len(reference_controls) == 3:
-                reference_valid = reference_controls[2].unsqueeze(-1)
-                x_logits = torch.where(reference_valid, refined_x, x_logits)
-                z_logits = torch.where(reference_valid, refined_z, z_logits)
-            else:
-                x_logits, z_logits = refined_x, refined_z
+            x_logits = x_logits + torch.logit(normalized_x)
+            z_logits = z_logits + torch.atanh(normalized_z)
         curve_x_controls = torch.sigmoid(x_logits) * x_range + self.pc_range[0]
         curve_z_controls = torch.tanh(z_logits) * z_range
         visibility_bounds = self.vis_bounds_head(query)
@@ -207,54 +190,12 @@ class LaneFormerLaneQueryDecoder(nn.Module):
             pred_cls=self.cls_head(query).squeeze(-1),
             pred_category=self.category_head(query))
 
-    def _road_reference(self, road_priors, batch, device, dtype):
-        if road_priors is None:
-            return None, None
-        controls = road_priors.get('road_controls')
-        valid = road_priors.get('road_valid')
-        if controls is None or valid is None:
-            return None, None
-        controls = controls.to(device=device, dtype=dtype)
-        valid = valid.to(device=device, dtype=torch.bool)
-        if controls.ndim != 4 or controls.shape[:2] != valid.shape:
-            raise ValueError(
-                'road_controls and road_valid must have shapes [B,K,4,2] '
-                'and [B,K].')
-        if controls.size(0) != batch or controls.size(2) != 4 or controls.size(3) != 2:
-            raise ValueError('road prior shape does not match the decoder batch.')
-        indices = torch.arange(self.num_query, device=device) % controls.size(1)
-        batch_indices = torch.arange(batch, device=device).unsqueeze(1)
-        selected = controls[batch_indices, indices.unsqueeze(0)]
-        selected_valid = valid[batch_indices, indices.unsqueeze(0)]
-        embedding = None
-        horizontal = road_priors.get('horizontal_curvature')
-        vertical = road_priors.get('vertical_curvature')
-        directions = road_priors.get('road_directions')
-        if horizontal is not None and vertical is not None and directions is not None:
-            horizontal = horizontal.to(device=device, dtype=dtype)
-            vertical = vertical.to(device=device, dtype=dtype)
-            directions = directions.to(device=device, dtype=dtype)
-            features = torch.stack((
-                directions,
-                horizontal.median(dim=-1).values * 20.,
-                vertical.median(dim=-1).values * 20.), dim=-1).clamp(-2., 2.)
-            selected_features = features[
-                batch_indices, indices.unsqueeze(0)]
-            embedding = self.road_prior_encoder(selected_features)
-            embedding = embedding * selected_valid.unsqueeze(-1)
-        return (selected[..., 0], selected[..., 1], selected_valid), embedding
-
-    def forward(self, bev, bev_pos, dn_lanes_3d=None, dn_visibility=None,
-                road_priors=None):
+    def forward(self, bev, bev_pos, dn_lanes_3d=None, dn_visibility=None):
         batch = bev.size(0)
         memory = bev.flatten(2).transpose(1, 2)
         memory = memory + bev_pos.weight.unsqueeze(0).expand(batch, -1, -1)
         query_pos = self.query_pos.weight.unsqueeze(0).expand(batch, -1, -1)
         query = self.query.weight.unsqueeze(0).expand(batch, -1, -1)
-        road_reference, road_embedding = self._road_reference(
-            road_priors, batch, bev.device, bev.dtype)
-        if road_embedding is not None:
-            query = query + road_embedding
         dn_query = None
         if (self.training and self.dn_num_groups > 0 and
                 dn_lanes_3d is not None and dn_visibility is not None):
@@ -270,7 +211,7 @@ class LaneFormerLaneQueryDecoder(nn.Module):
             attention_mask = None
         query = query + query_pos
         layer_predictions = []
-        main_reference = road_reference
+        main_reference = None
         dn_reference = None
         for layer_idx, layer in enumerate(self.decoder.layers):
             query = layer(query, memory, tgt_mask=attention_mask)
@@ -294,8 +235,4 @@ class LaneFormerLaneQueryDecoder(nn.Module):
         predictions = layer_predictions[-1]
         predictions['aux_predictions'] = layer_predictions[:-1]
         predictions['bev'] = bev
-        if road_reference is not None:
-            predictions['road_prior_valid'] = road_reference[2]
-        if road_embedding is not None:
-            predictions['road_prior_embedding'] = road_embedding
         return predictions

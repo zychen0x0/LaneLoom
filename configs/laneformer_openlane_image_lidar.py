@@ -115,14 +115,6 @@ model = dict(
         norm_cfg=dict(type='BN', eps=0.001, momentum=0.01),
         upsample_cfg=dict(type='deconv', bias=False),
         use_conv_for_no_stride=True),
-    ground_prior_extractor=dict(
-        type='GroundGridRoadPriorExtractor',
-        pc_range=point_cloud_range,
-        grid_resolution=0.5,
-        anchor_y_steps=[2.0 * i for i in range(51)],
-        max_road_hypotheses=3,
-        min_ground_points=2,
-        ground_height_tolerance=0.25),
     # ----------------------------------------------------lidar branch end----------------------------------------------------
 
     # ---------------------------------------------------lane head start---------------------------------------------------
@@ -181,9 +173,6 @@ model = dict(
             # lane from noisy control points; inference remains 40 queries.
             dn_num_groups=1,
             dn_noise_scale=0.5,
-            # Use the LiDAR road geometry as a soft initialization.  The
-            # decoder still has room to reject an imperfect ground hypothesis.
-            road_prior_weight=0.5,
             visibility_temperature=0.75,
             # Median visible interval from the OpenLane training anchors.
             visibility_start_prior=0.14,

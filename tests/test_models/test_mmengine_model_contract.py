@@ -48,16 +48,6 @@ class _ImageHistoryHead(nn.Module):
         return img_feats[0].mean(dim=1)
 
 
-class _PriorRecorder(nn.Module):
-    def __init__(self):
-        super().__init__()
-        self.point_count = None
-
-    def forward(self, points):
-        self.point_count = points[0].size(0)
-        return {'road_valid': torch.ones(1, 1, dtype=torch.bool)}
-
-
 def _bare_laneformer():
     model = LaneFormerModel.__new__(LaneFormerModel)
     nn.Module.__init__(model)
@@ -90,7 +80,6 @@ def test_current_lidar_backbone_receives_the_complete_aligned_point_queue():
     model.obtain_history_bev = Mock(return_value=[])
     model.extract_feat = Mock(return_value=(
         [torch.randn(1, 1, 4, 2, 2)], [torch.randn(1, 4, 2, 2)]))
-    model.ground_prior_extractor = _PriorRecorder()
     accumulated = torch.tensor([
         [0., 2., -1., 1., 0., 0.],
         [0., 3., -1., 1., 0., 1.],
@@ -105,5 +94,5 @@ def test_current_lidar_backbone_receives_the_complete_aligned_point_queue():
 
     passed_points = model.extract_feat.call_args.kwargs['points']
     assert passed_points[0].size(0) == 3
-    assert model.ground_prior_extractor.point_count == 3
-    assert encoded[-1]['road_valid'].all()
+    assert encoded[3][0].size(0) == 3
+    assert len(encoded) == 5

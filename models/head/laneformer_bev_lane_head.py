@@ -38,15 +38,13 @@ class LaneFormerBEVLaneHead(nn.Module):
         return self.bev_encoder.forward_image_bev(img_feats, img_metas)
 
     def _predict(self, current_bev, prev_bev, dn_lanes_3d=None,
-                 dn_visibility=None, road_priors=None):
+                 dn_visibility=None):
         fused_bev = self.bev_encoder.temporal_self_attn(current_bev, prev_bev)
         return self.lane_decoder(
             fused_bev, self.bev_encoder.bev_pos,
-            dn_lanes_3d=dn_lanes_3d, dn_visibility=dn_visibility,
-            road_priors=road_priors)
+            dn_lanes_3d=dn_lanes_3d, dn_visibility=dn_visibility)
 
-    def loss(self, img_feats, pts_feats, img_metas, prev_bev=None,
-             road_priors=None, **targets):
+    def loss(self, img_feats, pts_feats, img_metas, prev_bev=None, **targets):
         current_bev = self.forward_bev(img_feats, pts_feats, img_metas)
         dn_lanes_3d = targets.get('gt_lanes_3d_enhanced')
         dn_visibility = targets.get('gt_lanes_visibility_enhanced')
@@ -55,13 +53,11 @@ class LaneFormerBEVLaneHead(nn.Module):
             dn_visibility = targets.get('gt_lanes_visibility')
         return self.loss_module(self._predict(
             current_bev, prev_bev, dn_lanes_3d=dn_lanes_3d,
-            dn_visibility=dn_visibility, road_priors=road_priors), **targets)
+            dn_visibility=dn_visibility), **targets)
 
-    def predict(self, img_feats, pts_feats, img_metas, prev_bev=None,
-                road_priors=None, **kwargs):
+    def predict(self, img_feats, pts_feats, img_metas, prev_bev=None, **kwargs):
         current_bev = self.forward_bev(img_feats, pts_feats, img_metas)
-        predictions = self._predict(
-            current_bev, prev_bev, road_priors=road_priors)
+        predictions = self._predict(current_bev, prev_bev)
         scores = predictions['pred_cls'].sigmoid()
         return dict(
             x=predictions['pred_x'], z=predictions['pred_z'],

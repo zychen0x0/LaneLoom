@@ -78,58 +78,6 @@ def test_lane_query_decoder_samples_cubic_bezier_at_anchors():
         predictions['pred_z'][:, :, -1], predictions['curve_z_controls'][:, :, -1])
 
 
-def test_lane_query_decoder_initializes_controls_from_valid_road_priors():
-    decoder = LaneFormerLaneQueryDecoder(
-        embed_dims=8, bev_h=2, bev_w=2,
-        pc_range=[-25., 0., -5., 25., 100., 5.], num_query=3,
-        anchor_y_steps=[0.0, 2.0, 4.0], num_layers=1, num_heads=2,
-        feedforward_channels=16, dropout=0.0)
-    with torch.no_grad():
-        decoder.x_head.weight.zero_()
-        decoder.x_head.bias.zero_()
-        decoder.z_head.weight.zero_()
-        decoder.z_head.bias.zero_()
-    controls = torch.tensor([[[[-4., .2], [-3., .3], [-2., .4], [-1., .5]],
-                              [[1., -.2], [2., -.1], [3., 0.], [4., .1]]]])
-    road_priors = dict(
-        road_controls=controls,
-        road_valid=torch.tensor([[True, True]]))
-
-    predictions = decoder(
-        torch.randn(1, 8, 2, 2), torch.nn.Embedding(4, 8),
-        road_priors=road_priors)
-
-    expected_x = controls[0, [0, 1, 0], :, 0]
-    expected_z = controls[0, [0, 1, 0], :, 1]
-    assert torch.allclose(predictions['curve_x_controls'][0], expected_x,
-                          atol=1e-4)
-    assert torch.allclose(predictions['curve_z_controls'][0], expected_z,
-                          atol=1e-4)
-    assert predictions['road_prior_valid'].tolist() == [[True, True, True]]
-
-
-def test_lane_query_decoder_encodes_curvature_in_query_embeddings():
-    decoder = LaneFormerLaneQueryDecoder(
-        embed_dims=8, bev_h=2, bev_w=2,
-        pc_range=[-25., 0., -5., 25., 100., 5.], num_query=2,
-        anchor_y_steps=[0., 2., 4.], num_layers=1, num_heads=2,
-        feedforward_channels=16, dropout=0.)
-    road_priors = dict(
-        road_controls=torch.zeros(1, 1, 4, 2),
-        road_valid=torch.tensor([[True]]),
-        horizontal_curvature=torch.full((1, 1, 3), .01),
-        vertical_curvature=torch.full((1, 1, 3), -.005),
-        road_directions=torch.tensor([[.1]]))
-
-    predictions = decoder(
-        torch.randn(1, 8, 2, 2), torch.nn.Embedding(4, 8),
-        road_priors=road_priors)
-    predictions['pred_x'].sum().backward()
-
-    assert predictions['road_prior_embedding'].shape == (1, 2, 8)
-    assert decoder.road_prior_encoder[0].weight.grad is not None
-
-
 def test_bev_encoder_exposes_independent_image_and_lidar_adapters():
     head = _head(16, 4, 3, 3, [0., 2., 4.], 8)
     image_features = [torch.randn(2, 1, 16, 8, 8)]
@@ -188,37 +136,6 @@ def test_lane_query_decoder_composes_nonzero_residual_with_previous_controls():
 
     assert torch.allclose(predictions['curve_x_controls'], expected, atol=1e-5)
     assert not torch.allclose(predictions['curve_x_controls'], previous)
-
-
-def test_road_prior_weight_does_not_weaken_iterative_refinement():
-    decoder = LaneFormerLaneQueryDecoder(
-        embed_dims=8, bev_h=2, bev_w=2,
-        pc_range=[-25., 0., -5., 25., 100., 5.], num_query=2,
-        anchor_y_steps=[0., 2., 4.], num_layers=2, num_heads=2,
-        feedforward_channels=16, dropout=0., road_prior_weight=.5)
-    with torch.no_grad():
-        decoder.x_head.weight.zero_()
-        decoder.x_head.bias.zero_()
-        decoder.z_head.weight.zero_()
-        decoder.z_head.bias.zero_()
-        decoder.x_refine_heads[0].weight.zero_()
-        decoder.x_refine_heads[0].bias.zero_()
-        decoder.z_refine_heads[0].weight.zero_()
-        decoder.z_refine_heads[0].bias.zero_()
-    road_priors = dict(
-        road_controls=torch.tensor([[[[10., 1.], [10., 1.],
-                                      [10., 1.], [10., 1.]]]]),
-        road_valid=torch.tensor([[True]]))
-
-    predictions = decoder(
-        torch.randn(1, 8, 2, 2), torch.nn.Embedding(4, 8),
-        road_priors=road_priors)
-
-    first_layer = predictions['aux_predictions'][0]
-    assert torch.allclose(predictions['curve_x_controls'],
-                          first_layer['curve_x_controls'], atol=1e-5)
-    assert torch.allclose(predictions['curve_z_controls'],
-                          first_layer['curve_z_controls'], atol=1e-5)
 
 
 def test_lane_query_decoder_predicts_an_ordered_visibility_interval():

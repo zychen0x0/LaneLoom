@@ -35,7 +35,6 @@ class LaneFormer(BaseModel):
                  pts_backbone=None,
                  img_neck=None,
                  pts_neck=None,
-                 ground_prior_extractor=None,
                  lane_head=None,
                  num_levels=None,
                  frames=(0,),
@@ -50,7 +49,6 @@ class LaneFormer(BaseModel):
         self.pts_middle_encoder = _build_module(pts_middle_encoder)
         self.pts_backbone = _build_module(pts_backbone)
         self.pts_neck = _build_module(pts_neck)
-        self.ground_prior_extractor = _build_module(ground_prior_extractor)
 
         self.img_backbone = _build_module(img_backbone)
         self.img_neck = _build_module(img_neck)
@@ -78,7 +76,6 @@ class LaneFormer(BaseModel):
             (self.pts_middle_encoder, None),
             (self.pts_backbone, None),
             (self.pts_neck, None),
-            (self.ground_prior_extractor, None),
             (self.lane_head, None),
         ]
         for module, ckpt in init_pairs:
@@ -282,34 +279,28 @@ class LaneFormer(BaseModel):
             img=img[:, -1, ...], points=current_points, img_metas=current_metas)
         if self.num_levels is not None and img_feats is not None:
             img_feats = img_feats[:self.num_levels]
-        road_priors = None
-        if self.ground_prior_extractor is not None and current_points is not None:
-            road_priors = self.ground_prior_extractor(current_points)
-        return (img_feats, pts_feats, current_metas, current_points, prev_bev,
-                road_priors)
+        return img_feats, pts_feats, current_metas, current_points, prev_bev
 
     def loss(self, batch):
-        (img_feats, pts_feats, img_metas, points, prev_bev,
-         road_priors) = self._encode_batch(batch)
+        (img_feats, pts_feats, img_metas, points,
+         prev_bev) = self._encode_batch(batch)
         return self.lane_head.loss(
             img_feats=img_feats,
             pts_feats=pts_feats,
             img_metas=img_metas,
             points=points,
             prev_bev=prev_bev,
-            road_priors=road_priors,
             **self._lane_targets(batch))
 
     def predict(self, batch):
-        (img_feats, pts_feats, img_metas, points, prev_bev,
-         road_priors) = self._encode_batch(batch)
+        (img_feats, pts_feats, img_metas, points,
+         prev_bev) = self._encode_batch(batch)
         return self.lane_head.predict(
             img_feats=img_feats,
             pts_feats=pts_feats,
             img_metas=img_metas,
             points=points,
-            prev_bev=prev_bev,
-            road_priors=road_priors)
+            prev_bev=prev_bev)
 
     @staticmethod
     def _lane_targets(batch):
