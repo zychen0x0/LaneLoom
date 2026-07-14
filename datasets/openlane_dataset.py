@@ -40,8 +40,8 @@ def _to_homogeneous(points_xyz):
 
 
 WAYMO_VEHICLE_TO_GROUND_AXES = np.array([
-    [0, 1, 0],
-    [-1, 0, 0],
+    [0, -1, 0],
+    [1, 0, 0],
     [0, 0, 1],
 ], dtype=np.float32)
 
@@ -52,16 +52,23 @@ NORM_CAMERA_TO_GROUND_AXES = np.array([
     [0, 0, 0, 1],
 ], dtype=np.float32)
 
-WAYMO_GROUND_TO_VEHICLE_AXES = np.linalg.inv(
-    WAYMO_VEHICLE_TO_GROUND_AXES).astype(np.float32)
 NORM_CAMERA_TO_GROUND_ROT = NORM_CAMERA_TO_GROUND_AXES[:3, :3]
+
+
+def _vehicle_transform_to_ground(transform):
+    """Express a vehicle-axis rigid transform in OpenLane ground axes."""
+    ground_from_vehicle = np.eye(4, dtype=np.float32)
+    ground_from_vehicle[:3, :3] = WAYMO_VEHICLE_TO_GROUND_AXES
+    return (ground_from_vehicle
+            @ np.asarray(transform, dtype=np.float32).reshape(4, 4)
+            @ np.linalg.inv(ground_from_vehicle)).astype(np.float32)
 
 
 def _build_cam_to_ground_lane(cam_to_vehicle):
     cam_to_vehicle = np.asarray(cam_to_vehicle, dtype=np.float32).reshape(4, 4)
     cam_to_ground_lane = cam_to_vehicle.copy()
     cam_to_ground_lane[:3, :3] = (
-        WAYMO_GROUND_TO_VEHICLE_AXES @ cam_to_ground_lane[:3, :3])
+        WAYMO_VEHICLE_TO_GROUND_AXES @ cam_to_ground_lane[:3, :3])
     cam_to_ground_lane[0:2, 3] = 0.0
     return cam_to_ground_lane.astype(np.float32)
 
@@ -621,9 +628,8 @@ class OpenLaneDataset(Dataset):
         if current_pose is None or np.allclose(pose, current_pose, atol=1e-4):
             lidaradj2lidarcurr = np.eye(4, dtype=np.float32)
         else:
-            lidaradj2lidarcurr = (
-                np.linalg.inv(current_pose) @ pose
-            ).astype(np.float32)
+            lidaradj2lidarcurr = _vehicle_transform_to_ground(
+                np.linalg.inv(current_pose) @ pose)
 
         pts_filename = (
             str(frame_info['lidar_file'])
@@ -1414,8 +1420,15 @@ class OpenLaneDataset(Dataset):
         xyz = lidar_points[:, :3].astype(np.float32)
         feature = lidar_points[:, 3:5].astype(np.float32)
 
-        # Keep every sweep in its native ego frame. LaneFormer fuses image and
-        # LiDAR per frame, then uses lidaradj2lidarcurr to align BEV features.
+        # Accumulated sweeps enter the LiDAR backbone together, so every point
+        # must first be represented in the current ego frame.  Poses are
+        # ego-to-global transforms.
+        history_pose = np.asarray(info['pose'], dtype=np.float32).reshape(4, 4)
+        history_to_current = (
+            np.linalg.inv(current_pose) @ history_pose).astype(np.float32)
+        xyz = (history_to_current[:3, :3] @ xyz.T).T
+        xyz = xyz + history_to_current[:3, 3]
+        xyz = (WAYMO_VEHICLE_TO_GROUND_AXES @ xyz.T).T
 
         queue_column = np.full((xyz.shape[0], 1), float(queue_index), dtype=np.float32)
         return np.concatenate([xyz, feature, queue_column], axis=1)
@@ -1446,7 +1459,14 @@ class OpenLaneDataset(Dataset):
 
         current_pose = lidar_scene['frames'][queue_keys[-1]]['pose']
         lidar_frames = []
+        # Distance/neighbor padding can repeat the current frame.  Repeating
+        # identical points would only inflate voxel density, so keep the last
+        # occurrence of each physical sweep.
+        last_occurrence = {
+            key: index for index, key in enumerate(queue_keys)}
         for queue_index, key in enumerate(queue_keys):
+            if last_occurrence[key] != queue_index:
+                continue
             info = lidar_scene['frames'].get(key)
             if info is None:
                 points = np.zeros((0, self.num_lidar_feat), dtype=np.float32)

@@ -35,6 +35,7 @@ class LaneFormer(BaseModel):
                  pts_backbone=None,
                  img_neck=None,
                  pts_neck=None,
+                 ground_prior_extractor=None,
                  lane_head=None,
                  num_levels=None,
                  frames=(0,),
@@ -49,6 +50,7 @@ class LaneFormer(BaseModel):
         self.pts_middle_encoder = _build_module(pts_middle_encoder)
         self.pts_backbone = _build_module(pts_backbone)
         self.pts_neck = _build_module(pts_neck)
+        self.ground_prior_extractor = _build_module(ground_prior_extractor)
 
         self.img_backbone = _build_module(img_backbone)
         self.img_neck = _build_module(img_neck)
@@ -76,6 +78,7 @@ class LaneFormer(BaseModel):
             (self.pts_middle_encoder, None),
             (self.pts_backbone, None),
             (self.pts_neck, None),
+            (self.ground_prior_extractor, None),
             (self.lane_head, None),
         ]
         for module, ckpt in init_pairs:
@@ -227,8 +230,9 @@ class LaneFormer(BaseModel):
         return x
     # ----------------------------------------------------lidar feature end----------------------------------------------------
 
-    def obtain_history_bev(self, img_queue, img_metas_queue=None, points_queue=None):
-        """Obtain history BEV features iteratively without gradients."""
+    def obtain_history_bev(self, img_queue, img_metas_queue=None,
+                           points_queue=None):
+        """Obtain image-only history BEVs iteratively without gradients."""
         is_training = self.training
         self.eval()
 
@@ -238,17 +242,13 @@ class LaneFormer(BaseModel):
                 img = img_queue[:, queue_idx, ...]
                 img_metas = self._select_queue_metas(
                     img_metas_queue, queue_idx, frame)
-                points = self._select_queue_points(points_queue, queue_idx)
-                img_feats, pts_feats = self.extract_feat(
-                    img=img, points=points, img_metas=img_metas)
+                img_feats = self.extract_img_feat(img, img_metas=img_metas)
                 if self.num_levels is not None and img_feats is not None:
                     img_feats = img_feats[:self.num_levels]
 
-                bev = self.lane_head.forward_bev(
+                bev = self.lane_head.forward_image_bev(
                     img_feats=img_feats,
-                    pts_feats=pts_feats,
-                    img_metas=img_metas,
-                    prev_bev=None)
+                    img_metas=img_metas)
                 # Keep frame calibration with BEV; the head pose-warps it to current ego.
                 prev_bev[frame] = None if bev is None else dict(
                     bev=bev.detach(), img_metas=img_metas)
@@ -273,31 +273,43 @@ class LaneFormer(BaseModel):
                 img[:, :-1, ...], img_metas_queue=img_metas, points_queue=points)
 
         current_metas = self._select_queue_metas(img_metas, queue_length - 1, 0)
-        current_points = self._select_queue_points(points, queue_length - 1)
+        # Dataset sweeps have already been pose-aligned to current ego.  Feed
+        # the whole accumulated cloud through the LiDAR backbone exactly once.
+        current_points = points
+        if torch.is_tensor(current_points):
+            current_points = [current_points]
         img_feats, pts_feats = self.extract_feat(
             img=img[:, -1, ...], points=current_points, img_metas=current_metas)
         if self.num_levels is not None and img_feats is not None:
             img_feats = img_feats[:self.num_levels]
-        return img_feats, pts_feats, current_metas, current_points, prev_bev
+        road_priors = None
+        if self.ground_prior_extractor is not None and current_points is not None:
+            road_priors = self.ground_prior_extractor(current_points)
+        return (img_feats, pts_feats, current_metas, current_points, prev_bev,
+                road_priors)
 
     def loss(self, batch):
-        img_feats, pts_feats, img_metas, points, prev_bev = self._encode_batch(batch)
+        (img_feats, pts_feats, img_metas, points, prev_bev,
+         road_priors) = self._encode_batch(batch)
         return self.lane_head.loss(
             img_feats=img_feats,
             pts_feats=pts_feats,
             img_metas=img_metas,
             points=points,
             prev_bev=prev_bev,
+            road_priors=road_priors,
             **self._lane_targets(batch))
 
     def predict(self, batch):
-        img_feats, pts_feats, img_metas, points, prev_bev = self._encode_batch(batch)
+        (img_feats, pts_feats, img_metas, points, prev_bev,
+         road_priors) = self._encode_batch(batch)
         return self.lane_head.predict(
             img_feats=img_feats,
             pts_feats=pts_feats,
             img_metas=img_metas,
             points=points,
-            prev_bev=prev_bev)
+            prev_bev=prev_bev,
+            road_priors=road_priors)
 
     @staticmethod
     def _lane_targets(batch):

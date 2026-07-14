@@ -1,7 +1,6 @@
 """Image/LiDAR BEV fusion at each BEV query location."""
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
 from mmdet3d.registry import MODELS
 
 
@@ -34,26 +33,18 @@ class _BEVModalityEncoderLayer(nn.Module):
 class LaneFormerImageLiDARFusion(nn.Module):
     """Cross-attend BEV queries to image and LiDAR tokens at each BEV cell."""
 
-    def __init__(self, embed_dims, lidar_in_channels, num_layers=2,
+    def __init__(self, embed_dims, num_layers=2,
                  num_heads=8, feedforward_channels=1024, dropout=0.1,
                  fusion_method='cross_attention', **kwargs):
         super().__init__()
         if fusion_method != 'cross_attention':
             raise ValueError('Only cross_attention fusion is implemented.')
-        self.lidar_proj = nn.Conv2d(lidar_in_channels, embed_dims, 1)
         self.layers = nn.ModuleList([
             _BEVModalityEncoderLayer(
                 embed_dims, num_heads, feedforward_channels, dropout)
             for _ in range(num_layers)])
 
-    def forward(self, image_bev, pts_feats, bev_query):
-        if pts_feats is None:
-            lidar_bev = image_bev.new_zeros(image_bev.shape)
-        else:
-            feature = pts_feats[-1] if isinstance(pts_feats, (list, tuple)) else pts_feats
-            feature = F.interpolate(
-                feature, image_bev.shape[-2:], mode='bilinear', align_corners=False)
-            lidar_bev = self.lidar_proj(feature)
+    def forward(self, image_bev, lidar_bev, bev_query):
         output = bev_query
         for layer in self.layers:
             output = layer(output, image_bev, lidar_bev)

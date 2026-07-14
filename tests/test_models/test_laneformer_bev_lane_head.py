@@ -32,9 +32,12 @@ def _head(embed_dims, bev_h, bev_w, num_query, anchors, lidar_channels,
                 type='LaneFormerSpatialCrossAttention', embed_dims=embed_dims,
                 bev_h=bev_h, bev_w=bev_w, pc_range=[-25., 0., -5., 25., 100., 5.],
                 num_points_in_pillar=4, num_levels=1),
+            lidar_bev_adapter=dict(
+                type='LaneFormerLiDARBEVAdapter', embed_dims=embed_dims,
+                lidar_in_channels=lidar_channels),
             lidar_fusion=dict(
                 type='LaneFormerImageLiDARFusion', embed_dims=embed_dims,
-                lidar_in_channels=lidar_channels, num_layers=1, num_heads=4,
+                num_layers=1, num_heads=4,
                 feedforward_channels=embed_dims * 2, dropout=0.0),
             temporal_self_attn=dict(
                 type='LaneFormerTemporalSelfAttention', embed_dims=embed_dims,
@@ -73,6 +76,75 @@ def test_lane_query_decoder_samples_cubic_bezier_at_anchors():
         predictions['pred_z'][:, :, 0], predictions['curve_z_controls'][:, :, 0])
     assert torch.allclose(
         predictions['pred_z'][:, :, -1], predictions['curve_z_controls'][:, :, -1])
+
+
+def test_lane_query_decoder_initializes_controls_from_valid_road_priors():
+    decoder = LaneFormerLaneQueryDecoder(
+        embed_dims=8, bev_h=2, bev_w=2,
+        pc_range=[-25., 0., -5., 25., 100., 5.], num_query=3,
+        anchor_y_steps=[0.0, 2.0, 4.0], num_layers=1, num_heads=2,
+        feedforward_channels=16, dropout=0.0)
+    with torch.no_grad():
+        decoder.x_head.weight.zero_()
+        decoder.x_head.bias.zero_()
+        decoder.z_head.weight.zero_()
+        decoder.z_head.bias.zero_()
+    controls = torch.tensor([[[[-4., .2], [-3., .3], [-2., .4], [-1., .5]],
+                              [[1., -.2], [2., -.1], [3., 0.], [4., .1]]]])
+    road_priors = dict(
+        road_controls=controls,
+        road_valid=torch.tensor([[True, True]]))
+
+    predictions = decoder(
+        torch.randn(1, 8, 2, 2), torch.nn.Embedding(4, 8),
+        road_priors=road_priors)
+
+    expected_x = controls[0, [0, 1, 0], :, 0]
+    expected_z = controls[0, [0, 1, 0], :, 1]
+    assert torch.allclose(predictions['curve_x_controls'][0], expected_x,
+                          atol=1e-4)
+    assert torch.allclose(predictions['curve_z_controls'][0], expected_z,
+                          atol=1e-4)
+    assert predictions['road_prior_valid'].tolist() == [[True, True, True]]
+
+
+def test_lane_query_decoder_encodes_curvature_in_query_embeddings():
+    decoder = LaneFormerLaneQueryDecoder(
+        embed_dims=8, bev_h=2, bev_w=2,
+        pc_range=[-25., 0., -5., 25., 100., 5.], num_query=2,
+        anchor_y_steps=[0., 2., 4.], num_layers=1, num_heads=2,
+        feedforward_channels=16, dropout=0.)
+    road_priors = dict(
+        road_controls=torch.zeros(1, 1, 4, 2),
+        road_valid=torch.tensor([[True]]),
+        horizontal_curvature=torch.full((1, 1, 3), .01),
+        vertical_curvature=torch.full((1, 1, 3), -.005),
+        road_directions=torch.tensor([[.1]]))
+
+    predictions = decoder(
+        torch.randn(1, 8, 2, 2), torch.nn.Embedding(4, 8),
+        road_priors=road_priors)
+    predictions['pred_x'].sum().backward()
+
+    assert predictions['road_prior_embedding'].shape == (1, 2, 8)
+    assert decoder.road_prior_encoder[0].weight.grad is not None
+
+
+def test_bev_encoder_exposes_independent_image_and_lidar_adapters():
+    head = _head(16, 4, 3, 3, [0., 2., 4.], 8)
+    image_features = [torch.randn(2, 1, 16, 8, 8)]
+    lidar_features = [torch.randn(2, 8, 2, 2)]
+    metas = _metas(2, image_size=8)
+
+    image_bev = head.forward_image_bev(image_features, metas)
+    lidar_bev = head.bev_encoder.forward_lidar_bev(lidar_features)
+    image_only = head.forward_bev(image_features, None, metas)
+    lidar_only = head.forward_bev(None, lidar_features, metas)
+
+    assert image_bev.shape == (2, 16, 4, 3)
+    assert lidar_bev.shape == (2, 16, 4, 3)
+    assert torch.allclose(image_only, image_bev)
+    assert torch.allclose(lidar_only, lidar_bev)
 
 
 def test_lane_query_decoder_exposes_each_intermediate_layer_for_auxiliary_loss():
@@ -116,6 +188,37 @@ def test_lane_query_decoder_composes_nonzero_residual_with_previous_controls():
 
     assert torch.allclose(predictions['curve_x_controls'], expected, atol=1e-5)
     assert not torch.allclose(predictions['curve_x_controls'], previous)
+
+
+def test_road_prior_weight_does_not_weaken_iterative_refinement():
+    decoder = LaneFormerLaneQueryDecoder(
+        embed_dims=8, bev_h=2, bev_w=2,
+        pc_range=[-25., 0., -5., 25., 100., 5.], num_query=2,
+        anchor_y_steps=[0., 2., 4.], num_layers=2, num_heads=2,
+        feedforward_channels=16, dropout=0., road_prior_weight=.5)
+    with torch.no_grad():
+        decoder.x_head.weight.zero_()
+        decoder.x_head.bias.zero_()
+        decoder.z_head.weight.zero_()
+        decoder.z_head.bias.zero_()
+        decoder.x_refine_heads[0].weight.zero_()
+        decoder.x_refine_heads[0].bias.zero_()
+        decoder.z_refine_heads[0].weight.zero_()
+        decoder.z_refine_heads[0].bias.zero_()
+    road_priors = dict(
+        road_controls=torch.tensor([[[[10., 1.], [10., 1.],
+                                      [10., 1.], [10., 1.]]]]),
+        road_valid=torch.tensor([[True]]))
+
+    predictions = decoder(
+        torch.randn(1, 8, 2, 2), torch.nn.Embedding(4, 8),
+        road_priors=road_priors)
+
+    first_layer = predictions['aux_predictions'][0]
+    assert torch.allclose(predictions['curve_x_controls'],
+                          first_layer['curve_x_controls'], atol=1e-5)
+    assert torch.allclose(predictions['curve_z_controls'],
+                          first_layer['curve_z_controls'], atol=1e-5)
 
 
 def test_lane_query_decoder_predicts_an_ordered_visibility_interval():

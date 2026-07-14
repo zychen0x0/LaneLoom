@@ -7,7 +7,11 @@ from mmengine.config import Config
 from mmdet3d.registry import DATASETS
 from torch.utils.data import DataLoader
 
-from LaneFormer.datasets import openlane_collate
+from LaneFormer.datasets import OpenLaneDataset, openlane_collate
+from LaneFormer.datasets.openlane_dataset import (
+    _build_cam_to_ground_lane,
+    _vehicle_transform_to_ground,
+)
 
 
 def _load_cfg():
@@ -113,6 +117,60 @@ def _assert_temporal_frame_meta(frame_meta, num_views):
     assert len(frame_meta['caminfo']) == num_views
     assert frame_meta['caminfo'][0]['cam_intrinsic'].shape == (3, 3)
     assert 'cam_to_vehicle' in frame_meta['openlane_calib']
+
+
+def test_lidar_history_points_are_aligned_to_current_ego_before_concat(tmp_path):
+    lidar_file = tmp_path / 'history.npy'
+    np.save(lidar_file, np.array([[5., 2., 0., .5, .1, 0.]], dtype=np.float32))
+    history_pose = np.eye(4, dtype=np.float32)
+    history_pose[0, 3] = 10.
+    current_pose = np.eye(4, dtype=np.float32)
+    current_pose[0, 3] = 13.
+    dataset = OpenLaneDataset.__new__(OpenLaneDataset)
+    dataset.num_lidar_feat = 6
+
+    points = dataset._load_lidar_points(
+        dict(lidar_file=lidar_file, pose=history_pose), current_pose,
+        queue_index=0)
+
+    # Raw Waymo [forward, left, up] -> current raw [2, 2, 0] ->
+    # OpenLane ground [right, forward, up] = [-2, 2, 0].
+    assert np.allclose(points[0, :3], [-2., 2., 0.])
+    assert points[0, -1] == 0.
+
+
+def test_temporal_pose_transform_is_expressed_in_ground_bev_axes():
+    vehicle_transform = np.eye(4, dtype=np.float32)
+    vehicle_transform[:3, 3] = [5., 2., 0.]
+
+    ground_transform = _vehicle_transform_to_ground(vehicle_transform)
+
+    assert np.allclose(ground_transform[:3, 3], [-2., 5., 0.])
+
+
+def test_camera_lane_transform_uses_the_same_ground_axis_convention():
+    cam_to_ground = _build_cam_to_ground_lane(np.eye(4, dtype=np.float32))
+
+    assert np.allclose(cam_to_ground[:3, 0], [0., 1., 0.])
+    assert np.allclose(cam_to_ground[:3, 1], [-1., 0., 0.])
+
+
+def test_lidar_queue_does_not_duplicate_a_padded_physical_sweep(tmp_path):
+    lidar_file = tmp_path / 'current.npy'
+    np.save(lidar_file, np.array([[5., 0., 0., .5, .1, 0.]], dtype=np.float32))
+    dataset = OpenLaneDataset.__new__(OpenLaneDataset)
+    dataset.num_lidar_feat = 6
+    dataset.point_cloud_range = None
+    dataset.shuffle_points = False
+    pose = np.eye(4, dtype=np.float32)
+    scene = dict(frames={
+        'same': dict(lidar_file=lidar_file, pose=pose),
+    })
+
+    points = dataset._load_lidar_queue(scene, ['same', 'same', 'same'])
+
+    assert points.shape == (1, 6)
+    assert points[0, -1] == 2.
 
 
 def test_openlane_getitem_loads_multimodal_temporal_sample():
