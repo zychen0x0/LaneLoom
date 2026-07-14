@@ -3,10 +3,10 @@ import argparse
 from pathlib import Path
 
 from mmengine.config import Config
-from mmengine.runner import Runner
 
 import LaneFormer  # noqa: F401 - register models, datasets, and hooks.
 from LaneFormer.engine import (
+    LaneFormerRunner,
     configure_train_experiment,
     remove_runtime_config_artifacts,
 )
@@ -31,7 +31,7 @@ def main():
     cfg.launcher = args.launcher
     experiment_dir = configure_train_experiment(cfg, args.work_dir)
     cfg.resume = args.resume
-    runner = Runner.from_cfg(cfg)
+    runner = LaneFormerRunner.from_cfg(cfg)
     remove_runtime_config_artifacts(experiment_dir, config_path)
     runner.logger.info('LaneFormer experiment directory: %s', experiment_dir)
     runner.train()

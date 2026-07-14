@@ -1,4 +1,5 @@
 import numpy as np
+import pytest
 import torch
 from datetime import datetime
 from types import SimpleNamespace
@@ -9,6 +10,7 @@ from mmengine.registry import METRICS
 from LaneFormer.engine.experiment import configure_train_experiment
 from LaneFormer.engine.openlane_test_cases import build_openlane_test_configs
 from LaneFormer.engine.hooks import LaneFormerLoggerHook
+from LaneFormer.engine.runner import LaneFormerRunner
 
 
 def _sample(x_offset=0.0, z_offset=0.0, score=0.9, scene='rainy-turn',
@@ -224,3 +226,31 @@ def test_train_experiment_layout_uses_a_dated_laneformer_directory(tmp_path):
     assert cfg.default_hooks.checkpoint.out_dir == str(experiment_dir / 'checkpoints')
     assert [backend.type for backend in cfg.visualizer.vis_backends] == [
         'TensorboardVisBackend']
+
+
+def test_laneformer_runner_writes_log_directly_in_work_dir(tmp_path):
+    logs_dir = tmp_path / 'logs'
+    runner = LaneFormerRunner(
+        model=torch.nn.Linear(1, 1),
+        work_dir=str(logs_dir),
+        default_scope=None,
+        experiment_name='direct_log_success',
+    )
+
+    assert runner.log_dir == str(logs_dir)
+    assert len(list(logs_dir.glob('*.log'))) == 1
+    assert not [path for path in logs_dir.iterdir() if path.is_dir()]
+
+
+def test_laneformer_runner_does_not_create_log_subdir_when_init_fails(tmp_path):
+    logs_dir = tmp_path / 'logs'
+
+    with pytest.raises(KeyError):
+        LaneFormerRunner(
+            model=dict(type='MissingLaneFormerModel'),
+            work_dir=str(logs_dir),
+            default_scope=None,
+            experiment_name='direct_log_failure',
+        )
+
+    assert not [path for path in logs_dir.iterdir() if path.is_dir()]

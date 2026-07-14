@@ -3,10 +3,10 @@ import argparse
 from pathlib import Path
 
 from mmengine.config import Config
-from mmengine.runner import Runner
 
 import LaneFormer  # noqa: F401 - register project components.
 from LaneFormer.engine import (
+    LaneFormerRunner,
     build_openlane_test_configs,
     configure_test_experiment,
     remove_runtime_config_artifacts,
@@ -40,7 +40,7 @@ def main():
         cfg.load_from = checkpoint
         experiment_dir = configure_test_experiment(
             cfg, checkpoint, base_work_dir / case_name)
-        runner = Runner.from_cfg(cfg)
+        runner = LaneFormerRunner.from_cfg(cfg)
         remove_runtime_config_artifacts(experiment_dir, config_path)
         runner.test()
 
