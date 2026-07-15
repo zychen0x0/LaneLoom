@@ -122,6 +122,23 @@ model = dict(
     # set prediction with independent LaneFormer loss weights.
     lane_head=dict(
         type='LaneFormerBEVLaneHead',
+        # LiDAR predicts one road curvature/grade pair.  It initializes 50
+        # one-metre Bézier anchors and samples image features along them.
+        anchor_prior=dict(
+            type='LaneFormerLiDARBezierAnchorPrior',
+            lidar_in_channels=512,
+            image_in_channels=_dim_,
+            embed_dims=_dim_,
+            pc_range=point_cloud_range,
+            anchor_y_steps=[2.0 * i for i in range(51)],
+            num_anchors=50,
+            hidden_channels=64,
+            # At y=100 m these bounds imply at most 25 m lateral bending and
+            # 5 m height change, matching the decoder's configured xyz range.
+            max_curvature=0.005,
+            max_grade=0.05,
+            curvature_loss_weight=1.0,
+            grade_loss_weight=1.0),
         bev_encoder=dict(
             type='LaneFormerBEVEncoder',
             embed_dims=_dim_,
@@ -161,7 +178,7 @@ model = dict(
             bev_h=bev_h_,
             bev_w=bev_w_,
             pc_range=point_cloud_range,
-            num_query=40,
+            num_query=50,
             # OpenLane categories 0..20; category 21 is merged into 20 by dataset.
             num_category=21,
             anchor_y_steps=[2.0 * i for i in range(51)],
@@ -170,7 +187,7 @@ model = dict(
             feedforward_channels=_ffn_dim_,
             dropout=0.1,
             # Training-only DN-DETR lane queries reconstruct a GT Bézier
-            # lane from noisy control points; inference remains 40 queries.
+            # lane from noisy control points; inference remains 50 anchors.
             dn_num_groups=1,
             dn_noise_scale=0.5,
             visibility_temperature=0.75,

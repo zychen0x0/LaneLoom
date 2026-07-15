@@ -190,12 +190,28 @@ class LaneFormerLaneQueryDecoder(nn.Module):
             pred_cls=self.cls_head(query).squeeze(-1),
             pred_category=self.category_head(query))
 
-    def forward(self, bev, bev_pos, dn_lanes_3d=None, dn_visibility=None):
+    def forward(self, bev, bev_pos, dn_lanes_3d=None, dn_visibility=None,
+                query_features=None, initial_reference_controls=None):
         batch = bev.size(0)
         memory = bev.flatten(2).transpose(1, 2)
         memory = memory + bev_pos.weight.unsqueeze(0).expand(batch, -1, -1)
         query_pos = self.query_pos.weight.unsqueeze(0).expand(batch, -1, -1)
         query = self.query.weight.unsqueeze(0).expand(batch, -1, -1)
+        if query_features is not None:
+            expected_shape = (batch, self.num_query, query.size(-1))
+            if tuple(query_features.shape) != expected_shape:
+                raise ValueError(
+                    f'query_features must have shape {expected_shape}, got '
+                    f'{tuple(query_features.shape)}.')
+            query = query + query_features
+        if initial_reference_controls is not None:
+            reference_x, reference_z = initial_reference_controls
+            expected_shape = (batch, self.num_query, self.num_control_points)
+            if (tuple(reference_x.shape) != expected_shape
+                    or tuple(reference_z.shape) != expected_shape):
+                raise ValueError(
+                    'initial_reference_controls must contain x/z tensors with '
+                    f'shape {expected_shape}.')
         dn_query = None
         if (self.training and self.dn_num_groups > 0 and
                 dn_lanes_3d is not None and dn_visibility is not None):
@@ -211,7 +227,7 @@ class LaneFormerLaneQueryDecoder(nn.Module):
             attention_mask = None
         query = query + query_pos
         layer_predictions = []
-        main_reference = None
+        main_reference = initial_reference_controls
         dn_reference = None
         for layer_idx, layer in enumerate(self.decoder.layers):
             query = layer(query, memory, tgt_mask=attention_mask)

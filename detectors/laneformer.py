@@ -373,6 +373,15 @@ class LaneFormer(BaseModel):
                 scene_name=meta.get('scene_name', ''),
                 scenario_name=meta.get('scenario_name', ''),
                 frame_key=meta.get('current_key', ''),
+                road_curvature=(
+                    predictions['road_curvature'][index]
+                    if 'road_curvature' in predictions else None),
+                road_grade=(
+                    predictions['road_grade'][index]
+                    if 'road_grade' in predictions else None),
+                initial_anchor_points=(
+                    predictions['anchor_points'][index]
+                    if 'anchor_points' in predictions else None),
             ))
         return samples
 
