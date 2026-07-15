@@ -10,6 +10,10 @@ from LaneFormer.models.head.lidar_bezier_anchor_prior import (
 from LaneFormer.models.losses.laneformer_hungarian_loss import (
     LaneFormerHungarianLaneLoss,
 )
+from LaneFormer.models.losses.laneformer_topk_loss import (
+    LaneFormerTopKLaneLoss,
+)
+from LaneFormer.models.losses.topk_assigner import LaneFormerTopKAssigner
 
 
 def _metas(batch_size, image_size=16):
@@ -61,9 +65,10 @@ def _head(embed_dims, bev_h, bev_w, num_query, anchors, lidar_channels,
             num_heads=4, feedforward_channels=embed_dims * 2, dropout=0.0,
             dn_num_groups=dn_num_groups),
         loss_module=dict(
-            type='LaneFormerHungarianLaneLoss', geometry_loss_weight=20.0,
-            visibility_loss_weight=1.0, objectness_loss_weight=10.0,
-            category_loss_weight=0.25, geometry_huber_beta=0.5))
+            type='LaneFormerTopKLaneLoss', pos_k=2,
+            cls_loss_weight=1.0, x_loss_weight=1.0,
+            z_loss_weight=1.0, visibility_loss_weight=1.0,
+            aux_loss_weight=0.5, smooth_l1_beta=0.5))
 
 
 def test_lane_query_decoder_samples_cubic_bezier_at_anchors():
@@ -297,7 +302,7 @@ def test_lane_query_decoder_adds_denoising_queries_only_during_training():
 def test_lane_head_uses_51_anchors_and_backpropagates():
     torch.manual_seed(0)
     anchors = [2.0 * index for index in range(51)]
-    head = _head(32, 8, 5, 50, anchors, 16, dn_num_groups=1)
+    head = _head(32, 8, 5, 50, anchors, 16)
     batch_size = 2
     image_features = [torch.randn(batch_size, 1, 32, 16, 16)]
     lidar_features = [torch.randn(batch_size, 16, 4, 4)]
@@ -318,27 +323,18 @@ def test_lane_head_uses_51_anchors_and_backpropagates():
     enhanced_visibility = gt_visibility.clone()
     enhanced_lanes[:, 0, 30:35, 0] = -1.5
     enhanced_visibility[:, 0, 30:35] = 1.0
-    memory_mask = torch.zeros_like(gt_visibility)
-    memory_mask[:, 0, 30:35] = 1.0
-
     losses = head.loss(
         image_features, lidar_features, metas, prev_bev=history,
         gt_lanes_3d=gt_lanes, gt_lanes_visibility=gt_visibility,
         gt_lanes_category=gt_category,
         gt_lanes_3d_enhanced=enhanced_lanes,
-        gt_lanes_visibility_enhanced=enhanced_visibility,
-        gt_lanes_memory_mask=memory_mask)
+        gt_lanes_visibility_enhanced=enhanced_visibility)
     total_loss = sum(losses.values())
     total_loss.backward()
 
     assert head.anchor_y_steps.numel() == 51
     final_lane_loss_names = {
-        'loss_geometry', 'loss_visibility', 'loss_objectness',
-        'loss_category', 'loss_visibility_dice',
-        'loss_visibility_boundary', 'loss_dn_geometry',
-        'loss_dn_visibility', 'loss_dn_visibility_dice',
-        'loss_dn_visibility_boundary', 'loss_dn_objectness',
-        'loss_dn_category'}
+        'loss_cls', 'loss_x', 'loss_z', 'loss_visibility'}
     auxiliary_loss_names = {
         f'loss_aux_0_{name.removeprefix("loss_")}'
         for name in final_lane_loss_names}
@@ -353,8 +349,57 @@ def test_lane_head_uses_51_anchors_and_backpropagates():
         head.anchor_prior.geometry_encoder[-1].weight.grad).all()
 
 
+def test_topk_assigner_selects_two_exclusive_anchors_per_gt():
+    assigner = LaneFormerTopKAssigner(pos_k=2)
+    anchor_x = torch.tensor([
+        [-2.2, -2.2], [-1.8, -1.8], [-1.4, -1.4],
+        [1.4, 1.4], [1.8, 1.8], [2.2, 2.2]])
+    anchor_z = torch.zeros_like(anchor_x)
+    gt_x = torch.tensor([[-2., -2.], [2., 2.]])
+    gt_z = torch.zeros_like(gt_x)
+    gt_visibility = torch.ones(2, 2)
+
+    assigned = assigner.assign(
+        anchor_x, anchor_z, gt_x, gt_z, gt_visibility)
+
+    assert (assigned == 0).sum() == 2
+    assert (assigned == 1).sum() == 2
+    assert (assigned == -1).sum() == 2
+
+
+def test_topk_lane_loss_has_one_visibility_objective():
+    loss_module = LaneFormerTopKLaneLoss(pos_k=2)
+    anchor_x = torch.tensor([[-1.5, -1.5], [-.5, -.5],
+                             [.5, .5], [1.5, 1.5]])
+    anchor_points = torch.stack((
+        anchor_x, torch.tensor([[0., 2.]]).expand_as(anchor_x),
+        torch.zeros_like(anchor_x)), dim=-1).unsqueeze(0)
+    predictions = dict(
+        pred_x=anchor_x.unsqueeze(0).requires_grad_(),
+        pred_z=torch.zeros(1, 4, 2, requires_grad=True),
+        pred_vis=torch.zeros(1, 4, 2, requires_grad=True),
+        pred_logits=torch.zeros(1, 4, 22, requires_grad=True),
+        anchor_points=anchor_points)
+    gt_lanes = torch.zeros(1, 2, 2, 3)
+    gt_lanes[0, :, :, 1] = torch.tensor([0., 2.])
+    gt_lanes[0, 0, :, 0] = -1.
+    gt_lanes[0, 1, :, 0] = 1.
+    gt_visibility = torch.tensor([[[1., 1.], [1., 0.]]])
+    gt_category = torch.tensor([[2, 7]])
+
+    losses = loss_module(
+        predictions, gt_lanes_3d=gt_lanes,
+        gt_lanes_visibility=gt_visibility,
+        gt_lanes_category=gt_category)
+    sum(losses.values()).backward()
+
+    assert set(losses) == {'loss_cls', 'loss_x', 'loss_z', 'loss_visibility'}
+    assert predictions['pred_vis'].grad is not None
+    assert torch.isfinite(sum(losses.values()))
+
+
 def test_hungarian_assignment_is_one_to_one():
-    head = _head(16, 2, 2, 2, [0.0, 2.0], 16)
+    loss_module = LaneFormerHungarianLaneLoss()
     pred_x = torch.tensor([[0.0, 0.0], [10.0, 10.0]])
     pred_z = torch.zeros_like(pred_x)
     pred_vis = torch.full_like(pred_x, 8.0)
@@ -363,8 +408,8 @@ def test_hungarian_assignment_is_one_to_one():
     gt_vis = torch.ones_like(gt_x)
 
     pred_objectness = torch.zeros(2)
-    pairs = head.loss_module._match(pred_x, pred_z, pred_vis, pred_objectness,
-                                    gt_x, gt_z, gt_vis)
+    pairs = loss_module._match(pred_x, pred_z, pred_vis, pred_objectness,
+                               gt_x, gt_z, gt_vis)
     assert pairs == [(0, 1), (1, 0)]
 
 

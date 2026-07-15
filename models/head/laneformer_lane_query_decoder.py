@@ -176,6 +176,11 @@ class LaneFormerLaneQueryDecoder(nn.Module):
         visibility_logits = (
             torch.logit(interval_probability.clamp(1e-4, 1 - 1e-4))
             + self.vis_head(query))
+        pred_objectness = self.cls_head(query).squeeze(-1)
+        pred_category = self.category_head(query)
+        background = pred_category.new_zeros(*pred_category.shape[:-1], 1)
+        pred_logits = torch.cat((
+            background, pred_category + pred_objectness.unsqueeze(-1)), dim=-1)
         return dict(
             pred_x=torch.einsum('ac,bqc->bqa', self.bezier_basis,
                                 curve_x_controls),
@@ -187,8 +192,9 @@ class LaneFormerLaneQueryDecoder(nn.Module):
             pred_vis_start=visibility_start,
             pred_vis_end=visibility_end,
             pred_vis_interval=interval_probability,
-            pred_cls=self.cls_head(query).squeeze(-1),
-            pred_category=self.category_head(query))
+            pred_cls=pred_objectness,
+            pred_category=pred_category,
+            pred_logits=pred_logits)
 
     def forward(self, bev, bev_pos, dn_lanes_3d=None, dn_visibility=None,
                 query_features=None, initial_reference_controls=None):

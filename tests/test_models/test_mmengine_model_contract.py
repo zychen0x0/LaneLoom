@@ -49,6 +49,20 @@ def test_config_couples_fifty_lidar_bezier_anchors_to_decoder_queries():
     assert prior.anchor_y_steps == decoder.anchor_y_steps
 
 
+def test_config_uses_top2_assignment_and_one_visibility_loss():
+    config_path = Path(__file__).resolve().parents[2] / 'configs/laneformer_openlane_image_lidar.py'
+    cfg = Config.fromfile(config_path)
+    loss = cfg.model.lane_head.loss_module
+
+    assert loss.type == 'LaneFormerTopKLaneLoss'
+    assert loss.assigner.type == 'LaneFormerTopKAssigner'
+    assert loss.assigner.pos_k == 2
+    assert loss.visibility_loss_weight == 1.0
+    assert 'visibility_dice_loss_weight' not in loss
+    assert 'visibility_boundary_loss_weight' not in loss
+    assert cfg.model.lane_head.lane_decoder.get('dn_num_groups', 0) == 0
+
+
 class _ImageHistoryHead(nn.Module):
     def __init__(self):
         super().__init__()

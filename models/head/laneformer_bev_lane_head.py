@@ -88,11 +88,12 @@ class LaneFormerBEVLaneHead(nn.Module):
         current_bev = self.forward_bev(img_feats, pts_feats, img_metas)
         predictions = self._predict(
             current_bev, prev_bev, anchor_prior=anchor_prior)
-        scores = predictions['pred_cls'].sigmoid()
+        class_probability = predictions['pred_logits'].softmax(dim=-1)[..., 1:]
+        scores, category = class_probability.max(dim=-1)
         output = dict(
             x=predictions['pred_x'], z=predictions['pred_z'],
             visibility=predictions['pred_vis'].sigmoid(), scores=scores,
-            category=predictions['pred_category'].argmax(dim=-1),
+            category=category,
             valid_queries=scores >= self.score_threshold,
             anchor_y_steps=self.anchor_y_steps)
         if anchor_prior is not None:

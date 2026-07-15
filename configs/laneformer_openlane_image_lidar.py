@@ -186,40 +186,24 @@ model = dict(
             num_heads=8,
             feedforward_channels=_ffn_dim_,
             dropout=0.1,
-            # Training-only DN-DETR lane queries reconstruct a GT Bézier
-            # lane from noisy control points; inference remains 50 anchors.
-            dn_num_groups=1,
-            dn_noise_scale=0.5,
             visibility_temperature=0.75,
             # Median visible interval from the OpenLane training anchors.
             visibility_start_prior=0.14,
             visibility_end_prior=0.58,
-            # Start with almost every query as background; positives are
-            # learned through assignment instead of emitting all 40 queries.
+            # Start with almost every anchor as background; Top2 assignment
+            # then promotes only anchors close to a GT lane.
             objectness_prior_probability=0.01),
         loss_module=dict(
-            type='LaneFormerHungarianLaneLoss',
-            # Hierarchical supervision: all queries are screened by
-            # objectness; lane attributes apply only after matching.
-            geometry_loss_weight=10.0,
+            type='LaneFormerTopKLaneLoss',
+            # Each GT owns its two nearest initial Bézier anchors.  All other
+            # anchors are background because there are only 50 candidates.
+            assigner=dict(type='LaneFormerTopKAssigner', pos_k=2),
+            cls_loss_weight=1.0,
+            x_loss_weight=1.0,
+            z_loss_weight=1.0,
             visibility_loss_weight=1.0,
-            visibility_dice_loss_weight=1.0,
-            visibility_boundary_loss_weight=0.25,
-            # Focal loss is normalized by positive lanes, so this no longer
-            # needs to compensate for averaging over all 40 queries.
-            objectness_loss_weight=2.0,
-            category_loss_weight=0.25,
-            dn_loss_weight=1.0,
             aux_loss_weight=0.5,
-            geometry_huber_beta=0.5,
-            # Keep metre-based geometry/Huber semantics while preventing the
-            # 50 m x-range from dominating global gradient clipping.
-            geometry_normalization=20.0,
-            match_cost_geometry=1.0,
-            match_cost_vis=0.5,
-            match_cost_vis_dice=1.0,
-            match_cost_objectness=1.0,
-            memory_loss_weight=1.0,
+            smooth_l1_beta=0.5,
             focal_alpha=0.25,
             focal_gamma=2.0),
         test_cfg=dict(
