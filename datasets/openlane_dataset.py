@@ -172,6 +172,17 @@ class OpenLaneDataset(Dataset):
     """
 
     METAINFO = dict(dataset_name='OpenLane')
+    PIPELINE_STAGE_ORDER = (
+        'LoadTemporalOpenLaneImages',
+        'ResizeOpenLaneImages',
+        'Albu',
+        'NormalizeOpenLaneImages',
+        'LoadPoseAlignedOpenLanePoints',
+        'PointsRangeFilter',
+        'PointShuffle',
+        'LoadOpenLaneAnnotations',
+        'PackLaneFormerInputs',
+    )
 
     # ---------------------------------------------------init start---------------------------------------------------
     def __init__(self,
@@ -198,6 +209,16 @@ class OpenLaneDataset(Dataset):
             dataset_cfg['train_pipeline']
             if self.is_train else dataset_cfg['val_pipeline']
         )
+        if not isinstance(self.pipeline_cfg, (list, tuple)):
+            raise TypeError('OpenLane pipeline must be an ordered list of stages.')
+        self.pipeline_cfg = [dict(stage) for stage in self.pipeline_cfg]
+        self._validate_pipeline()
+        image_load_cfg = self._pipeline_stage('LoadTemporalOpenLaneImages')
+        image_resize_cfg = self._pipeline_stage('ResizeOpenLaneImages')
+        image_normalize_cfg = self._pipeline_stage('NormalizeOpenLaneImages')
+        points_load_cfg = self._pipeline_stage('LoadPoseAlignedOpenLanePoints')
+        self._pipeline_stage('LoadOpenLaneAnnotations')
+        pack_cfg = self._pipeline_stage('PackLaneFormerInputs')
         self.label_root = _as_path(dataset_cfg['data_label_dir'])
         self.image_root = _as_path(dataset_cfg['data_image_dir'])
         self.lidar_root = _as_path(dataset_cfg['lidar_processed_dir'])
@@ -205,13 +226,24 @@ class OpenLaneDataset(Dataset):
 
         self.org_h = int(dataset_cfg.get('org_h', 1280))
         self.org_w = int(dataset_cfg.get('org_w', 1920))
-        self.img_scale = dataset_cfg.get('img_scale')
+        self.img_scale = dataset_cfg.get(
+            'img_scale', image_resize_cfg.get('img_scale'))
+        if not image_resize_cfg.get('keep_ratio', True):
+            raise ValueError('ResizeOpenLaneImages currently requires keep_ratio=True.')
         self.resize_w, self.resize_h = self._resolve_image_size(dataset_cfg)
-        self.num_views = int(dataset_cfg.get('num_views', 1))
-        self.view_mode = str(dataset_cfg.get('view_mode', 'single')).strip()
-        self.view_aug_cfgs = list(dataset_cfg.get('multi_aug_view_transforms', []))
-        self.mean = np.asarray(dataset_cfg['mean'], dtype=np.float32).reshape(3, 1, 1)
-        self.std = np.asarray(dataset_cfg['std'], dtype=np.float32).reshape(3, 1, 1)
+        self.num_views = int(dataset_cfg.get(
+            'num_views', image_load_cfg.get('num_views', 1)))
+        self.view_mode = str(dataset_cfg.get(
+            'view_mode', image_load_cfg.get('view_mode', 'original'))).strip()
+        self.view_aug_cfgs = list(dataset_cfg.get(
+            'multi_aug_view_transforms',
+            image_load_cfg.get('multi_aug_view_transforms', [])))
+        self.mean = np.asarray(
+            dataset_cfg.get('mean', image_normalize_cfg['mean']),
+            dtype=np.float32).reshape(3, 1, 1)
+        self.std = np.asarray(
+            dataset_cfg.get('std', image_normalize_cfg['std']),
+            dtype=np.float32).reshape(3, 1, 1)
 
         self.frames = tuple(frames)
         self.history_num_frames = int(history_num_frames)
@@ -229,8 +261,10 @@ class OpenLaneDataset(Dataset):
         self.temporal_gt_augmentation = bool(temporal_gt_augmentation)
         self.smooth_3d_gt = bool(smooth_3d_gt)
         self.gt_outlier_residual = float(gt_outlier_residual)
-        self.load_dim = int(dataset_cfg.get('load_dim', 6))
-        self.use_dim = dataset_cfg.get('use_dim', self.load_dim)
+        self.load_dim = int(dataset_cfg.get(
+            'load_dim', points_load_cfg.get('load_dim', 6)))
+        self.use_dim = dataset_cfg.get(
+            'use_dim', points_load_cfg.get('use_dim', self.load_dim))
         self.num_lidar_feat = self._resolve_lidar_feat_dim(self.use_dim)
         self.max_lanes = int(dataset_cfg.get('max_lanes', 20))
         self.num_category = int(dataset_cfg.get('num_category', 21))
@@ -244,10 +278,14 @@ class OpenLaneDataset(Dataset):
         self.img_aug = self._build_img_aug()
         self.img_aug_replay = self._build_img_aug(replay=True)
         self.view_aug_names, self.view_aug_transforms = self._build_view_aug()
-        self.pts_aug_cfg = list(self.pipeline_cfg.get('pts_aug', []))
+        self.pts_aug_cfg = [
+            stage for stage in self.pipeline_cfg
+            if stage['type'] in ('PointsRangeFilter', 'PointShuffle')
+        ]
         self.point_cloud_range = self._resolve_point_cloud_range()
         self.shuffle_points = any(
             aug.get('type') == 'PointShuffle' for aug in self.pts_aug_cfg)
+        self.pack_keys = tuple(pack_cfg.get('keys', ()))
 
         self.label_files = self._load_label_files(max_samples=max_samples)
         self.lidar_segment_dirs = self._load_lidar_segment_dirs()
@@ -258,6 +296,35 @@ class OpenLaneDataset(Dataset):
     # ----------------------------------------------------init end----------------------------------------------------
 
     # ---------------------------------------------------pipeline build start---------------------------------------------------
+    def _validate_pipeline(self):
+        stage_types = [stage.get('type') for stage in self.pipeline_cfg]
+        unknown = [
+            stage_type for stage_type in stage_types
+            if stage_type not in self.PIPELINE_STAGE_ORDER
+        ]
+        if unknown:
+            raise ValueError(f'Unsupported OpenLane pipeline stages: {unknown}')
+        if len(stage_types) != len(set(stage_types)):
+            raise ValueError('OpenLane pipeline stages must have unique types.')
+        stage_order = {
+            stage_type: index
+            for index, stage_type in enumerate(self.PIPELINE_STAGE_ORDER)
+        }
+        configured_order = [stage_order[stage_type] for stage_type in stage_types]
+        if configured_order != sorted(configured_order):
+            raise ValueError('OpenLane pipeline stages are out of execution order.')
+
+    def _pipeline_stage(self, stage_type):
+        matches = [
+            stage for stage in self.pipeline_cfg
+            if stage.get('type') == stage_type
+        ]
+        if len(matches) != 1:
+            raise ValueError(
+                f'OpenLane pipeline requires exactly one {stage_type} stage; '
+                f'found {len(matches)}.')
+        return matches[0]
+
     @staticmethod
     def _resolve_lidar_feat_dim(use_dim):
         if isinstance(use_dim, int):
@@ -311,10 +378,10 @@ class OpenLaneDataset(Dataset):
         return getattr(A, transform_type)(**cfg)
 
     def _build_img_aug(self, replay=False):
-        img_aug_cfg = self.pipeline_cfg.get('img_aug', [])
-        albu_cfg = next(
-            (aug for aug in img_aug_cfg if aug.get('type') == 'Albu'),
-            None)
+        albu_cfg = next((
+            stage for stage in self.pipeline_cfg
+            if stage.get('type') == 'Albu'
+        ), None)
         if albu_cfg is None:
             return None
         return self._build_albu_compose(albu_cfg.get('transforms', []), replay=replay)
@@ -1542,7 +1609,7 @@ class OpenLaneDataset(Dataset):
         if self.temporal_gt_augmentation:
             gt.update(self._build_temporal_enhanced_gt(label_infos, frame_metas))
 
-        return dict(
+        sample = dict(
             img=img,
             lidar=lidar,
             img_metas=dict(
@@ -1562,6 +1629,9 @@ class OpenLaneDataset(Dataset):
             **gt,
             raw_label=label_infos[-1],
         )
+        if not self.pack_keys:
+            return sample
+        return {key: sample[key] for key in self.pack_keys if key in sample}
     # ----------------------------------------------------getitem end----------------------------------------------------
 
 

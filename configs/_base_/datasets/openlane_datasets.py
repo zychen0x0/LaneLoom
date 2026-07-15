@@ -53,8 +53,8 @@ input_modality = dict(
 
 
 # ---------------------------------------------------image settings start---------------------------------------------------
-# Image preprocessing. img_scale is consumed like
-# MyResize(img_scale=img_scale, keep_ratio=True).
+# Image preprocessing is declared explicitly in train_pipeline/test_pipeline.
+# img_scale follows MMDetection's (short_edge, long_edge) convention.
 org_h = 1280
 org_w = 1920
 img_scale = (640, 960)
@@ -273,24 +273,61 @@ albu_train_transforms = [
         p=0.3),
 ]
 
-train_pipeline = dict(
-    img_aug=[
-        dict(type='Albu', transforms=albu_train_transforms),
-    ],
-    pts_aug=[
-        dict(type='PointsRangeFilter', point_cloud_range=point_cloud_range),
-        dict(type='PointShuffle'),
-    ],
-    gt3d_aug=[],
-)
+packed_keys = [
+    'img',
+    'lidar',
+    'img_metas',
+    'gt_lanes_3d',
+    'gt_lanes_uv',
+    'gt_lanes_visibility',
+    'gt_lanes_category',
+    'gt_lane_track_ids',
+    'gt_lanes_3d_enhanced',
+    'gt_lanes_visibility_enhanced',
+    'gt_lanes_category_enhanced',
+    'gt_lane_track_ids_enhanced',
+    'ground_lanes',
+    'raw_lanes_3d',
+    'raw_lanes_uv',
+    'raw_lanes_uvy',
+    'raw_label',
+]
 
-test_pipeline = dict(
-    img_aug=[],
-    pts_aug=[
-        dict(type='PointsRangeFilter', point_cloud_range=point_cloud_range),
-    ],
-    gt3d_aug=[],
-)
+train_pipeline = [
+    dict(
+        type='LoadTemporalOpenLaneImages',
+        num_views=num_views,
+        view_mode=view_mode,
+        multi_aug_view_transforms=multi_aug_view_transforms),
+    dict(type='ResizeOpenLaneImages', img_scale=img_scale, keep_ratio=True),
+    dict(type='Albu', transforms=albu_train_transforms),
+    dict(type='NormalizeOpenLaneImages', **img_norm_cfg),
+    dict(
+        type='LoadPoseAlignedOpenLanePoints',
+        load_dim=load_dim,
+        use_dim=use_dim),
+    dict(type='PointsRangeFilter', point_cloud_range=point_cloud_range),
+    dict(type='PointShuffle'),
+    dict(type='LoadOpenLaneAnnotations'),
+    dict(type='PackLaneFormerInputs', keys=packed_keys),
+]
+
+test_pipeline = [
+    dict(
+        type='LoadTemporalOpenLaneImages',
+        num_views=num_views,
+        view_mode=view_mode,
+        multi_aug_view_transforms=multi_aug_view_transforms),
+    dict(type='ResizeOpenLaneImages', img_scale=img_scale, keep_ratio=True),
+    dict(type='NormalizeOpenLaneImages', **img_norm_cfg),
+    dict(
+        type='LoadPoseAlignedOpenLanePoints',
+        load_dim=load_dim,
+        use_dim=use_dim),
+    dict(type='PointsRangeFilter', point_cloud_range=point_cloud_range),
+    dict(type='LoadOpenLaneAnnotations'),
+    dict(type='PackLaneFormerInputs', keys=packed_keys),
+]
 eval_pipeline = test_pipeline
 # ----------------------------------------------------augmentation end----------------------------------------------------
 
@@ -303,8 +340,6 @@ num_workers = 4
 persistent_workers = False
 
 dataset_cfg = dict(
-    mean=img_norm_cfg['mean'],
-    std=img_norm_cfg['std'],
     dataset=dataset,
     dataset_name=dataset_name,
     data_label_dir=os.path.join(data_root, 'openlane', 'lane3d_1000'),
@@ -315,18 +350,9 @@ dataset_cfg = dict(
     test_split='test',
     org_h=org_h,
     org_w=org_w,
-    img_scale=img_scale,
-    img_norm_cfg=img_norm_cfg,
-    num_views=num_views,
-    view_mode=view_mode,
-    multi_aug_view_transforms=multi_aug_view_transforms,
-
     anchor_y_steps=anchor_y_steps,
-    point_cloud_range=point_cloud_range,
     train_pipeline=train_pipeline,
     val_pipeline=test_pipeline,
-    load_dim=load_dim,
-    use_dim=use_dim,
     num_category=num_category,
     max_lanes=max_lanes,
     class_names=class_names,

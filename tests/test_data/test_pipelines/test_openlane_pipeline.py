@@ -61,6 +61,31 @@ def _as_rows(points):
     return {tuple(row.tolist()) for row in points}
 
 
+def test_openlane_pipelines_declare_the_complete_data_flow_in_order():
+    cfg = _load_cfg()
+
+    assert [stage['type'] for stage in cfg.train_pipeline] == [
+        'LoadTemporalOpenLaneImages',
+        'ResizeOpenLaneImages',
+        'Albu',
+        'NormalizeOpenLaneImages',
+        'LoadPoseAlignedOpenLanePoints',
+        'PointsRangeFilter',
+        'PointShuffle',
+        'LoadOpenLaneAnnotations',
+        'PackLaneFormerInputs',
+    ]
+    assert [stage['type'] for stage in cfg.test_pipeline] == [
+        'LoadTemporalOpenLaneImages',
+        'ResizeOpenLaneImages',
+        'NormalizeOpenLaneImages',
+        'LoadPoseAlignedOpenLanePoints',
+        'PointsRangeFilter',
+        'LoadOpenLaneAnnotations',
+        'PackLaneFormerInputs',
+    ]
+
+
 def test_points_range_filter_keeps_points_inside_range():
     points = np.array([
         [0.0, 5.0, 0.0, 0.1, 0.2, 0.0],
@@ -142,7 +167,8 @@ def test_configured_point_pipeline_processes_loaded_openlane_points():
 
         transforms = [
             _build_transform_from_cfg(transform_cfg)
-            for transform_cfg in cfg.train_pipeline['pts_aug']
+            for transform_cfg in cfg.train_pipeline
+            if transform_cfg['type'] in ('PointsRangeFilter', 'PointShuffle')
         ]
         processed = Compose(transforms)(dict(points=points.copy()))['points']
         pc_range = np.asarray(cfg.point_cloud_range, dtype=np.float32)
@@ -240,29 +266,25 @@ def test_random_aug_replay_syncs_temporal_queue_augmentation():
     dataset_cfg = dict(cfg.train_dataloader['dataset'])
     dataset_cfg['max_samples'] = 1
     dataset_cfg['dataset_cfg'] = dict(dataset_cfg['dataset_cfg'])
+    train_pipeline = [dict(stage) for stage in cfg.train_pipeline]
+    for stage in train_pipeline:
+        if stage['type'] == 'Albu':
+            stage['transforms'] = [
+                dict(
+                    type='CoarseDropout',
+                    max_holes=8,
+                    max_height=96,
+                    max_width=96,
+                    min_holes=8,
+                    min_height=96,
+                    min_width=96,
+                    fill_value=0,
+                    p=1.0),
+            ]
     dataset_cfg['dataset_cfg'].update(
         num_views=1,
         view_mode='random_aug',
-        train_pipeline=dict(
-            img_aug=[
-                dict(
-                    type='Albu',
-                    transforms=[
-                        dict(
-                            type='CoarseDropout',
-                            max_holes=8,
-                            max_height=96,
-                            max_width=96,
-                            min_holes=8,
-                            min_height=96,
-                            min_width=96,
-                            fill_value=0,
-                            p=1.0),
-                    ]),
-            ],
-            pts_aug=[],
-            gt3d_aug=[],
-        ))
+        train_pipeline=train_pipeline)
     dataset = DATASETS.build(dataset_cfg)
     label_info = dataset._read_json(dataset.label_files[0])
     scene_name = dataset.label_files[0].parent.name
