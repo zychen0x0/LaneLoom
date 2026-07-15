@@ -1,4 +1,4 @@
-"""LiDAR-conditioned cubic-Bézier anchors sampled from image features."""
+"""LiDAR-conditioned cubic-Bézier anchor geometry."""
 
 import torch
 import torch.nn as nn
@@ -9,22 +9,21 @@ from mmdet3d.registry import MODELS
 
 @MODELS.register_module()
 class LaneFormerLiDARBezierAnchorPrior(nn.Module):
-    """Predict road shape and turn it into image-conditioned lane queries.
+    """Predict road shape and turn it into initial 3D lane queries.
 
     LiDAR predicts one signed horizontal curvature and one longitudinal grade
     per sample.  They define 50 parallel cubic-Bézier anchors whose start
     positions are the one-metre cell centres of the configured x range.
     """
 
-    def __init__(self, lidar_in_channels, image_in_channels, embed_dims,
-                 pc_range, anchor_y_steps, num_anchors=50,
+    def __init__(self, lidar_in_channels, pc_range, anchor_y_steps,
+                 num_anchors=50, image_in_channels=None, embed_dims=None,
                  hidden_channels=64, max_curvature=0.005, max_grade=0.05,
                  curvature_loss_weight=1.0, grade_loss_weight=1.0,
                  **kwargs):
         super().__init__()
         self.pc_range = tuple(float(value) for value in pc_range)
         self.num_anchors = int(num_anchors)
-        self.embed_dims = int(embed_dims)
         self.max_curvature = float(max_curvature)
         self.max_grade = float(max_grade)
         self.curvature_loss_weight = float(curvature_loss_weight)
@@ -61,31 +60,20 @@ class LaneFormerLiDARBezierAnchorPrior(nn.Module):
             nn.ReLU(inplace=True),
             nn.Linear(hidden_channels, 2),
         )
-        self.image_projection = nn.Conv2d(image_in_channels, embed_dims, 1)
         nn.init.zeros_(self.geometry_encoder[-1].weight)
         nn.init.zeros_(self.geometry_encoder[-1].bias)
-
-    @staticmethod
-    def _meta(img_metas, batch_idx):
-        if img_metas is None:
-            return {}
-        meta = img_metas[batch_idx] if isinstance(img_metas, (list, tuple)) else img_metas
-        return meta.get('current', meta) if isinstance(meta, dict) else {}
 
     @staticmethod
     def _feature(features):
         return features[-1] if isinstance(features, (list, tuple)) else features
 
-    def _predict_geometry(self, pts_feats, img_feats):
-        if pts_feats is not None:
-            feature = self._feature(pts_feats)
-            normalized = torch.tanh(self.geometry_encoder(feature))
-            return (normalized[:, 0] * self.max_curvature,
-                    normalized[:, 1] * self.max_grade, True)
-        image = self._feature(img_feats)
-        batch = image.size(0)
-        zeros = image.new_zeros(batch)
-        return zeros, zeros, False
+    def _predict_geometry(self, pts_feats):
+        if pts_feats is None:
+            raise ValueError('LiDAR Bézier anchors require LiDAR features.')
+        feature = self._feature(pts_feats)
+        normalized = torch.tanh(self.geometry_encoder(feature))
+        return (normalized[:, 0] * self.max_curvature,
+                normalized[:, 1] * self.max_grade)
 
     def _bezier_controls(self, curvature, grade):
         batch = curvature.size(0)
@@ -117,83 +105,16 @@ class LaneFormerLiDARBezierAnchorPrior(nn.Module):
         y = self.anchor_y_steps.to(x).view(1, 1, -1).expand_as(x)
         return torch.stack((x, y, z), dim=-1)
 
-    def sample_image_features(self, img_feats, img_metas, anchor_points,
-                              point_weights=None):
-        """Project curves and pool image features along their visible spans."""
-        if img_feats is None:
-            batch = anchor_points.size(0)
-            features = anchor_points.new_zeros(
-                batch, self.num_anchors, self.embed_dims)
-            valid_ratio = anchor_points.new_zeros(batch, self.num_anchors)
-            return features, valid_ratio
-
-        image = self._feature(img_feats)
-        batch, cameras, channels, feat_h, feat_w = image.shape
-        projected_image = self.image_projection(
-            image.reshape(batch * cameras, channels, feat_h, feat_w))
-        projected_image = projected_image.reshape(
-            batch, cameras, self.embed_dims, feat_h, feat_w)
-        ones = torch.ones_like(anchor_points[..., :1])
-        homogeneous = torch.cat((anchor_points, ones), dim=-1)
-        feature_sum = image.new_zeros(
-            batch, self.embed_dims, self.num_anchors,
-            self.anchor_y_steps.numel())
-        weight_sum = image.new_zeros(
-            batch, 1, self.num_anchors, self.anchor_y_steps.numel())
-
-        for batch_idx in range(batch):
-            meta = self._meta(img_metas, batch_idx)
-            matrices = meta.get('lane2img') or meta.get('lidar2img', [])
-            image_shape = meta.get('img_shape', (feat_h, feat_w))
-            image_h, image_w = float(image_shape[0]), float(image_shape[1])
-            for camera_idx in range(cameras):
-                matrix = (matrices[min(camera_idx, len(matrices) - 1)]
-                          if matrices else torch.eye(4))
-                matrix = torch.as_tensor(
-                    matrix, device=image.device, dtype=image.dtype)
-                projected = homogeneous[batch_idx] @ matrix.transpose(0, 1)
-                depth = projected[..., 2]
-                valid_depth = depth > 1e-5
-                depth = depth.clamp_min(1e-5)
-                grid = torch.stack((
-                    projected[..., 0] / depth / max(image_w - 1, 1) * 2 - 1,
-                    projected[..., 1] / depth / max(image_h - 1, 1) * 2 - 1,
-                ), dim=-1)
-                valid = (valid_depth & (grid[..., 0].abs() <= 1)
-                         & (grid[..., 1].abs() <= 1))
-                sampled = F.grid_sample(
-                    projected_image[batch_idx, camera_idx:camera_idx + 1],
-                    grid.unsqueeze(0), align_corners=True)
-                weight = valid.to(image.dtype).unsqueeze(0).unsqueeze(0)
-                if point_weights is not None:
-                    weight = weight * point_weights[
-                        batch_idx:batch_idx + 1].to(image).unsqueeze(1)
-                feature_sum[batch_idx:batch_idx + 1] += sampled * weight
-                weight_sum[batch_idx:batch_idx + 1] += weight
-
-        query_features = (
-            feature_sum.sum(dim=-1)
-            / weight_sum.sum(dim=-1).clamp_min(1)).transpose(1, 2)
-        valid_ratio = weight_sum.mean(dim=-1).squeeze(1) / max(cameras, 1)
-        return query_features, valid_ratio
-
-    def forward(self, pts_feats, img_feats, img_metas=None):
-        if pts_feats is None and img_feats is None:
-            raise ValueError('LiDAR Bézier anchors require image or LiDAR features.')
-        curvature, grade, from_lidar = self._predict_geometry(pts_feats, img_feats)
+    def forward(self, pts_feats, img_feats=None, img_metas=None):
+        curvature, grade = self._predict_geometry(pts_feats)
         x_controls, z_controls = self._bezier_controls(curvature, grade)
         anchor_points = self._sample_curves(x_controls, z_controls)
-        query_features, projection_valid_ratio = self.sample_image_features(
-            img_feats, img_metas, anchor_points)
         return dict(
             curvature=curvature,
             grade=grade,
             curve_x_controls=x_controls,
             curve_z_controls=z_controls,
-            anchor_points=anchor_points,
-            query_features=query_features,
-            projection_valid_ratio=projection_valid_ratio,
-            from_lidar=from_lidar)
+            anchor_points=anchor_points)
 
     def fit_targets(self, lanes_3d, visibility):
         """Fit robust per-sample road curvature and grade from lane GT."""
@@ -228,8 +149,6 @@ class LaneFormerLiDARBezierAnchorPrior(nn.Module):
         return target_curvature, target_grade, target_valid
 
     def loss(self, prior, lanes_3d, visibility):
-        if not prior['from_lidar']:
-            return {}
         target_curvature, target_grade, valid = self.fit_targets(
             lanes_3d, visibility)
         if not valid.any():

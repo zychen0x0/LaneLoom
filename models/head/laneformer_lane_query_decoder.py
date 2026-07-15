@@ -5,6 +5,55 @@ import torch.nn as nn
 from mmdet3d.registry import MODELS
 
 
+class _PerQueryTransformerLayer(nn.Module):
+    """Update lane queries from their own sampled curve evidence."""
+
+    def __init__(self, embed_dims, num_heads, feedforward_channels, dropout):
+        super().__init__()
+        self.embed_dims = int(embed_dims)
+        self.self_attn = nn.MultiheadAttention(
+            embed_dims, num_heads, dropout=dropout, batch_first=True)
+        self.cross_attn = nn.MultiheadAttention(
+            embed_dims, num_heads, dropout=dropout, batch_first=True)
+        self.linear1 = nn.Linear(embed_dims, feedforward_channels)
+        self.linear2 = nn.Linear(feedforward_channels, embed_dims)
+        self.norm1 = nn.LayerNorm(embed_dims)
+        self.norm2 = nn.LayerNorm(embed_dims)
+        self.norm3 = nn.LayerNorm(embed_dims)
+        self.dropout1 = nn.Dropout(dropout)
+        self.dropout2 = nn.Dropout(dropout)
+        self.dropout3 = nn.Dropout(dropout)
+        self.activation = nn.ReLU(inplace=True)
+
+    def forward(self, query, query_pos, evidence, evidence_padding_mask,
+                self_attention_mask, num_main_queries):
+        normalized = self.norm1(query)
+        attended, _ = self.self_attn(
+            normalized + query_pos, normalized + query_pos, normalized,
+            attn_mask=self_attention_mask, need_weights=False)
+        query = query + self.dropout1(attended)
+
+        main_query = query[:, :num_main_queries]
+        main_pos = query_pos[:, :num_main_queries]
+        batch, num_query, num_tokens, channels = evidence.shape
+        cross_query = (self.norm2(main_query) + main_pos).reshape(
+            batch * num_query, 1, channels)
+        evidence = evidence.reshape(batch * num_query, num_tokens, channels)
+        evidence_padding_mask = evidence_padding_mask.reshape(
+            batch * num_query, num_tokens)
+        attended, _ = self.cross_attn(
+            cross_query, evidence, evidence,
+            key_padding_mask=evidence_padding_mask, need_weights=False)
+        main_query = main_query + self.dropout2(
+            attended.reshape(batch, num_query, channels))
+        query = torch.cat((main_query, query[:, num_main_queries:]), dim=1)
+
+        normalized = self.norm3(query)
+        query = query + self.dropout3(
+            self.linear2(self.activation(self.linear1(normalized))))
+        return query
+
+
 @MODELS.register_module()
 class LaneFormerLaneQueryDecoder(nn.Module):
     """Decode BEV memory into cubic-Bézier 3D lanes sampled at anchors."""
@@ -19,6 +68,7 @@ class LaneFormerLaneQueryDecoder(nn.Module):
                  visibility_end_prior=0.58,
                  **kwargs):
         super().__init__()
+        self.embed_dims = int(embed_dims)
         self.pc_range = pc_range
         self.num_query = num_query
         self.num_layers = int(num_layers)
@@ -53,13 +103,13 @@ class LaneFormerLaneQueryDecoder(nn.Module):
         self.register_buffer(
             'visibility_indices', torch.arange(self.num_anchors, dtype=torch.float32),
             persistent=False)
-        layer = nn.TransformerDecoderLayer(
-            d_model=embed_dims, nhead=num_heads,
-            dim_feedforward=feedforward_channels, dropout=dropout,
-            activation='relu', batch_first=True, norm_first=True)
-        self.decoder = nn.TransformerDecoder(layer, num_layers)
+        self.layers = nn.ModuleList([
+            _PerQueryTransformerLayer(
+                embed_dims, num_heads, feedforward_channels, dropout)
+            for _ in range(self.num_layers)])
         self.query = nn.Embedding(num_query, embed_dims)
         self.query_pos = nn.Embedding(num_query, embed_dims)
+        self.null_evidence = nn.Parameter(torch.zeros(1, 1, 1, embed_dims))
         if self.dn_num_groups > 0:
             self.dn_query = nn.Sequential(
                 nn.Linear(self.num_control_points * 2, embed_dims),
@@ -211,12 +261,61 @@ class LaneFormerLaneQueryDecoder(nn.Module):
             pred_category=pred_category,
             pred_logits=pred_logits)
 
-    def forward(self, bev, bev_pos, dn_lanes_3d=None, dn_visibility=None,
+    def _reference_points(self, reference_controls):
+        reference_x, reference_z = reference_controls
+        x = torch.einsum(
+            'ac,bqc->bqa', self.bezier_basis, reference_x)
+        z = torch.einsum(
+            'ac,bqc->bqa', self.bezier_basis, reference_z)
+        y = self.anchor_y_steps.to(x).view(1, 1, -1).expand_as(x)
+        return torch.stack((x, y, z), dim=-1)
+
+    def _sample_evidence(self, reference_controls, reference_visibility,
+                         sampler, batch, dtype, device):
+        null = self.null_evidence.to(dtype=dtype).expand(
+            batch, self.num_query, -1, -1)
+        if reference_controls is None or sampler is None:
+            return null, torch.zeros(
+                batch, self.num_query, 1, dtype=torch.bool, device=device)
+        points = self._reference_points(reference_controls)
+        if reference_visibility is None:
+            visibility = points.new_ones(points.shape[:-1])
+        else:
+            start, end = reference_visibility
+            indices = self.visibility_indices.to(dtype=points.dtype)
+            visibility = (
+                torch.sigmoid(
+                    (indices - start.unsqueeze(-1)) /
+                    self.visibility_temperature)
+                * torch.sigmoid(
+                    (end.unsqueeze(-1) - indices) /
+                    self.visibility_temperature))
+        sampled = sampler(points, visibility)
+        if torch.is_tensor(sampled):
+            sampled = dict(
+                tokens=sampled.unsqueeze(2),
+                key_padding_mask=torch.zeros(
+                    *sampled.shape[:2], 1, dtype=torch.bool,
+                    device=sampled.device))
+        evidence = sampled['tokens']
+        padding_mask = sampled['key_padding_mask']
+        expected = (batch, self.num_query)
+        if (tuple(evidence.shape[:2]) != expected
+                or evidence.size(-1) != self.embed_dims):
+            raise ValueError(
+                'query evidence must have shape [B, num_query, M, C], got '
+                f'{tuple(evidence.shape)}.')
+        evidence = torch.cat((evidence, null), dim=2)
+        padding_mask = torch.cat((
+            padding_mask,
+            torch.zeros(batch, self.num_query, 1, dtype=torch.bool,
+                        device=padding_mask.device)), dim=2)
+        return evidence, padding_mask
+
+    def forward(self, bev, bev_pos=None, dn_lanes_3d=None, dn_visibility=None,
                 query_features=None, initial_reference_controls=None,
                 query_feature_sampler=None):
         batch = bev.size(0)
-        memory = bev.flatten(2).transpose(1, 2)
-        memory = memory + bev_pos.weight.unsqueeze(0).expand(batch, -1, -1)
         query_pos = self.query_pos.weight.unsqueeze(0).expand(batch, -1, -1)
         query = self.query.weight.unsqueeze(0).expand(batch, -1, -1)
         if query_features is not None:
@@ -247,14 +346,18 @@ class LaneFormerLaneQueryDecoder(nn.Module):
             attention_mask[:self.num_query, self.num_query:] = True
         else:
             attention_mask = None
-        query = query + query_pos
         layer_predictions = []
         main_reference = initial_reference_controls
         main_visibility_reference = None
         dn_reference = None
         dn_visibility_reference = None
-        for layer_idx, layer in enumerate(self.decoder.layers):
-            query = layer(query, memory, tgt_mask=attention_mask)
+        for layer_idx, layer in enumerate(self.layers):
+            evidence, evidence_padding_mask = self._sample_evidence(
+                main_reference, main_visibility_reference,
+                query_feature_sampler, batch, query.dtype, query.device)
+            query = layer(
+                query, query_pos, evidence, evidence_padding_mask,
+                attention_mask, self.num_query)
             normalized_query = self.norm(query)
             predictions = self._decode_predictions(
                 normalized_query[:, :self.num_query], main_reference,
@@ -280,22 +383,6 @@ class LaneFormerLaneQueryDecoder(nn.Module):
                 predictions['dn_valid_mask'] = dn_valid_mask
                 predictions['dn_target_indices'] = dn_target_indices
             layer_predictions.append(predictions)
-            if (query_feature_sampler is not None
-                    and layer_idx + 1 < self.num_layers):
-                y = self.anchor_y_steps.to(predictions['pred_x']).view(1, 1, -1)
-                y = y.expand_as(predictions['pred_x'])
-                refined_points = torch.stack((
-                    predictions['pred_x'], y, predictions['pred_z']), dim=-1)
-                sampled_features = query_feature_sampler(
-                    refined_points, predictions['pred_vis_interval'])
-                expected_shape = tuple(query[:, :self.num_query].shape)
-                if tuple(sampled_features.shape) != expected_shape:
-                    raise ValueError(
-                        'query_feature_sampler must return features with shape '
-                        f'{expected_shape}, got {tuple(sampled_features.shape)}.')
-                query = torch.cat((
-                    query[:, :self.num_query] + sampled_features,
-                    query[:, self.num_query:]), dim=1)
         predictions = layer_predictions[-1]
         predictions['aux_predictions'] = layer_predictions[:-1]
         predictions['bev'] = bev

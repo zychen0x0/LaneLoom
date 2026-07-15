@@ -25,10 +25,11 @@ def _metas(batch_size, image_size=16):
         [0.0, 0.0, 0.0, 1.0],
         [0.0, 0.0, 0.0, 1.0],
     ])
-    return [dict(
-        current=dict(lidar2img=[lidar2img], img_shape=(image_size, image_size),
-                     lidaradj2lidarcurr=torch.eye(4)))
-        for _ in range(batch_size)]
+    frame = dict(
+        lidar2img=[lidar2img], img_shape=(image_size, image_size),
+        lidaradj2lidarcurr=torch.eye(4))
+    return [dict(queue={index: dict(frame) for index in range(3)},
+                 current=dict(frame)) for _ in range(batch_size)]
 
 
 def _head(embed_dims, bev_h, bev_w, num_query, anchors, lidar_channels,
@@ -46,20 +47,15 @@ def _head(embed_dims, bev_h, bev_w, num_query, anchors, lidar_channels,
         bev_encoder=dict(
             type='LaneFormerBEVEncoder', embed_dims=embed_dims,
             bev_h=bev_h, bev_w=bev_w, pc_range=[-25., 0., -5., 25., 100., 5.],
-            spatial_cross_attn=dict(
-                type='LaneFormerSpatialCrossAttention', embed_dims=embed_dims,
-                bev_h=bev_h, bev_w=bev_w, pc_range=[-25., 0., -5., 25., 100., 5.],
-                num_points_in_pillar=4, num_levels=1),
             lidar_bev_adapter=dict(
                 type='LaneFormerLiDARBEVAdapter', embed_dims=embed_dims,
-                lidar_in_channels=lidar_channels),
-            lidar_fusion=dict(
-                type='LaneFormerImageLiDARFusion', embed_dims=embed_dims,
-                num_layers=1, num_heads=4,
-                feedforward_channels=embed_dims * 2, dropout=0.0),
-            temporal_self_attn=dict(
-                type='LaneFormerTemporalSelfAttention', embed_dims=embed_dims,
-                bev_h=bev_h, bev_w=bev_w, pc_range=[-25., 0., -5., 25., 100., 5.])),
+                lidar_in_channels=lidar_channels)),
+        query_sampler=dict(
+            type='LaneFormerDualPlaneTemporalSampler',
+            image_in_channels=embed_dims, lidar_in_channels=embed_dims,
+            embed_dims=embed_dims,
+            pc_range=[-25., 0., -5., 25., 100., 5.],
+            num_image_levels=1, temporal_kernel_size=3),
         lane_decoder=dict(
             type='LaneFormerLaneQueryDecoder', embed_dims=embed_dims,
             bev_h=bev_h, bev_w=bev_w, pc_range=[-25., 0., -5., 25., 100., 5.],
@@ -97,7 +93,7 @@ def test_lane_query_decoder_samples_cubic_bezier_at_anchors():
         predictions['pred_z'][:, :, -1], predictions['curve_z_controls'][:, :, -1])
 
 
-def test_lidar_prior_generates_one_metre_bezier_anchors_and_samples_images():
+def test_lidar_prior_generates_one_metre_bezier_anchors():
     prior = LaneFormerLiDARBezierAnchorPrior(
         lidar_in_channels=8, image_in_channels=8, embed_dims=8,
         pc_range=[-2., 0., -2., 2., 4., 2.],
@@ -105,17 +101,7 @@ def test_lidar_prior_generates_one_metre_bezier_anchors_and_samples_images():
         hidden_channels=4, max_curvature=.02, max_grade=.2)
     with torch.no_grad():
         prior.geometry_encoder[-1].bias.copy_(torch.atanh(torch.tensor([.5, .25])))
-    projection = torch.tensor([
-        [1., 0., 0., 4.],
-        [0., 1., 0., 1.],
-        [0., 0., 0., 1.],
-        [0., 0., 0., 1.],
-    ])
-
-    output = prior(
-        [torch.randn(1, 8, 3, 3)],
-        [torch.randn(1, 1, 8, 8, 8)],
-        [dict(current=dict(lane2img=[projection], img_shape=(8, 8)))])
+    output = prior([torch.randn(1, 8, 3, 3)])
 
     assert torch.allclose(prior.start_x, torch.tensor([-1.5, -.5, .5, 1.5]))
     assert torch.allclose(output['curvature'], torch.tensor([.01]), atol=1e-6)
@@ -130,8 +116,6 @@ def test_lidar_prior_generates_one_metre_bezier_anchors_and_samples_images():
         output['curve_z_controls'][0, 0],
         torch.tensor([0., .05 * 4 / 3, .05 * 8 / 3, .2]), atol=1e-6)
     assert output['anchor_points'].shape == (1, 4, 3, 3)
-    assert output['query_features'].shape == (1, 4, 8)
-    assert torch.all(output['projection_valid_ratio'] > 0)
 
 
 def test_lidar_prior_fits_curvature_and_grade_from_lane_gt():
@@ -182,7 +166,7 @@ def test_lane_query_decoder_refines_lidar_bezier_controls():
     assert torch.allclose(predictions['curve_z_controls'], z_controls, atol=1e-5)
 
 
-def test_bev_encoder_exposes_independent_image_and_lidar_adapters():
+def test_bev_encoder_keeps_lidar_bev_without_constructing_image_bev():
     head = _head(16, 4, 3, 3, [0., 2., 4.], 8)
     image_features = [torch.randn(2, 1, 16, 8, 8)]
     lidar_features = [torch.randn(2, 8, 2, 2)]
@@ -190,13 +174,11 @@ def test_bev_encoder_exposes_independent_image_and_lidar_adapters():
 
     image_bev = head.forward_image_bev(image_features, metas)
     lidar_bev = head.bev_encoder.forward_lidar_bev(lidar_features)
-    image_only = head.forward_bev(image_features, None, metas)
-    lidar_only = head.forward_bev(None, lidar_features, metas)
+    fused_call = head.forward_bev(image_features, lidar_features, metas)
 
-    assert image_bev.shape == (2, 16, 4, 3)
+    assert image_bev is None
     assert lidar_bev.shape == (2, 16, 4, 3)
-    assert torch.allclose(image_only, image_bev)
-    assert torch.allclose(lidar_only, lidar_bev)
+    assert torch.allclose(fused_call, lidar_bev)
 
 
 def test_lane_query_decoder_exposes_each_intermediate_layer_for_auxiliary_loss():
@@ -313,40 +295,71 @@ def test_two_layer_decoder_resamples_refined_curve_for_second_layer():
 
     bev = torch.randn(2, 8, 2, 2)
     bev_pos = torch.nn.Embedding(4, 8)
+    initial_x = torch.tensor([[[-2., -2., -1., 0.]]]).expand(2, 3, -1)
+    initial_z = torch.zeros_like(initial_x)
     predictions = decoder(
-        bev, bev_pos,
+        bev, bev_pos, initial_reference_controls=(initial_x, initial_z),
         query_feature_sampler=sample_image_features)
     first_layer = predictions['aux_predictions'][0]
 
-    def informative_image_features(points, visibility):
-        feature = torch.arange(8, device=points.device, dtype=points.dtype)
-        return feature.view(1, 1, -1).expand(points.size(0), points.size(1), -1)
-
-    informed_predictions = decoder(
-        bev, bev_pos, query_feature_sampler=informative_image_features)
-
-    assert len(sampled) == 1
-    assert torch.allclose(sampled[0][0][..., 0], first_layer['pred_x'])
-    assert torch.allclose(sampled[0][0][..., 2], first_layer['pred_z'])
-    assert torch.allclose(sampled[0][1], first_layer['pred_vis_interval'])
+    assert len(sampled) == 2
+    assert torch.allclose(sampled[0][0][..., 0], torch.einsum(
+        'ac,bqc->bqa', decoder.bezier_basis, initial_x))
+    assert torch.allclose(sampled[1][0][..., 0], first_layer['pred_x'])
+    assert torch.allclose(sampled[1][0][..., 2], first_layer['pred_z'])
+    assert torch.allclose(sampled[1][1], first_layer['pred_vis_interval'])
     assert first_layer['pred_logits'].shape == predictions['pred_logits'].shape
-    assert torch.allclose(
-        informed_predictions['aux_predictions'][0]['pred_logits'],
-        first_layer['pred_logits'])
+
+
+def test_decoder_cross_attention_keeps_each_query_evidence_separate():
+    decoder = LaneFormerLaneQueryDecoder(
+        embed_dims=8, bev_h=2, bev_w=2,
+        pc_range=[-25., 0., -5., 25., 100., 5.], num_query=2,
+        anchor_y_steps=[0.0, 2.0, 4.0], num_layers=1, num_heads=2,
+        feedforward_channels=16, dropout=0.0)
+    layer = decoder.layers[0]
+    with torch.no_grad():
+        layer.self_attn.out_proj.weight.zero_()
+        layer.self_attn.out_proj.bias.zero_()
+        layer.linear2.weight.zero_()
+        layer.linear2.bias.zero_()
+    controls = torch.zeros(1, 2, 4)
+
+    def sample(value):
+        def sampler(points, visibility):
+            tokens = points.new_zeros(1, 2, 1, 8)
+            tokens[:, 0] = value
+            return dict(
+                tokens=tokens,
+                key_padding_mask=torch.zeros(
+                    1, 2, 1, dtype=torch.bool, device=points.device))
+        return sampler
+
+    baseline = decoder(
+        torch.randn(1, 8, 2, 2),
+        initial_reference_controls=(controls, controls),
+        query_feature_sampler=sample(0.0))
+    changed = decoder(
+        torch.randn(1, 8, 2, 2),
+        initial_reference_controls=(controls, controls),
+        query_feature_sampler=sample(5.0))
+
     assert not torch.allclose(
-        informed_predictions['pred_logits'], predictions['pred_logits'])
+        baseline['pred_logits'][:, 0], changed['pred_logits'][:, 0])
+    assert torch.allclose(
+        baseline['pred_logits'][:, 1], changed['pred_logits'][:, 1])
 
 
 def test_lane_head_samples_initial_and_layer_zero_refined_anchors():
     head = _head(16, 4, 3, 3, [0., 2., 4.], 8)
-    original = head.anchor_prior.sample_image_features
-    head.anchor_prior.sample_image_features = Mock(wraps=original)
+    original = head.query_sampler.forward
+    head.query_sampler.forward = Mock(wraps=original)
 
     head.predict(
         [torch.randn(1, 1, 16, 8, 8)],
         [torch.randn(1, 8, 2, 2)], _metas(1, image_size=8))
 
-    assert head.anchor_prior.sample_image_features.call_count == 2
+    assert head.query_sampler.forward.call_count == 2
 
 
 def test_lane_query_decoder_initializes_objectness_with_a_low_prior():
@@ -390,11 +403,9 @@ def test_lane_head_uses_51_anchors_and_backpropagates():
     anchors = [2.0 * index for index in range(51)]
     head = _head(32, 8, 5, 50, anchors, 16)
     batch_size = 2
-    image_features = [torch.randn(batch_size, 1, 32, 16, 16)]
+    image_features = [torch.randn(batch_size, 3, 1, 32, 16, 16)]
     lidar_features = [torch.randn(batch_size, 16, 4, 4)]
     metas = _metas(batch_size)
-    history = [dict(
-        bev=torch.randn(batch_size, 32, 8, 5), img_metas=_metas(batch_size))]
 
     gt_lanes = torch.zeros(batch_size, 20, 51, 3)
     gt_lanes[:, :, :, 1] = torch.tensor(anchors)
@@ -410,7 +421,7 @@ def test_lane_head_uses_51_anchors_and_backpropagates():
     enhanced_lanes[:, 0, 30:35, 0] = -1.5
     enhanced_visibility[:, 0, 30:35] = 1.0
     losses = head.loss(
-        image_features, lidar_features, metas, prev_bev=history,
+        image_features, lidar_features, metas,
         gt_lanes_3d=gt_lanes, gt_lanes_visibility=gt_visibility,
         gt_lanes_category=gt_category,
         gt_lanes_3d_enhanced=enhanced_lanes,
@@ -433,6 +444,8 @@ def test_lane_head_uses_51_anchors_and_backpropagates():
     assert head.anchor_prior.geometry_encoder[-1].weight.grad is not None
     assert torch.isfinite(
         head.anchor_prior.geometry_encoder[-1].weight.grad).all()
+    assert head.query_sampler.image_adapter.weight.grad is not None
+    assert torch.isfinite(head.query_sampler.image_adapter.weight.grad).all()
 
 
 def test_topk_assigner_selects_two_exclusive_anchors_per_gt():

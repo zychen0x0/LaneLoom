@@ -9,7 +9,7 @@ class LaneFormerBEVLaneHead(nn.Module):
     """Small interface over configurable BEV encoder, decoder, and loss modules."""
 
     def __init__(self, bev_encoder, lane_decoder, loss_module,
-                 anchor_prior=None,
+                 anchor_prior=None, query_sampler=None,
                  test_cfg=None, **kwargs):
         super().__init__()
         self.bev_encoder = MODELS.build(bev_encoder)
@@ -17,6 +17,8 @@ class LaneFormerBEVLaneHead(nn.Module):
         self.loss_module = MODELS.build(loss_module)
         self.anchor_prior = (
             MODELS.build(anchor_prior) if anchor_prior is not None else None)
+        self.query_sampler = (
+            MODELS.build(query_sampler) if query_sampler is not None else None)
         self.test_cfg = test_cfg or {}
         self.score_threshold = float(self.test_cfg.get('score_threshold', 0.3))
 
@@ -40,16 +42,12 @@ class LaneFormerBEVLaneHead(nn.Module):
         """Encode image features without introducing LiDAR into history BEV."""
         return self.bev_encoder.forward_image_bev(img_feats, img_metas)
 
-    def _predict(self, current_bev, prev_bev, dn_lanes_3d=None,
+    def _predict(self, current_bev, dn_lanes_3d=None,
                  dn_visibility=None, anchor_prior=None,
                  query_feature_sampler=None):
-        fused_bev = self.bev_encoder.temporal_self_attn(current_bev, prev_bev)
         predictions = self.lane_decoder(
-            fused_bev, self.bev_encoder.bev_pos,
+            current_bev,
             dn_lanes_3d=dn_lanes_3d, dn_visibility=dn_visibility,
-            query_features=(
-                anchor_prior['query_features']
-                if anchor_prior is not None else None),
             initial_reference_controls=(
                 (anchor_prior['curve_x_controls'],
                  anchor_prior['curve_z_controls'])
@@ -59,24 +57,21 @@ class LaneFormerBEVLaneHead(nn.Module):
             predictions['road_curvature'] = anchor_prior['curvature']
             predictions['road_grade'] = anchor_prior['grade']
             predictions['anchor_points'] = anchor_prior['anchor_points']
-            predictions['anchor_projection_valid_ratio'] = (
-                anchor_prior['projection_valid_ratio'])
         return predictions
 
     def _anchor_prior(self, img_feats, pts_feats, img_metas):
         if self.anchor_prior is None:
             return None
-        return self.anchor_prior(pts_feats, img_feats, img_metas)
+        return self.anchor_prior(pts_feats)
 
-    def _query_feature_sampler(self, img_feats, img_metas):
-        if self.anchor_prior is None:
+    def _query_feature_sampler(self, img_feats, lidar_bev, img_metas):
+        if self.query_sampler is None:
             return None
 
         def sample(anchor_points, visibility):
-            features, _ = self.anchor_prior.sample_image_features(
-                img_feats, img_metas, anchor_points,
-                point_weights=visibility)
-            return features
+            return self.query_sampler(
+                anchor_points, img_feats, lidar_bev, img_metas,
+                visibility=visibility)
 
         return sample
 
@@ -89,10 +84,10 @@ class LaneFormerBEVLaneHead(nn.Module):
             dn_lanes_3d = targets.get('gt_lanes_3d')
             dn_visibility = targets.get('gt_lanes_visibility')
         losses = self.loss_module(self._predict(
-            current_bev, prev_bev, dn_lanes_3d=dn_lanes_3d,
+            current_bev, dn_lanes_3d=dn_lanes_3d,
             dn_visibility=dn_visibility, anchor_prior=anchor_prior,
             query_feature_sampler=self._query_feature_sampler(
-                img_feats, img_metas)), **targets)
+                img_feats, current_bev, img_metas)), **targets)
         if anchor_prior is not None:
             losses.update(self.anchor_prior.loss(
                 anchor_prior, targets['gt_lanes_3d'],
@@ -103,9 +98,9 @@ class LaneFormerBEVLaneHead(nn.Module):
         anchor_prior = self._anchor_prior(img_feats, pts_feats, img_metas)
         current_bev = self.forward_bev(img_feats, pts_feats, img_metas)
         predictions = self._predict(
-            current_bev, prev_bev, anchor_prior=anchor_prior,
+            current_bev, anchor_prior=anchor_prior,
             query_feature_sampler=self._query_feature_sampler(
-                img_feats, img_metas))
+                img_feats, current_bev, img_metas))
         class_probability = predictions['pred_logits'].softmax(dim=-1)[..., 1:]
         scores, category = class_probability.max(dim=-1)
         output = dict(
@@ -118,7 +113,5 @@ class LaneFormerBEVLaneHead(nn.Module):
             output.update(
                 road_curvature=predictions['road_curvature'],
                 road_grade=predictions['road_grade'],
-                anchor_points=predictions['anchor_points'],
-                anchor_projection_valid_ratio=(
-                    predictions['anchor_projection_valid_ratio']))
+                anchor_points=predictions['anchor_points'])
         return output

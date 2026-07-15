@@ -1,5 +1,3 @@
-from collections import OrderedDict
-
 import torch
 import torch.nn as nn
 from mmcv.ops import Voxelization
@@ -177,6 +175,25 @@ class LaneFormer(BaseModel):
             img, img_metas=img_metas)
         pts_feats = self.extract_pts_feat(points, img_feats, img_metas)
         return img_feats, pts_feats
+
+    def extract_temporal_img_feat(self, img, img_metas=None):
+        """Extract shared-backbone FV features for every queued frame."""
+        if img is None:
+            return None
+        if img.ndim != 6:
+            raise ValueError(
+                'Temporal images must have shape [B,T,N,C,H,W], got '
+                f'{tuple(img.shape)}.')
+        batch, time = img.shape[:2]
+        flattened = img.reshape(batch * time, *img.shape[2:])
+        features = self.extract_img_feat(flattened)
+        if features is None:
+            return None
+        temporal = [feature.reshape(batch, time, *feature.shape[1:])
+                    for feature in features]
+        if self.num_levels is not None:
+            temporal = temporal[:self.num_levels]
+        return temporal
     # ----------------------------------------------------image feature end----------------------------------------------------
 
     # ---------------------------------------------------lidar feature start---------------------------------------------------
@@ -227,35 +244,8 @@ class LaneFormer(BaseModel):
         return x
     # ----------------------------------------------------lidar feature end----------------------------------------------------
 
-    def obtain_history_bev(self, img_queue, img_metas_queue=None,
-                           points_queue=None):
-        """Obtain image-only history BEVs iteratively without gradients."""
-        is_training = self.training
-        self.eval()
-
-        prev_bev = OrderedDict((frame, None) for frame in self.frames if frame < 0)
-        with torch.no_grad():
-            for queue_idx, frame in enumerate([frame for frame in self.frames if frame < 0]):
-                img = img_queue[:, queue_idx, ...]
-                img_metas = self._select_queue_metas(
-                    img_metas_queue, queue_idx, frame)
-                img_feats = self.extract_img_feat(img, img_metas=img_metas)
-                if self.num_levels is not None and img_feats is not None:
-                    img_feats = img_feats[:self.num_levels]
-
-                bev = self.lane_head.forward_image_bev(
-                    img_feats=img_feats,
-                    img_metas=img_metas)
-                # Keep frame calibration with BEV; the head pose-warps it to current ego.
-                prev_bev[frame] = None if bev is None else dict(
-                    bev=bev.detach(), img_metas=img_metas)
-
-        if is_training:
-            self.train()
-        return list(prev_bev.values())
-
     def _encode_batch(self, batch):
-        """Encode the current frame and pose-aligned history from one OpenLane batch."""
+        """Encode temporal FV features and one accumulated LiDAR cloud."""
         img = batch['img']
         if img.ndim != 6:
             raise ValueError(
@@ -263,23 +253,15 @@ class LaneFormer(BaseModel):
 
         points = batch.get('lidar', batch.get('points'))
         img_metas = batch['img_metas']
-        queue_length = img.size(1)
-        prev_bev = None
-        if queue_length > 1:
-            prev_bev = self.obtain_history_bev(
-                img[:, :-1, ...], img_metas_queue=img_metas, points_queue=points)
-
-        current_metas = self._select_queue_metas(img_metas, queue_length - 1, 0)
         # Dataset sweeps have already been pose-aligned to current ego.  Feed
         # the whole accumulated cloud through the LiDAR backbone exactly once.
         current_points = points
         if torch.is_tensor(current_points):
             current_points = [current_points]
-        img_feats, pts_feats = self.extract_feat(
-            img=img[:, -1, ...], points=current_points, img_metas=current_metas)
-        if self.num_levels is not None and img_feats is not None:
-            img_feats = img_feats[:self.num_levels]
-        return img_feats, pts_feats, current_metas, current_points, prev_bev
+        img_feats = self.extract_temporal_img_feat(img, img_metas)
+        pts_feats = self.extract_pts_feat(
+            current_points, img_feats=img_feats, img_metas=img_metas)
+        return img_feats, pts_feats, img_metas, current_points, None
 
     def loss(self, batch):
         (img_feats, pts_feats, img_metas, points,

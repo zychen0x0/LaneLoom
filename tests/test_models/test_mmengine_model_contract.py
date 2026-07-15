@@ -50,6 +50,19 @@ def test_config_couples_fifty_lidar_bezier_anchors_to_decoder_queries():
     assert decoder.num_layers == 2
 
 
+def test_config_uses_two_level_temporal_fv_and_no_image_bev():
+    config_path = Path(__file__).resolve().parents[2] / 'configs/laneformer_openlane_image_lidar.py'
+    cfg = Config.fromfile(config_path)
+
+    assert cfg.model.num_levels == 2
+    assert cfg.model.img_backbone.out_indices == (1, 2)
+    assert cfg.model.lane_head.query_sampler.type == (
+        'LaneFormerDualPlaneTemporalSampler')
+    assert 'spatial_cross_attn' not in cfg.model.lane_head.bev_encoder
+    assert 'lidar_fusion' not in cfg.model.lane_head.bev_encoder
+    assert 'temporal_self_attn' not in cfg.model.lane_head.bev_encoder
+
+
 def test_config_uses_top2_assignment_and_one_visibility_loss():
     config_path = Path(__file__).resolve().parents[2] / 'configs/laneformer_openlane_image_lidar.py'
     cfg = Config.fromfile(config_path)
@@ -64,16 +77,6 @@ def test_config_uses_top2_assignment_and_one_visibility_loss():
     assert cfg.model.lane_head.lane_decoder.get('dn_num_groups', 0) == 0
 
 
-class _ImageHistoryHead(nn.Module):
-    def __init__(self):
-        super().__init__()
-        self.calls = 0
-
-    def forward_image_bev(self, img_feats, img_metas):
-        self.calls += 1
-        return img_feats[0].mean(dim=1)
-
-
 def _bare_laneformer():
     model = LaneFormerModel.__new__(LaneFormerModel)
     nn.Module.__init__(model)
@@ -82,30 +85,23 @@ def _bare_laneformer():
     return model
 
 
-def test_history_bev_is_image_only_even_when_point_queue_is_available():
+def test_temporal_image_features_keep_every_frame_for_curve_sampling():
     model = _bare_laneformer()
-    model.lane_head = _ImageHistoryHead()
     model.extract_img_feat = Mock(
-        return_value=[torch.randn(1, 1, 4, 2, 2)])
-    model.extract_feat = Mock(side_effect=AssertionError(
-        'history must not invoke the multimodal feature extractor'))
-    image_queue = torch.randn(1, 1, 1, 3, 4, 4)
-    points = [torch.randn(8, 6)]
-    metas = [dict(queue={0: {}, 1: {}})]
+        return_value=[torch.randn(6, 1, 4, 2, 2)])
+    image_queue = torch.randn(2, 3, 1, 3, 4, 4)
 
-    history = model.obtain_history_bev(
-        image_queue, img_metas_queue=metas, points_queue=points)
+    temporal = model.extract_temporal_img_feat(image_queue)
 
-    assert len(history) == 1
-    assert model.lane_head.calls == 1
-    model.extract_feat.assert_not_called()
+    assert temporal[0].shape == (2, 3, 1, 4, 2, 2)
+    assert model.extract_img_feat.call_args.args[0].shape == (6, 1, 3, 4, 4)
 
 
 def test_current_lidar_backbone_receives_the_complete_aligned_point_queue():
     model = _bare_laneformer()
-    model.obtain_history_bev = Mock(return_value=[])
-    model.extract_feat = Mock(return_value=(
-        [torch.randn(1, 1, 4, 2, 2)], [torch.randn(1, 4, 2, 2)]))
+    model.extract_temporal_img_feat = Mock(
+        return_value=[torch.randn(1, 3, 1, 4, 2, 2)])
+    model.extract_pts_feat = Mock(return_value=[torch.randn(1, 4, 2, 2)])
     accumulated = torch.tensor([
         [0., 2., -1., 1., 0., 0.],
         [0., 3., -1., 1., 0., 1.],
@@ -118,7 +114,7 @@ def test_current_lidar_backbone_receives_the_complete_aligned_point_queue():
 
     encoded = model._encode_batch(batch)
 
-    passed_points = model.extract_feat.call_args.kwargs['points']
+    passed_points = model.extract_pts_feat.call_args.args[0]
     assert passed_points[0].size(0) == 3
     assert encoded[3][0].size(0) == 3
     assert len(encoded) == 5

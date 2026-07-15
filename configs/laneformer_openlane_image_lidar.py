@@ -27,7 +27,7 @@ out_size_factor = 8
 
 _dim_ = 256
 _ffn_dim_ = _dim_ * 2
-_num_levels_ = 1
+_num_levels_ = 2
 bev_h_ = 100
 bev_w_ = 50
 queue_length = 3
@@ -49,13 +49,12 @@ model = dict(
     num_levels=_num_levels_,
 
     # ---------------------------------------------------image branch start---------------------------------------------------
-    # Image encoder: ResNet50 + single-level FPN(C5).
-    # Keep it simple and stable before replacing it with CBSwinTransformer + FPNC.
+    # Shared image encoder for t-10/t-5/t: ResNet50 P3/P4 + two-level FPN.
     img_backbone=dict(
         type='mmdet.ResNet',
         depth=50,
         num_stages=4,
-        out_indices=(3,),
+        out_indices=(1, 2),
         frozen_stages=1,
         norm_cfg=dict(type='BN', requires_grad=False),
         norm_eval=True,
@@ -63,7 +62,7 @@ model = dict(
         init_cfg=dict(type='Pretrained', checkpoint=backbone_init)),
     img_neck=dict(
         type='mmdet.FPN',
-        in_channels=[2048],
+        in_channels=[512, 1024],
         out_channels=_dim_,
         start_level=0,
         add_extra_convs='on_output',
@@ -118,17 +117,14 @@ model = dict(
     # ----------------------------------------------------lidar branch end----------------------------------------------------
 
     # ---------------------------------------------------lane head start---------------------------------------------------
-    # Per-frame image/LiDAR BEV fusion, pose-aligned temporal fusion and lane
-    # set prediction with independent LaneFormer loss weights.
+    # LiDAR geometry prior plus curve-aligned temporal FV/LiDAR sampling.
     lane_head=dict(
         type='LaneFormerBEVLaneHead',
-        # LiDAR predicts one road curvature/grade pair.  It initializes 50
-        # one-metre Bézier anchors and samples image features along them.
+        # LiDAR predicts one road curvature/grade pair and initializes 50
+        # one-metre Bézier anchors. Image evidence is sampled in the decoder.
         anchor_prior=dict(
             type='LaneFormerLiDARBezierAnchorPrior',
             lidar_in_channels=512,
-            image_in_channels=_dim_,
-            embed_dims=_dim_,
             pc_range=point_cloud_range,
             anchor_y_steps=[2.0 * i for i in range(51)],
             num_anchors=50,
@@ -145,33 +141,18 @@ model = dict(
             bev_h=bev_h_,
             bev_w=bev_w_,
             pc_range=point_cloud_range,
-            spatial_cross_attn=dict(
-                type='LaneFormerSpatialCrossAttention',
-                embed_dims=_dim_,
-                bev_h=bev_h_,
-                bev_w=bev_w_,
-                pc_range=point_cloud_range,
-                num_points_in_pillar=num_points_in_pillar,
-                reference_zs=reference_zs,
-                num_levels=_num_levels_),
             lidar_bev_adapter=dict(
                 type='LaneFormerLiDARBEVAdapter',
                 embed_dims=_dim_,
-                lidar_in_channels=512),
-            lidar_fusion=dict(
-                type='LaneFormerImageLiDARFusion',
-                embed_dims=_dim_,
-                fusion_method='cross_attention',
-                num_layers=2,
-                num_heads=8,
-                feedforward_channels=_ffn_dim_,
-                dropout=0.1),
-            temporal_self_attn=dict(
-                type='LaneFormerTemporalSelfAttention',
-                embed_dims=_dim_,
-                bev_h=bev_h_,
-                bev_w=bev_w_,
-                pc_range=point_cloud_range)),
+                lidar_in_channels=512)),
+        query_sampler=dict(
+            type='LaneFormerDualPlaneTemporalSampler',
+            image_in_channels=_dim_,
+            lidar_in_channels=_dim_,
+            embed_dims=_dim_,
+            pc_range=point_cloud_range,
+            num_image_levels=_num_levels_,
+            temporal_kernel_size=3),
         lane_decoder=dict(
             type='LaneFormerLaneQueryDecoder',
             embed_dims=_dim_,
@@ -182,8 +163,8 @@ model = dict(
             # OpenLane categories 0..20; category 21 is merged into 20 by dataset.
             num_category=21,
             anchor_y_steps=[2.0 * i for i in range(51)],
-            # Layer 0 refines the LiDAR anchors, then the refined curves are
-            # reprojected and sampled from image features for Layer 1.
+            # Each layer samples temporal FV and LiDAR-BEV along its input
+            # curve. Layer 0 consumes Q0 and emits Q1; Layer 1 consumes Q1.
             num_layers=2,
             num_heads=8,
             feedforward_channels=_ffn_dim_,
