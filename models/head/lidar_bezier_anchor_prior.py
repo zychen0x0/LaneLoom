@@ -67,13 +67,18 @@ class LaneFormerLiDARBezierAnchorPrior(nn.Module):
     def _feature(features):
         return features[-1] if isinstance(features, (list, tuple)) else features
 
-    def _predict_geometry(self, pts_feats):
+    def _predict_geometry(self, pts_feats, img_feats):
         if pts_feats is None:
-            raise ValueError('LiDAR Bézier anchors require LiDAR features.')
+            if img_feats is None:
+                raise ValueError(
+                    'LiDAR Bézier anchors require LiDAR or image batch context.')
+            image = self._feature(img_feats)
+            zeros = image.new_zeros(image.size(0))
+            return zeros, zeros, False
         feature = self._feature(pts_feats)
         normalized = torch.tanh(self.geometry_encoder(feature))
         return (normalized[:, 0] * self.max_curvature,
-                normalized[:, 1] * self.max_grade)
+                normalized[:, 1] * self.max_grade, True)
 
     def _bezier_controls(self, curvature, grade):
         batch = curvature.size(0)
@@ -106,7 +111,8 @@ class LaneFormerLiDARBezierAnchorPrior(nn.Module):
         return torch.stack((x, y, z), dim=-1)
 
     def forward(self, pts_feats, img_feats=None, img_metas=None):
-        curvature, grade = self._predict_geometry(pts_feats)
+        curvature, grade, from_lidar = self._predict_geometry(
+            pts_feats, img_feats)
         x_controls, z_controls = self._bezier_controls(curvature, grade)
         anchor_points = self._sample_curves(x_controls, z_controls)
         return dict(
@@ -114,7 +120,8 @@ class LaneFormerLiDARBezierAnchorPrior(nn.Module):
             grade=grade,
             curve_x_controls=x_controls,
             curve_z_controls=z_controls,
-            anchor_points=anchor_points)
+            anchor_points=anchor_points,
+            from_lidar=from_lidar)
 
     def fit_targets(self, lanes_3d, visibility):
         """Fit robust per-sample road curvature and grade from lane GT."""
@@ -149,6 +156,11 @@ class LaneFormerLiDARBezierAnchorPrior(nn.Module):
         return target_curvature, target_grade, target_valid
 
     def loss(self, prior, lanes_3d, visibility):
+        if not prior['from_lidar']:
+            zero = prior['anchor_points'].sum() * 0
+            return dict(
+                loss_lidar_curvature=zero,
+                loss_lidar_grade=zero)
         target_curvature, target_grade, valid = self.fit_targets(
             lanes_3d, visibility)
         if not valid.any():

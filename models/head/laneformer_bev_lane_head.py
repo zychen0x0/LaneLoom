@@ -42,12 +42,10 @@ class LaneFormerBEVLaneHead(nn.Module):
         """Encode image features without introducing LiDAR into history BEV."""
         return self.bev_encoder.forward_image_bev(img_feats, img_metas)
 
-    def _predict(self, current_bev, dn_lanes_3d=None,
-                 dn_visibility=None, anchor_prior=None,
+    def _predict(self, current_bev, anchor_prior=None,
                  query_feature_sampler=None):
         predictions = self.lane_decoder(
             current_bev,
-            dn_lanes_3d=dn_lanes_3d, dn_visibility=dn_visibility,
             initial_reference_controls=(
                 (anchor_prior['curve_x_controls'],
                  anchor_prior['curve_z_controls'])
@@ -62,30 +60,23 @@ class LaneFormerBEVLaneHead(nn.Module):
     def _anchor_prior(self, img_feats, pts_feats, img_metas):
         if self.anchor_prior is None:
             return None
-        return self.anchor_prior(pts_feats)
+        return self.anchor_prior(pts_feats, img_feats)
 
     def _query_feature_sampler(self, img_feats, lidar_bev, img_metas):
         if self.query_sampler is None:
             return None
 
-        def sample(anchor_points, visibility):
+        def sample(anchor_points):
             return self.query_sampler(
-                anchor_points, img_feats, lidar_bev, img_metas,
-                visibility=visibility)
+                anchor_points, img_feats, lidar_bev, img_metas)
 
         return sample
 
     def loss(self, img_feats, pts_feats, img_metas, prev_bev=None, **targets):
         anchor_prior = self._anchor_prior(img_feats, pts_feats, img_metas)
         current_bev = self.forward_bev(img_feats, pts_feats, img_metas)
-        dn_lanes_3d = targets.get('gt_lanes_3d_enhanced')
-        dn_visibility = targets.get('gt_lanes_visibility_enhanced')
-        if dn_lanes_3d is None or dn_visibility is None:
-            dn_lanes_3d = targets.get('gt_lanes_3d')
-            dn_visibility = targets.get('gt_lanes_visibility')
         losses = self.loss_module(self._predict(
-            current_bev, dn_lanes_3d=dn_lanes_3d,
-            dn_visibility=dn_visibility, anchor_prior=anchor_prior,
+            current_bev, anchor_prior=anchor_prior,
             query_feature_sampler=self._query_feature_sampler(
                 img_feats, current_bev, img_metas)), **targets)
         if anchor_prior is not None:

@@ -1,5 +1,6 @@
 from unittest.mock import Mock
 
+import pytest
 import torch
 
 from LaneFormer.models.head.laneformer_bev_lane_head import LaneFormerBEVLaneHead
@@ -289,8 +290,8 @@ def test_two_layer_decoder_resamples_refined_curve_for_second_layer():
         feedforward_channels=16, dropout=0.0)
     sampled = []
 
-    def sample_image_features(points, visibility):
-        sampled.append((points.clone(), visibility.clone()))
+    def sample_image_features(points):
+        sampled.append(points.clone())
         return points.new_zeros(points.size(0), points.size(1), 8)
 
     bev = torch.randn(2, 8, 2, 2)
@@ -303,11 +304,10 @@ def test_two_layer_decoder_resamples_refined_curve_for_second_layer():
     first_layer = predictions['aux_predictions'][0]
 
     assert len(sampled) == 2
-    assert torch.allclose(sampled[0][0][..., 0], torch.einsum(
+    assert torch.allclose(sampled[0][..., 0], torch.einsum(
         'ac,bqc->bqa', decoder.bezier_basis, initial_x))
-    assert torch.allclose(sampled[1][0][..., 0], first_layer['pred_x'])
-    assert torch.allclose(sampled[1][0][..., 2], first_layer['pred_z'])
-    assert torch.allclose(sampled[1][1], first_layer['pred_vis_interval'])
+    assert torch.allclose(sampled[1][..., 0], first_layer['pred_x'])
+    assert torch.allclose(sampled[1][..., 2], first_layer['pred_z'])
     assert first_layer['pred_logits'].shape == predictions['pred_logits'].shape
 
 
@@ -326,7 +326,7 @@ def test_decoder_cross_attention_keeps_each_query_evidence_separate():
     controls = torch.zeros(1, 2, 4)
 
     def sample(value):
-        def sampler(points, visibility):
+        def sampler(points):
             tokens = points.new_zeros(1, 2, 1, 8)
             tokens[:, 0] = value
             return dict(
@@ -348,6 +348,23 @@ def test_decoder_cross_attention_keeps_each_query_evidence_separate():
         baseline['pred_logits'][:, 0], changed['pred_logits'][:, 0])
     assert torch.allclose(
         baseline['pred_logits'][:, 1], changed['pred_logits'][:, 1])
+
+
+def test_final_layer_loss_reaches_layer_zero_geometry_through_q1():
+    decoder = LaneFormerLaneQueryDecoder(
+        embed_dims=8, bev_h=2, bev_w=2,
+        pc_range=[-25., 0., -5., 25., 100., 5.], num_query=2,
+        anchor_y_steps=[0.0, 2.0, 4.0], num_layers=2, num_heads=2,
+        feedforward_channels=16, dropout=0.0)
+    controls = torch.zeros(1, 2, 4)
+
+    predictions = decoder(
+        torch.randn(1, 8, 2, 2),
+        initial_reference_controls=(controls, controls))
+    predictions['pred_x'].sum().backward()
+
+    assert decoder.x_head.weight.grad is not None
+    assert decoder.x_head.weight.grad.abs().sum() > 0
 
 
 def test_lane_head_samples_initial_and_layer_zero_refined_anchors():
@@ -374,28 +391,25 @@ def test_lane_query_decoder_initializes_objectness_with_a_low_prior():
         decoder.cls_head.bias.sigmoid(), torch.tensor([0.01]), atol=1e-6)
 
 
-def test_lane_query_decoder_adds_denoising_queries_only_during_training():
-    decoder = LaneFormerLaneQueryDecoder(
-        embed_dims=8, bev_h=2, bev_w=2,
-        pc_range=[-25., 0., -5., 25., 100., 5.], num_query=3,
-        anchor_y_steps=[0.0, 2.0, 4.0], num_layers=1, num_heads=2,
-        feedforward_channels=16, dropout=0.0, dn_num_groups=1)
-    bev = torch.randn(2, 8, 2, 2)
-    bev_pos = torch.nn.Embedding(4, 8)
-    gt_lanes = torch.zeros(2, 2, 3, 3)
-    gt_lanes[:, :, :, 1] = torch.tensor([0.0, 2.0, 4.0])
-    gt_lanes[:, 0, :, 0] = -2.0
-    gt_visibility = torch.zeros(2, 2, 3)
-    gt_visibility[:, 0] = 1.0
+def test_lane_query_decoder_rejects_disabled_denoising_branch():
+    with pytest.raises(ValueError, match='denoising queries are not supported'):
+        LaneFormerLaneQueryDecoder(
+            embed_dims=8, bev_h=2, bev_w=2,
+            pc_range=[-25., 0., -5., 25., 100., 5.], num_query=3,
+            anchor_y_steps=[0.0, 2.0, 4.0], num_layers=1, num_heads=2,
+            feedforward_channels=16, dropout=0.0, dn_num_groups=1)
 
-    train_predictions = decoder(
-        bev, bev_pos, dn_lanes_3d=gt_lanes, dn_visibility=gt_visibility)
-    inference_predictions = decoder(bev, bev_pos)
 
-    assert train_predictions['pred_x'].shape == (2, 3, 3)
-    assert train_predictions['dn_predictions']['pred_x'].shape == (2, 2, 3)
-    assert train_predictions['dn_valid_mask'].tolist() == [[True, False], [True, False]]
-    assert 'dn_predictions' not in inference_predictions
+def test_lane_head_degrades_gracefully_when_lidar_features_are_empty():
+    head = _head(16, 4, 3, 3, [0., 2., 4.], 8)
+
+    output = head.predict(
+        [torch.randn(1, 3, 1, 16, 8, 8)], None,
+        _metas(1, image_size=8))
+
+    assert output['x'].shape == (1, 3, 3)
+    assert torch.all(output['road_curvature'] == 0)
+    assert torch.all(output['road_grade'] == 0)
 
 
 def test_lane_head_uses_51_anchors_and_backpropagates():

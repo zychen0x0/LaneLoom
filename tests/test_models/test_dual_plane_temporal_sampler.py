@@ -1,3 +1,5 @@
+import inspect
+
 import torch
 
 from LaneFormer.models.head.dual_plane_temporal_sampler import (
@@ -70,3 +72,27 @@ def test_sampler_uses_history_pose_before_projecting_curves():
 
     assert not output['image_valid_mask'][0, 0, :, 0, 0].any()
     assert output['image_valid_mask'][0, 0, :, 0, 1].any()
+
+
+def test_invalid_temporal_samples_are_zeroed_after_image_projection():
+    sampler = LaneFormerDualPlaneTemporalSampler(
+        image_in_channels=4, lidar_in_channels=4, embed_dims=4,
+        pc_range=[-2., 0., -2., 2., 6., 2.], num_image_levels=1,
+        temporal_kernel_size=3)
+    with torch.no_grad():
+        sampler.image_adapter.weight.zero_()
+        sampler.image_adapter.bias.fill_(3.0)
+    sampled = torch.zeros(1, 1, 2, 1, 3, 4)
+    valid = torch.zeros(1, 1, 2, 1, 3, dtype=torch.bool)
+
+    fused = sampler._fuse_time(sampled, valid)
+
+    assert torch.all(fused == 0)
+
+
+def test_visibility_does_not_hand_gate_sampled_modality_evidence():
+    sampler = LaneFormerDualPlaneTemporalSampler(
+        image_in_channels=4, lidar_in_channels=4, embed_dims=4,
+        pc_range=[-2., 0., -2., 2., 6., 2.], num_image_levels=1,
+        temporal_kernel_size=3)
+    assert 'visibility' not in inspect.signature(sampler.forward).parameters

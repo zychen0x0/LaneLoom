@@ -61,7 +61,7 @@ class LaneFormerLaneQueryDecoder(nn.Module):
     def __init__(self, embed_dims, bev_h, bev_w, pc_range, num_query,
                  anchor_y_steps, num_layers=3, num_heads=8,
                  feedforward_channels=1024, dropout=0.1, num_category=21,
-                 dn_num_groups=0, dn_noise_scale=0.5,
+                 dn_num_groups=0,
                  objectness_prior_probability=0.01,
                  visibility_temperature=0.75,
                  visibility_start_prior=0.14,
@@ -88,10 +88,10 @@ class LaneFormerLaneQueryDecoder(nn.Module):
                 t ** 3,
             ), dim=-1))
         self.num_category = int(num_category)
-        self.dn_num_groups = int(dn_num_groups)
-        if self.dn_num_groups < 0:
-            raise ValueError('dn_num_groups must be non-negative.')
-        self.dn_noise_scale = float(dn_noise_scale)
+        if int(dn_num_groups) != 0:
+            raise ValueError(
+                'denoising queries are not supported by the per-query '
+                'evidence decoder; use Top2 auxiliary supervision.')
         self.visibility_temperature = float(visibility_temperature)
         if self.visibility_temperature <= 0:
             raise ValueError('visibility_temperature must be positive.')
@@ -110,16 +110,6 @@ class LaneFormerLaneQueryDecoder(nn.Module):
         self.query = nn.Embedding(num_query, embed_dims)
         self.query_pos = nn.Embedding(num_query, embed_dims)
         self.null_evidence = nn.Parameter(torch.zeros(1, 1, 1, embed_dims))
-        if self.dn_num_groups > 0:
-            self.dn_query = nn.Sequential(
-                nn.Linear(self.num_control_points * 2, embed_dims),
-                nn.ReLU(inplace=True), nn.Linear(embed_dims, embed_dims))
-            self.dn_query_pos = nn.Sequential(
-                nn.Linear(self.num_control_points * 2, embed_dims),
-                nn.ReLU(inplace=True), nn.Linear(embed_dims, embed_dims))
-        else:
-            self.dn_query = None
-            self.dn_query_pos = None
         self.norm = nn.LayerNorm(embed_dims)
         self.x_head = nn.Linear(embed_dims, self.num_control_points)
         self.z_head = nn.Linear(embed_dims, self.num_control_points)
@@ -155,43 +145,6 @@ class LaneFormerLaneQueryDecoder(nn.Module):
                      *self.vis_bounds_refine_heads):
             nn.init.zeros_(head.weight)
             nn.init.zeros_(head.bias)
-
-    def _fit_bezier_controls(self, lanes_3d, visibility):
-        """Fit fixed-anchor GT lanes to the decoder's four Bézier controls."""
-        weights = visibility.to(dtype=lanes_3d.dtype)
-        basis = self.bezier_basis.to(dtype=lanes_3d.dtype)
-        eye = torch.eye(self.num_control_points, device=lanes_3d.device,
-                        dtype=lanes_3d.dtype)
-        normal = torch.einsum('ac,bla,ad->blcd', basis, weights, basis)
-        normal = normal + 1e-4 * eye
-
-        def solve(values):
-            rhs = torch.einsum('ac,bla->blc', basis, weights * values)
-            return torch.linalg.solve(normal, rhs.unsqueeze(-1)).squeeze(-1)
-
-        return solve(lanes_3d[..., 0]), solve(lanes_3d[..., 2])
-
-    def _build_dn_queries(self, lanes_3d, visibility):
-        valid = visibility.bool().any(dim=-1)
-        control_x, control_z = self._fit_bezier_controls(lanes_3d, visibility)
-        x_range = self.pc_range[3] - self.pc_range[0]
-        z_range = max(abs(self.pc_range[2]), abs(self.pc_range[5]))
-        controls = torch.cat((
-            (control_x - self.pc_range[0]) / x_range,
-            control_z / z_range), dim=-1)
-        if self.dn_num_groups > 1:
-            controls = controls.repeat(1, self.dn_num_groups, 1)
-            valid = valid.repeat(1, self.dn_num_groups)
-        noise_scale = controls.new_tensor(
-            [self.dn_noise_scale / x_range] * self.num_control_points +
-            [self.dn_noise_scale / z_range] * self.num_control_points)
-        noisy_controls = controls + torch.randn_like(controls) * noise_scale
-        noisy_controls = torch.where(valid.unsqueeze(-1), noisy_controls,
-                                     torch.zeros_like(noisy_controls))
-        indices = torch.arange(lanes_3d.size(1), device=lanes_3d.device)
-        indices = indices.repeat(self.dn_num_groups)
-        return (self.dn_query(noisy_controls), self.dn_query_pos(noisy_controls),
-                valid, indices)
 
     def _decode_predictions(self, query, reference_controls=None,
                             reference_visibility=None, layer_idx=0):
@@ -270,27 +223,15 @@ class LaneFormerLaneQueryDecoder(nn.Module):
         y = self.anchor_y_steps.to(x).view(1, 1, -1).expand_as(x)
         return torch.stack((x, y, z), dim=-1)
 
-    def _sample_evidence(self, reference_controls, reference_visibility,
-                         sampler, batch, dtype, device):
+    def _sample_evidence(self, reference_controls, sampler, batch, dtype,
+                         device):
         null = self.null_evidence.to(dtype=dtype).expand(
             batch, self.num_query, -1, -1)
         if reference_controls is None or sampler is None:
             return null, torch.zeros(
                 batch, self.num_query, 1, dtype=torch.bool, device=device)
         points = self._reference_points(reference_controls)
-        if reference_visibility is None:
-            visibility = points.new_ones(points.shape[:-1])
-        else:
-            start, end = reference_visibility
-            indices = self.visibility_indices.to(dtype=points.dtype)
-            visibility = (
-                torch.sigmoid(
-                    (indices - start.unsqueeze(-1)) /
-                    self.visibility_temperature)
-                * torch.sigmoid(
-                    (end.unsqueeze(-1) - indices) /
-                    self.visibility_temperature))
-        sampled = sampler(points, visibility)
+        sampled = sampler(points)
         if torch.is_tensor(sampled):
             sampled = dict(
                 tokens=sampled.unsqueeze(2),
@@ -312,10 +253,16 @@ class LaneFormerLaneQueryDecoder(nn.Module):
                         device=padding_mask.device)), dim=2)
         return evidence, padding_mask
 
-    def forward(self, bev, bev_pos=None, dn_lanes_3d=None, dn_visibility=None,
+    def forward(self, bev, bev_pos=None,
                 query_features=None, initial_reference_controls=None,
                 query_feature_sampler=None):
-        batch = bev.size(0)
+        if bev is not None:
+            batch = bev.size(0)
+        elif initial_reference_controls is not None:
+            batch = initial_reference_controls[0].size(0)
+        else:
+            raise ValueError(
+                'The decoder requires LiDAR BEV or initial curve controls.')
         query_pos = self.query_pos.weight.unsqueeze(0).expand(batch, -1, -1)
         query = self.query.weight.unsqueeze(0).expand(batch, -1, -1)
         if query_features is not None:
@@ -333,55 +280,27 @@ class LaneFormerLaneQueryDecoder(nn.Module):
                 raise ValueError(
                     'initial_reference_controls must contain x/z tensors with '
                     f'shape {expected_shape}.')
-        dn_query = None
-        if (self.training and self.dn_num_groups > 0 and
-                dn_lanes_3d is not None and dn_visibility is not None):
-            dn_query, dn_query_pos, dn_valid_mask, dn_target_indices = (
-                self._build_dn_queries(dn_lanes_3d, dn_visibility))
-            query = torch.cat((query, dn_query), dim=1)
-            query_pos = torch.cat((query_pos, dn_query_pos), dim=1)
-            attention_mask = torch.zeros(
-                (query.size(1), query.size(1)), dtype=torch.bool,
-                device=query.device)
-            attention_mask[:self.num_query, self.num_query:] = True
-        else:
-            attention_mask = None
         layer_predictions = []
         main_reference = initial_reference_controls
         main_visibility_reference = None
-        dn_reference = None
-        dn_visibility_reference = None
         for layer_idx, layer in enumerate(self.layers):
             evidence, evidence_padding_mask = self._sample_evidence(
-                main_reference, main_visibility_reference,
-                query_feature_sampler, batch, query.dtype, query.device)
+                main_reference, query_feature_sampler, batch, query.dtype,
+                query.device)
             query = layer(
                 query, query_pos, evidence, evidence_padding_mask,
-                attention_mask, self.num_query)
+                None, self.num_query)
             normalized_query = self.norm(query)
             predictions = self._decode_predictions(
                 normalized_query[:, :self.num_query], main_reference,
                 main_visibility_reference,
                 layer_idx=layer_idx)
             main_reference = (
-                predictions['curve_x_controls'].detach(),
-                predictions['curve_z_controls'].detach())
+                predictions['curve_x_controls'],
+                predictions['curve_z_controls'])
             main_visibility_reference = (
-                predictions['pred_vis_start'].detach(),
-                predictions['pred_vis_end'].detach())
-            if dn_query is not None:
-                predictions['dn_predictions'] = self._decode_predictions(
-                    normalized_query[:, self.num_query:], dn_reference,
-                    dn_visibility_reference,
-                    layer_idx=layer_idx)
-                dn_reference = (
-                    predictions['dn_predictions']['curve_x_controls'].detach(),
-                    predictions['dn_predictions']['curve_z_controls'].detach())
-                dn_visibility_reference = (
-                    predictions['dn_predictions']['pred_vis_start'].detach(),
-                    predictions['dn_predictions']['pred_vis_end'].detach())
-                predictions['dn_valid_mask'] = dn_valid_mask
-                predictions['dn_target_indices'] = dn_target_indices
+                predictions['pred_vis_start'],
+                predictions['pred_vis_end'])
             layer_predictions.append(predictions)
         predictions = layer_predictions[-1]
         predictions['aux_predictions'] = layer_predictions[:-1]

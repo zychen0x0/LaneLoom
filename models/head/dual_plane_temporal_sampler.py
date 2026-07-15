@@ -136,8 +136,9 @@ class LaneFormerDualPlaneTemporalSampler(nn.Module):
         sampled = sampled_sum / weight_sum.clamp_min(1)
         return sampled, weight_sum.squeeze(-1) > 0
 
-    def _fuse_time(self, sampled_image):
+    def _fuse_time(self, sampled_image, valid_mask):
         projected = self.image_adapter(sampled_image)
+        projected = projected * valid_mask.unsqueeze(-1).to(projected.dtype)
         batch, queries, anchors, levels, time_steps, channels = projected.shape
         sequence = projected.reshape(-1, time_steps, channels).transpose(1, 2)
         sequence = F.pad(sequence, (self.temporal_kernel_size - 1, 0))
@@ -172,11 +173,10 @@ class LaneFormerDualPlaneTemporalSampler(nn.Module):
         normalized = ((curves - minimum) / (maximum - minimum)).clamp(0, 1)
         return self.point_encoder(normalized)
 
-    def forward(self, curves, image_features, lidar_bev, img_metas,
-                visibility=None):
+    def forward(self, curves, image_features, lidar_bev, img_metas):
         sampled_image, image_valid = self._sample_image(
             curves, image_features, img_metas)
-        image_tokens = self._fuse_time(sampled_image)
+        image_tokens = self._fuse_time(sampled_image, image_valid)
         lidar_values, lidar_valid = self._sample_lidar(curves, lidar_bev)
         lidar_tokens = self.lidar_adapter(lidar_values)
         position = self._point_position(curves)
@@ -189,10 +189,6 @@ class LaneFormerDualPlaneTemporalSampler(nn.Module):
         lidar_tokens = (
             lidar_tokens + position
             + self.modality_embedding.weight[1].view(1, 1, 1, -1))
-        if visibility is not None:
-            image_tokens = image_tokens * visibility.unsqueeze(-1).unsqueeze(-1)
-            lidar_tokens = lidar_tokens * visibility.unsqueeze(-1)
-
         image_token_valid = image_valid.any(dim=-1)
         batch, queries, anchors, levels, channels = image_tokens.shape
         tokens = torch.cat((
