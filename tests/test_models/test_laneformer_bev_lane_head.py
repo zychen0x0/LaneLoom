@@ -1,3 +1,5 @@
+from unittest.mock import Mock
+
 import torch
 
 from LaneFormer.models.head.laneformer_bev_lane_head import LaneFormerBEVLaneHead
@@ -261,6 +263,90 @@ def test_lane_query_decoder_predicts_an_ordered_visibility_interval():
         predictions['pred_vis_end'], torch.full((2, 3), 2.0), atol=1e-5)
     assert torch.all(predictions['pred_vis_interval'] >= 0)
     assert torch.all(predictions['pred_vis_interval'] <= 1)
+
+
+def test_lane_query_decoder_refines_visibility_bounds_between_layers():
+    decoder = LaneFormerLaneQueryDecoder(
+        embed_dims=8, bev_h=2, bev_w=2,
+        pc_range=[-25., 0., -5., 25., 100., 5.], num_query=3,
+        anchor_y_steps=[0.0, 2.0, 4.0, 6.0], num_layers=2, num_heads=2,
+        feedforward_channels=16, dropout=0.0,
+        visibility_start_prior=1 / 3, visibility_end_prior=2 / 3)
+    residual = torch.tensor([0.4, -0.3])
+    with torch.no_grad():
+        decoder.vis_bounds_refine_heads[0].bias.copy_(residual)
+
+    predictions = decoder(
+        torch.randn(2, 8, 2, 2), torch.nn.Embedding(4, 8))
+    previous = predictions['aux_predictions'][0]
+    previous_start = previous['pred_vis_start']
+    previous_end = previous['pred_vis_end']
+    count = decoder.num_anchors
+    normalized_start = ((previous_start + 0.5) / count).clamp(1e-4, 1 - 1e-4)
+    normalized_span = (
+        (previous_end - previous_start)
+        / (count - 0.5 - previous_start)).clamp(1e-4, 1 - 1e-4)
+    expected_start = (
+        torch.sigmoid(torch.logit(normalized_start) + residual[0]) * count - 0.5)
+    expected_end = expected_start + torch.sigmoid(
+        torch.logit(normalized_span) + residual[1]) * (
+            count - 0.5 - expected_start)
+
+    assert torch.allclose(predictions['pred_vis_start'], expected_start, atol=1e-5)
+    assert torch.allclose(predictions['pred_vis_end'], expected_end, atol=1e-5)
+    assert torch.allclose(
+        predictions['pred_vis'],
+        torch.logit(predictions['pred_vis_interval'].clamp(1e-4, 1 - 1e-4)))
+
+
+def test_two_layer_decoder_resamples_refined_curve_for_second_layer():
+    decoder = LaneFormerLaneQueryDecoder(
+        embed_dims=8, bev_h=2, bev_w=2,
+        pc_range=[-25., 0., -5., 25., 100., 5.], num_query=3,
+        anchor_y_steps=[0.0, 2.0, 4.0], num_layers=2, num_heads=2,
+        feedforward_channels=16, dropout=0.0)
+    sampled = []
+
+    def sample_image_features(points, visibility):
+        sampled.append((points.clone(), visibility.clone()))
+        return points.new_zeros(points.size(0), points.size(1), 8)
+
+    bev = torch.randn(2, 8, 2, 2)
+    bev_pos = torch.nn.Embedding(4, 8)
+    predictions = decoder(
+        bev, bev_pos,
+        query_feature_sampler=sample_image_features)
+    first_layer = predictions['aux_predictions'][0]
+
+    def informative_image_features(points, visibility):
+        feature = torch.arange(8, device=points.device, dtype=points.dtype)
+        return feature.view(1, 1, -1).expand(points.size(0), points.size(1), -1)
+
+    informed_predictions = decoder(
+        bev, bev_pos, query_feature_sampler=informative_image_features)
+
+    assert len(sampled) == 1
+    assert torch.allclose(sampled[0][0][..., 0], first_layer['pred_x'])
+    assert torch.allclose(sampled[0][0][..., 2], first_layer['pred_z'])
+    assert torch.allclose(sampled[0][1], first_layer['pred_vis_interval'])
+    assert first_layer['pred_logits'].shape == predictions['pred_logits'].shape
+    assert torch.allclose(
+        informed_predictions['aux_predictions'][0]['pred_logits'],
+        first_layer['pred_logits'])
+    assert not torch.allclose(
+        informed_predictions['pred_logits'], predictions['pred_logits'])
+
+
+def test_lane_head_samples_initial_and_layer_zero_refined_anchors():
+    head = _head(16, 4, 3, 3, [0., 2., 4.], 8)
+    original = head.anchor_prior.sample_image_features
+    head.anchor_prior.sample_image_features = Mock(wraps=original)
+
+    head.predict(
+        [torch.randn(1, 1, 16, 8, 8)],
+        [torch.randn(1, 8, 2, 2)], _metas(1, image_size=8))
+
+    assert head.anchor_prior.sample_image_features.call_count == 2
 
 
 def test_lane_query_decoder_initializes_objectness_with_a_low_prior():

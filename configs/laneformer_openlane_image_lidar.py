@@ -182,7 +182,9 @@ model = dict(
             # OpenLane categories 0..20; category 21 is merged into 20 by dataset.
             num_category=21,
             anchor_y_steps=[2.0 * i for i in range(51)],
-            num_layers=3,
+            # Layer 0 refines the LiDAR anchors, then the refined curves are
+            # reprojected and sampled from image features for Layer 1.
+            num_layers=2,
             num_heads=8,
             feedforward_channels=_ffn_dim_,
             dropout=0.1,

@@ -79,16 +79,16 @@ class LaneFormerLaneQueryDecoder(nn.Module):
         self.z_refine_heads = nn.ModuleList([
             nn.Linear(embed_dims, self.num_control_points)
             for _ in range(max(self.num_layers - 1, 0))])
-        self.vis_head = nn.Linear(embed_dims, self.num_anchors)
         self.vis_bounds_head = nn.Linear(embed_dims, 2)
+        self.vis_bounds_refine_heads = nn.ModuleList([
+            nn.Linear(embed_dims, 2)
+            for _ in range(max(self.num_layers - 1, 0))])
         self.cls_head = nn.Linear(embed_dims, 1)
         self.category_head = nn.Linear(embed_dims, self.num_category)
         prior = float(objectness_prior_probability)
         if not 0.0 < prior < 1.0:
             raise ValueError('objectness_prior_probability must be in (0, 1).')
         nn.init.constant_(self.cls_head.bias, torch.logit(torch.tensor(prior)))
-        nn.init.zeros_(self.vis_head.weight)
-        nn.init.zeros_(self.vis_head.bias)
         nn.init.zeros_(self.vis_bounds_head.weight)
         prior_start = visibility_start_prior * (self.num_anchors - 1)
         prior_end = visibility_end_prior * (self.num_anchors - 1)
@@ -101,7 +101,8 @@ class LaneFormerLaneQueryDecoder(nn.Module):
         nn.init.constant_(
             self.vis_bounds_head.bias[1],
             torch.logit(torch.tensor(end_probability)))
-        for head in (*self.x_refine_heads, *self.z_refine_heads):
+        for head in (*self.x_refine_heads, *self.z_refine_heads,
+                     *self.vis_bounds_refine_heads):
             nn.init.zeros_(head.weight)
             nn.init.zeros_(head.bias)
 
@@ -142,7 +143,8 @@ class LaneFormerLaneQueryDecoder(nn.Module):
         return (self.dn_query(noisy_controls), self.dn_query_pos(noisy_controls),
                 valid, indices)
 
-    def _decode_predictions(self, query, reference_controls=None, layer_idx=0):
+    def _decode_predictions(self, query, reference_controls=None,
+                            reference_visibility=None, layer_idx=0):
         x_range = self.pc_range[3] - self.pc_range[0]
         z_range = max(abs(self.pc_range[2]), abs(self.pc_range[5]))
         x_head = self.x_head if layer_idx == 0 else self.x_refine_heads[layer_idx - 1]
@@ -158,8 +160,22 @@ class LaneFormerLaneQueryDecoder(nn.Module):
             z_logits = z_logits + torch.atanh(normalized_z)
         curve_x_controls = torch.sigmoid(x_logits) * x_range + self.pc_range[0]
         curve_z_controls = torch.tanh(z_logits) * z_range
-        visibility_bounds = self.vis_bounds_head(query)
+        visibility_head = (
+            self.vis_bounds_head if layer_idx == 0
+            else self.vis_bounds_refine_heads[layer_idx - 1])
+        visibility_bounds = visibility_head(query)
         boundary_span = float(self.num_anchors)
+        if reference_visibility is not None:
+            reference_start, reference_end = reference_visibility
+            normalized_start = ((reference_start + 0.5) / boundary_span).clamp(
+                1e-4, 1 - 1e-4)
+            normalized_span = (
+                (reference_end - reference_start)
+                / (self.num_anchors - 0.5 - reference_start)).clamp(
+                    1e-4, 1 - 1e-4)
+            visibility_bounds = visibility_bounds + torch.stack((
+                torch.logit(normalized_start),
+                torch.logit(normalized_span)), dim=-1)
         visibility_start = (
             torch.sigmoid(visibility_bounds[..., 0]) * boundary_span - 0.5)
         visibility_end = visibility_start + torch.sigmoid(
@@ -173,9 +189,8 @@ class LaneFormerLaneQueryDecoder(nn.Module):
             * torch.sigmoid(
                 (visibility_end.unsqueeze(-1) - anchor_indices) /
                 self.visibility_temperature))
-        visibility_logits = (
-            torch.logit(interval_probability.clamp(1e-4, 1 - 1e-4))
-            + self.vis_head(query))
+        visibility_logits = torch.logit(
+            interval_probability.clamp(1e-4, 1 - 1e-4))
         pred_objectness = self.cls_head(query).squeeze(-1)
         pred_category = self.category_head(query)
         background = pred_category.new_zeros(*pred_category.shape[:-1], 1)
@@ -197,7 +212,8 @@ class LaneFormerLaneQueryDecoder(nn.Module):
             pred_logits=pred_logits)
 
     def forward(self, bev, bev_pos, dn_lanes_3d=None, dn_visibility=None,
-                query_features=None, initial_reference_controls=None):
+                query_features=None, initial_reference_controls=None,
+                query_feature_sampler=None):
         batch = bev.size(0)
         memory = bev.flatten(2).transpose(1, 2)
         memory = memory + bev_pos.weight.unsqueeze(0).expand(batch, -1, -1)
@@ -234,26 +250,52 @@ class LaneFormerLaneQueryDecoder(nn.Module):
         query = query + query_pos
         layer_predictions = []
         main_reference = initial_reference_controls
+        main_visibility_reference = None
         dn_reference = None
+        dn_visibility_reference = None
         for layer_idx, layer in enumerate(self.decoder.layers):
             query = layer(query, memory, tgt_mask=attention_mask)
             normalized_query = self.norm(query)
             predictions = self._decode_predictions(
                 normalized_query[:, :self.num_query], main_reference,
+                main_visibility_reference,
                 layer_idx=layer_idx)
             main_reference = (
                 predictions['curve_x_controls'].detach(),
                 predictions['curve_z_controls'].detach())
+            main_visibility_reference = (
+                predictions['pred_vis_start'].detach(),
+                predictions['pred_vis_end'].detach())
             if dn_query is not None:
                 predictions['dn_predictions'] = self._decode_predictions(
                     normalized_query[:, self.num_query:], dn_reference,
+                    dn_visibility_reference,
                     layer_idx=layer_idx)
                 dn_reference = (
                     predictions['dn_predictions']['curve_x_controls'].detach(),
                     predictions['dn_predictions']['curve_z_controls'].detach())
+                dn_visibility_reference = (
+                    predictions['dn_predictions']['pred_vis_start'].detach(),
+                    predictions['dn_predictions']['pred_vis_end'].detach())
                 predictions['dn_valid_mask'] = dn_valid_mask
                 predictions['dn_target_indices'] = dn_target_indices
             layer_predictions.append(predictions)
+            if (query_feature_sampler is not None
+                    and layer_idx + 1 < self.num_layers):
+                y = self.anchor_y_steps.to(predictions['pred_x']).view(1, 1, -1)
+                y = y.expand_as(predictions['pred_x'])
+                refined_points = torch.stack((
+                    predictions['pred_x'], y, predictions['pred_z']), dim=-1)
+                sampled_features = query_feature_sampler(
+                    refined_points, predictions['pred_vis_interval'])
+                expected_shape = tuple(query[:, :self.num_query].shape)
+                if tuple(sampled_features.shape) != expected_shape:
+                    raise ValueError(
+                        'query_feature_sampler must return features with shape '
+                        f'{expected_shape}, got {tuple(sampled_features.shape)}.')
+                query = torch.cat((
+                    query[:, :self.num_query] + sampled_features,
+                    query[:, self.num_query:]), dim=1)
         predictions = layer_predictions[-1]
         predictions['aux_predictions'] = layer_predictions[:-1]
         predictions['bev'] = bev

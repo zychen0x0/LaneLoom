@@ -47,6 +47,7 @@ def test_config_couples_fifty_lidar_bezier_anchors_to_decoder_queries():
     assert prior.num_anchors == decoder.num_query == 50
     assert prior.pc_range == decoder.pc_range
     assert prior.anchor_y_steps == decoder.anchor_y_steps
+    assert decoder.num_layers == 2
 
 
 def test_config_uses_top2_assignment_and_one_visibility_loss():

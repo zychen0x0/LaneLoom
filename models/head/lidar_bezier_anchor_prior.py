@@ -117,7 +117,9 @@ class LaneFormerLiDARBezierAnchorPrior(nn.Module):
         y = self.anchor_y_steps.to(x).view(1, 1, -1).expand_as(x)
         return torch.stack((x, y, z), dim=-1)
 
-    def _sample_image_features(self, img_feats, img_metas, anchor_points):
+    def sample_image_features(self, img_feats, img_metas, anchor_points,
+                              point_weights=None):
+        """Project curves and pool image features along their visible spans."""
         if img_feats is None:
             batch = anchor_points.size(0)
             features = anchor_points.new_zeros(
@@ -163,6 +165,9 @@ class LaneFormerLiDARBezierAnchorPrior(nn.Module):
                     projected_image[batch_idx, camera_idx:camera_idx + 1],
                     grid.unsqueeze(0), align_corners=True)
                 weight = valid.to(image.dtype).unsqueeze(0).unsqueeze(0)
+                if point_weights is not None:
+                    weight = weight * point_weights[
+                        batch_idx:batch_idx + 1].to(image).unsqueeze(1)
                 feature_sum[batch_idx:batch_idx + 1] += sampled * weight
                 weight_sum[batch_idx:batch_idx + 1] += weight
 
@@ -178,7 +183,7 @@ class LaneFormerLiDARBezierAnchorPrior(nn.Module):
         curvature, grade, from_lidar = self._predict_geometry(pts_feats, img_feats)
         x_controls, z_controls = self._bezier_controls(curvature, grade)
         anchor_points = self._sample_curves(x_controls, z_controls)
-        query_features, projection_valid_ratio = self._sample_image_features(
+        query_features, projection_valid_ratio = self.sample_image_features(
             img_feats, img_metas, anchor_points)
         return dict(
             curvature=curvature,
