@@ -1,4 +1,5 @@
 """Three-line training-progress logger compatible with LaneFormer losses."""
+from pathlib import Path
 import time
 
 import torch
@@ -15,6 +16,8 @@ class LaneFormerLoggerHook(Hook):
     def __init__(self, interval=50):
         self.interval = interval
         self.start_time = None
+        self.val_start_time = None
+        self.test_start_time = None
 
     @staticmethod
     def _format_duration(seconds):
@@ -62,12 +65,45 @@ class LaneFormerLoggerHook(Hook):
                 self._format_duration(expected), self._format_duration(eta),
                 total_loss, ' | '.join(losses)))
 
+    def _log_evaluation_progress(self, runner, batch_idx, dataloader,
+                                 start_time, label):
+        total = len(dataloader)
+        completed = batch_idx + 1
+        if (runner.rank != 0 or
+                (completed % self.interval and completed != total)):
+            return
+        elapsed = time.monotonic() - start_time
+        expected = elapsed * total / max(completed, 1)
+        eta = expected - elapsed
+        runner.logger.info(
+            '{}: [{}/{}] {:.2f}%\n'
+            'Elapsed/Expected {} / {}    ETA {}\n'
+            'Time {:.2f} s/iter'.format(
+                label, completed, total,
+                100.0 * completed / max(total, 1),
+                self._format_duration(elapsed),
+                self._format_duration(expected),
+                self._format_duration(eta),
+                elapsed / max(completed, 1)))
+
+    def before_val_epoch(self, runner):
+        self.val_start_time = time.monotonic()
+
     def after_val_iter(self, runner, batch_idx, data_batch=None, outputs=None):
         """Show validation progress while the metric accumulates predictions."""
-        if runner.rank != 0 or (batch_idx + 1) % self.interval:
-            return
-        runner.logger.info(
-            f'Val: [{batch_idx + 1}/{len(runner.val_dataloader)}]')
+        self._log_evaluation_progress(
+            runner, batch_idx, runner.val_dataloader,
+            self.val_start_time, 'Val')
+
+    def before_test_epoch(self, runner):
+        self.test_start_time = time.monotonic()
+
+    def after_test_iter(self, runner, batch_idx, data_batch=None, outputs=None):
+        """Show progress and ETA for the selected checkpoint test case."""
+        case_name = Path(runner.work_dir).parent.name
+        self._log_evaluation_progress(
+            runner, batch_idx, runner.test_dataloader,
+            self.test_start_time, f'Test {case_name}')
 
     @staticmethod
     def _metric_value(metrics, name):

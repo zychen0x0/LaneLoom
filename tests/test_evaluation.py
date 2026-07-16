@@ -5,6 +5,7 @@ from datetime import datetime
 from types import SimpleNamespace
 
 import LaneFormer  # noqa: F401 - register the project metric.
+import LaneFormer.engine.hooks.laneformer_logger_hook as logger_module
 from mmengine.config import Config
 from mmengine.registry import METRICS
 from LaneFormer.engine.experiment import configure_train_experiment
@@ -225,7 +226,7 @@ def test_openlane_test_configs_reject_unknown_case():
         build_openlane_test_configs(cfg, 'unknown')
 
 
-def test_logger_reports_validation_progress_and_final_lane_metrics():
+def test_logger_reports_validation_progress_and_final_lane_metrics(monkeypatch):
     messages = []
     runner = SimpleNamespace(
         rank=0,
@@ -235,7 +236,10 @@ def test_logger_reports_validation_progress_and_final_lane_metrics():
         visualizer=SimpleNamespace(add_scalars=lambda *_args, **_kwargs: None),
     )
     hook = LaneFormerLoggerHook(interval=50)
+    clock = iter([0.0, 98.0])
+    monkeypatch.setattr(logger_module.time, 'monotonic', lambda: next(clock))
 
+    hook.before_val_epoch(runner)
     hook.after_val_iter(runner, batch_idx=49)
     hook.after_val_epoch(runner, metrics=dict(
         **{'OpenLane/F1': 0.5, 'OpenLane/Recall': 0.4,
@@ -246,13 +250,39 @@ def test_logger_reports_validation_progress_and_final_lane_metrics():
            'OpenLane/num_tp': 40.0},
     ))
 
-    assert any('Val: [50/100]' in message for message in messages)
+    progress = next(message for message in messages if message.startswith('Val:'))
+    assert 'Val: [50/100] 50.00%' in progress
+    assert 'Elapsed/Expected 00:01:38 / 00:03:16    ETA 00:01:38' in progress
+    assert 'Time 1.96 s/iter' in progress
     summary = next(message for message in messages if 'Evaluation laneline F1' in message)
     assert 'F1: 0.50000000' in summary
     assert 'Recall: 0.40000000' in summary
     assert 'Precision: 0.60000000' in summary
     assert 'Category Accuracy: 0.70000000' in summary
     assert 'GT / Pred / TP: 100 / 120 / 40' in summary
+
+
+def test_logger_reports_test_case_progress_eta_and_final_batch(monkeypatch):
+    messages = []
+    runner = SimpleNamespace(
+        rank=0,
+        work_dir='/tmp/nms_evaluation/curve_case/logs',
+        test_dataloader=[None] * 320,
+        logger=SimpleNamespace(info=messages.append),
+    )
+    hook = LaneFormerLoggerHook(interval=50)
+    clock = iter([0.0, 88.0, 640.0])
+    monkeypatch.setattr(logger_module.time, 'monotonic', lambda: next(clock))
+
+    hook.before_test_epoch(runner)
+    hook.after_test_iter(runner, batch_idx=49)
+    hook.after_test_iter(runner, batch_idx=319)
+
+    assert messages[0].startswith('Test curve_case: [50/320] 15.62%')
+    assert 'Elapsed/Expected 00:01:28 / 00:09:23    ETA 00:07:55' in messages[0]
+    assert 'Time 1.76 s/iter' in messages[0]
+    assert messages[1].startswith('Test curve_case: [320/320] 100.00%')
+    assert 'ETA 00:00:00' in messages[1]
 
 
 def test_train_experiment_layout_uses_a_dated_laneformer_directory(tmp_path):
