@@ -199,6 +199,32 @@ def test_openlane_test_configs_select_validation_and_each_official_case():
     assert cfg.dataset_cfg.val_split == 'validation'
 
 
+@pytest.mark.parametrize(
+    ('selection', 'expected'),
+    [
+        ('validation', ['validation']),
+        ('test', [
+            'up_down_case', 'curve_case', 'extreme_weather_case',
+            'intersection_case', 'merge_split_case', 'night_case']),
+        ('curve_case', ['curve_case']),
+    ])
+def test_openlane_test_configs_filter_requested_cases(selection, expected):
+    cfg = Config.fromfile(
+        '/workspace/LaneFormer/configs/laneformer_openlane_image_lidar.py')
+
+    case_configs = build_openlane_test_configs(cfg, selection)
+
+    assert [name for name, _ in case_configs] == expected
+
+
+def test_openlane_test_configs_reject_unknown_case():
+    cfg = Config.fromfile(
+        '/workspace/LaneFormer/configs/laneformer_openlane_image_lidar.py')
+
+    with pytest.raises(ValueError, match='Unknown OpenLane test case'):
+        build_openlane_test_configs(cfg, 'unknown')
+
+
 def test_logger_reports_validation_progress_and_final_lane_metrics():
     messages = []
     runner = SimpleNamespace(

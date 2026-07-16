@@ -13,12 +13,29 @@ OPENLANE_TEST_SPLITS = (
     ('merge_split_case', 'test/merge_split_case'),
     ('night_case', 'test/night_case'),
 )
+OPENLANE_TEST_CASE_CHOICES = (
+    'all', 'validation', 'test',
+    *(name for name, _ in OPENLANE_TEST_SPLITS if name != 'validation'),
+)
 
 
-def build_openlane_test_configs(cfg):
+def build_openlane_test_configs(cfg, case='all'):
     """Return independent test configs for validation and official case splits."""
+    if case not in OPENLANE_TEST_CASE_CHOICES:
+        raise ValueError(
+            f'Unknown OpenLane test case {case!r}; expected one of '
+            f'{OPENLANE_TEST_CASE_CHOICES}.')
+    selected = OPENLANE_TEST_SPLITS
+    if case == 'validation':
+        selected = OPENLANE_TEST_SPLITS[:1]
+    elif case == 'test':
+        selected = OPENLANE_TEST_SPLITS[1:]
+    elif case != 'all':
+        selected = tuple(
+            item for item in OPENLANE_TEST_SPLITS if item[0] == case)
+
     case_configs = []
-    for name, split in OPENLANE_TEST_SPLITS:
+    for name, split in selected:
         case_cfg = deepcopy(cfg)
         case_cfg.test_dataloader.dataset.split = 'val'
         case_cfg.test_dataloader.dataset.dataset_cfg.val_split = split

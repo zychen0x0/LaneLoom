@@ -11,6 +11,7 @@ from LaneFormer.engine import (
     configure_test_experiment,
     remove_runtime_config_artifacts,
 )
+from LaneFormer.engine.openlane_test_cases import OPENLANE_TEST_CASE_CHOICES
 
 
 def parse_args():
@@ -20,6 +21,11 @@ def parse_args():
     parser.add_argument(
         '--work-dir', default=None,
         help='Experiment directory for test logs; defaults to checkpoint parent.')
+    parser.add_argument(
+        '--case', choices=OPENLANE_TEST_CASE_CHOICES, default='all',
+        help=('Evaluation selection: all runs validation plus every official '
+              'test case; validation runs only validation; test runs only '
+              'the official test cases; a case name runs that case alone.'))
     parser.add_argument('--launcher', choices=('none', 'pytorch', 'slurm', 'mpi'),
                         default='none')
     return parser.parse_args()
@@ -34,7 +40,7 @@ def main():
         Path(args.work_dir).resolve()
         if args.work_dir else Path(checkpoint).parent.parent / 'test_cases'
     )
-    for case_name, cfg in build_openlane_test_configs(base_cfg):
+    for case_name, cfg in build_openlane_test_configs(base_cfg, args.case):
         print(f'\n===== OpenLane evaluation: {case_name} =====')
         cfg.launcher = args.launcher
         cfg.load_from = checkpoint
