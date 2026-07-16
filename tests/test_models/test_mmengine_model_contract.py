@@ -75,6 +75,8 @@ def test_config_uses_top2_assignment_and_one_visibility_loss():
     assert 'visibility_dice_loss_weight' not in loss
     assert 'visibility_boundary_loss_weight' not in loss
     assert cfg.model.lane_head.lane_decoder.get('dn_num_groups', 0) == 0
+    assert cfg.model.lane_head.test_cfg.curve_nms.distance_threshold == 0.3
+    assert cfg.model.lane_head.test_cfg.curve_nms.match_ratio_threshold == 0.75
 
 
 def _bare_laneformer():

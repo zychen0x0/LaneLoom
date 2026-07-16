@@ -105,6 +105,25 @@ def test_anchor_metric_uses_assigned_indices_for_category_accuracy():
     assert values['Category Accuracy'] == 1.0
 
 
+def test_anchor_metric_excludes_queries_suppressed_by_curve_nms():
+    metric = METRICS.build(dict(
+        type='OpenLaneAnchorMetric', prefix=None, score_threshold=0.05))
+    sample = _sample()
+    sample['pred_x'] = sample['pred_x'].repeat(2, 1)
+    sample['pred_z'] = sample['pred_z'].repeat(2, 1)
+    sample['pred_visibility'] = sample['pred_visibility'].repeat(2, 1)
+    sample['pred_scores'] = torch.tensor([0.2, 0.1])
+    sample['pred_category'] = torch.tensor([2, 2])
+    sample['pred_nms_keep_queries'] = torch.tensor([True, False])
+
+    metric.process(None, [sample])
+    values = metric.compute_metrics(metric.results)
+
+    assert values['num_pred'] == 1.0
+    assert values['num_tp'] == 1.0
+    assert values['F1'] == 1.0
+
+
 def test_anchor_metric_uses_temporal_supplement_by_default_and_can_disable_it():
     sample = _sample()
     enhanced = sample['gt_lanes_3d'].clone()

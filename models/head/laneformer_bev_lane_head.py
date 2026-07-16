@@ -3,6 +3,8 @@ import torch.nn as nn
 
 from mmdet3d.registry import MODELS
 
+from .curve_nms import curve_nms
+
 
 @MODELS.register_module()
 class LaneFormerBEVLaneHead(nn.Module):
@@ -21,6 +23,7 @@ class LaneFormerBEVLaneHead(nn.Module):
             MODELS.build(query_sampler) if query_sampler is not None else None)
         self.test_cfg = test_cfg or {}
         self.score_threshold = float(self.test_cfg.get('score_threshold', 0.3))
+        self.curve_nms_cfg = self.test_cfg.get('curve_nms')
 
     @property
     def anchor_y_steps(self):
@@ -94,11 +97,25 @@ class LaneFormerBEVLaneHead(nn.Module):
                 img_feats, current_bev, img_metas))
         class_probability = predictions['pred_logits'].softmax(dim=-1)[..., 1:]
         scores, category = class_probability.max(dim=-1)
+        visibility = predictions['pred_vis'].sigmoid()
+        valid_queries = scores >= self.score_threshold
+        nms_keep_queries = scores.new_ones(scores.shape, dtype=bool)
+        if self.curve_nms_cfg is not None:
+            nms_keep_queries = curve_nms(
+                predictions['pred_x'], predictions['pred_z'], visibility,
+                scores, visibility_threshold=float(
+                    self.curve_nms_cfg.get('visibility_threshold', 0.5)),
+                distance_threshold=float(
+                    self.curve_nms_cfg.get('distance_threshold', 0.3)),
+                match_ratio_threshold=float(
+                    self.curve_nms_cfg.get('match_ratio_threshold', 0.75)))
+            valid_queries &= nms_keep_queries
         output = dict(
             x=predictions['pred_x'], z=predictions['pred_z'],
-            visibility=predictions['pred_vis'].sigmoid(), scores=scores,
+            visibility=visibility, scores=scores,
             category=category,
-            valid_queries=scores >= self.score_threshold,
+            valid_queries=valid_queries,
+            nms_keep_queries=nms_keep_queries,
             anchor_y_steps=self.anchor_y_steps)
         if anchor_prior is not None:
             output.update(

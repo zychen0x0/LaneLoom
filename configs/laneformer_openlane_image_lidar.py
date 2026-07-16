@@ -190,7 +190,13 @@ model = dict(
             focal_alpha=0.25,
             focal_gamma=2.0),
         test_cfg=dict(
-            score_threshold=0.3)),
+            score_threshold=0.3,
+            # Top2 supervision deliberately provides redundant candidates.
+            # Suppress only curves that agree over most of both visible spans.
+            curve_nms=dict(
+                visibility_threshold=0.5,
+                distance_threshold=0.3,
+                match_ratio_threshold=0.75))),
 )
 # ----------------------------------------------------model config end----------------------------------------------------
 

@@ -89,6 +89,9 @@ class OpenLaneAnchorMetric(BaseMetric):
 
         prediction_mask = pred_scores >= self.score_threshold
         prediction_mask &= (pred_vis >= self.visibility_threshold).any(axis=1)
+        if sample.get('pred_nms_keep_queries') is not None:
+            prediction_mask &= self._numpy(
+                sample['pred_nms_keep_queries']).astype(bool)
         gt_mask = (gt_vis >= self.visibility_threshold).any(axis=1)
         pred_indices = np.flatnonzero(prediction_mask)
         gt_indices = np.flatnonzero(gt_mask)

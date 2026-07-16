@@ -339,6 +339,8 @@ class LaneFormer(BaseModel):
                 pred_visibility=predictions['visibility'][index],
                 pred_scores=predictions['scores'][index],
                 pred_category=predictions['category'][index],
+                pred_valid_queries=predictions['valid_queries'][index],
+                pred_nms_keep_queries=predictions['nms_keep_queries'][index],
                 anchor_y_steps=predictions['anchor_y_steps'],
                 gt_lanes_3d=batch['gt_lanes_3d'][index],
                 gt_lanes_visibility=batch['gt_lanes_visibility'][index],
