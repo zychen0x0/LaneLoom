@@ -23,9 +23,32 @@ PYTHONPATH=/workspace CUDA_VISIBLE_DEVICES=0,1 \
 torchrun --nproc_per_node=2 --master_port=29502 \
 tools/test.py \
 configs/laneformer_openlane_image_lidar.py \
-work_dirs/laneformer_openlane_image_lidar/exp_date_YYYYMMDD_HHMMSS/checkpoints/epoch_24.pth \
+work_dirs/laneformer_openlane_image_lidar/exp_date_20260715_191319/checkpoints/best_OpenLane_F1_epoch_22.pth \
+--work-dir work_dirs/laneformer_openlane_image_lidar/nms_evaluation \
+--case validation \
 --launcher pytorch
 ```
+
+
+# 其他模式
+
+# 验证集 + 全部测试场景（默认行为）
+--case all
+
+# 只跑验证集
+--case validation
+
+# 只跑测试集
+--case test
+
+# 只跑单个场景
+--case curve_case
+--case intersection_case
+--case merge_split_case
+
+
+
+
 
 
 ## TensorBoard 可视化
@@ -33,6 +56,6 @@ work_dirs/laneformer_openlane_image_lidar/exp_date_YYYYMMDD_HHMMSS/checkpoints/e
 cd /workspace/LaneFormer
 
 tensorboard \
-  --logdir work_dirs/laneformer_openlane_image_lidar/exp_date_20260712_192936/Tensorboard \
+  --logdir work_dirs/laneformer_openlane_image_lidar/exp_date_20260715_191319/Tensorboard \
   --host 0.0.0.0 \
   --port 6006

@@ -1,3 +1,4 @@
+import json
 import os
 from pathlib import Path
 
@@ -514,6 +515,290 @@ def _draw_json_uv_lanes(image, label_info, resize_w, resize_h,
     return image
 
 
+def _raw_visible_ground_lanes(dataset, label_info):
+    """Return visible raw JSON lanes in ground coordinates, without y sorting."""
+    lane_cam_to_ground = dataset._build_calib(label_info)['lane_cam_to_ground']
+    lanes = []
+    for lane_info in label_info.get('lane_lines', []):
+        lane = np.asarray(lane_info.get('xyz', []), dtype=np.float32)
+        if lane.ndim != 2 or lane.shape[0] != 3:
+            continue
+        visibility = np.asarray(
+            lane_info.get('visibility', np.ones(lane.shape[1])),
+            dtype=np.float32)
+        lane_h = np.vstack((
+            lane, np.ones((1, lane.shape[1]), dtype=np.float32)))
+        ground = (lane_cam_to_ground @ lane_h)[:3].T.astype(np.float32)
+        lanes.append(ground[visibility > 0])
+    return lanes
+
+
+def _fit_ideal_scene_q0(lanes, visibility, pc_range, anchor_y_steps,
+                        num_queries=50, max_curvature=0.005,
+                        max_grade=0.05):
+    """Reproduce the GT-fitted, single-mode LiDAR Q0 upper bound."""
+    lanes = np.asarray(lanes, dtype=np.float32)
+    visibility = np.asarray(visibility, dtype=np.float32) > 0.5
+    lane_curvatures = []
+    lane_grades = []
+    for lane, valid in zip(lanes, visibility):
+        if valid.sum() < 4:
+            continue
+        points = lane[valid]
+        y = points[:, 1]
+        x_design = np.stack((np.ones_like(y), y, 0.5 * y ** 2), axis=-1)
+        z_design = np.stack((np.ones_like(y), y), axis=-1)
+        try:
+            lane_curvatures.append(float(
+                np.linalg.lstsq(x_design, points[:, 0], rcond=None)[0][2]))
+            lane_grades.append(float(
+                np.linalg.lstsq(z_design, points[:, 2], rcond=None)[0][1]))
+        except np.linalg.LinAlgError:
+            continue
+
+    curvature = float(np.clip(
+        np.median(lane_curvatures) if lane_curvatures else 0.0,
+        -max_curvature, max_curvature))
+    grade = float(np.clip(
+        np.median(lane_grades) if lane_grades else 0.0,
+        -max_grade, max_grade))
+    x_min, x_max = float(pc_range[0]), float(pc_range[3])
+    cell_width = (x_max - x_min) / num_queries
+    start_x = x_min + (np.arange(num_queries, dtype=np.float32) + 0.5) * cell_width
+    y = np.asarray(anchor_y_steps, dtype=np.float32)
+    x = start_x[:, None] + 0.5 * curvature * y[None, :] ** 2
+    z = np.broadcast_to(grade * y[None, :], x.shape)
+    q0 = np.stack((x, np.broadcast_to(y[None, :], x.shape), z), axis=-1)
+    return q0.astype(np.float32), curvature, grade
+
+
+def _cubic_fit_error(lane, valid, anchor_y_steps):
+    """Measure the best error attainable by the decoder's cubic x(y), z(y)."""
+    valid = np.asarray(valid, dtype=bool)
+    if valid.sum() < 2:
+        return None
+    y = np.asarray(anchor_y_steps, dtype=np.float32)[valid]
+    span = float(anchor_y_steps[-1] - anchor_y_steps[0])
+    t = (y - float(anchor_y_steps[0])) / span
+    basis = np.stack((
+        (1 - t) ** 3,
+        3 * (1 - t) ** 2 * t,
+        3 * (1 - t) * t ** 2,
+        t ** 3,
+    ), axis=-1)
+    target = np.asarray(lane, dtype=np.float32)[valid][:, (0, 2)]
+    try:
+        controls = np.linalg.lstsq(basis, target, rcond=None)[0]
+    except np.linalg.LinAlgError:
+        return None
+    residual = np.linalg.norm(basis @ controls - target, axis=-1)
+    return float(residual.mean())
+
+
+def _nearest_q0_error(lane, valid, q0):
+    valid = np.asarray(valid, dtype=bool)
+    if valid.sum() < 2:
+        return None
+    target = np.asarray(lane, dtype=np.float32)[valid][:, (0, 2)]
+    candidates = q0[:, valid][:, :, (0, 2)]
+    mean_distance = np.linalg.norm(
+        candidates - target[None, :, :], axis=-1).mean(axis=-1)
+    return float(mean_distance.min())
+
+
+def _y_reversal_count(points):
+    if len(points) < 3:
+        return 0
+    delta_y = np.diff(np.asarray(points)[:, 1])
+    direction = np.sign(delta_y[np.abs(delta_y) > 1e-3])
+    return int(np.sum(direction[1:] != direction[:-1]))
+
+
+def _draw_bev_gt_q0(raw_lanes, packed_lanes, packed_visibility, q0,
+                    pc_range, title, size=(380, 640)):
+    """Draw raw GT, fixed-y GT and the ideal single-mode Q0 in BEV."""
+    width, height = size
+    margin = 36
+    image = Image.new('RGB', size, (18, 18, 22))
+    draw = ImageDraw.Draw(image)
+    x_min, y_min = float(pc_range[0]), float(pc_range[1])
+    x_max, y_max = float(pc_range[3]), float(pc_range[4])
+
+    def xy(point):
+        x, y = float(point[0]), float(point[1])
+        u = margin + (x - x_min) / (x_max - x_min) * (width - 2 * margin)
+        v = height - margin - (y - y_min) / (y_max - y_min) * (
+            height - 2 * margin)
+        return int(round(u)), int(round(v))
+
+    for x in range(int(x_min), int(x_max) + 1, 5):
+        color = (65, 65, 72) if x == 0 else (38, 38, 44)
+        draw.line((xy((x, y_min)), xy((x, y_max))), fill=color, width=1)
+    for y in range(int(y_min), int(y_max) + 1, 10):
+        color = (65, 65, 72) if y == 0 else (38, 38, 44)
+        draw.line((xy((x_min, y)), xy((x_max, y))), fill=color, width=1)
+
+    for query in q0:
+        points = [xy(point) for point in query]
+        if len(points) >= 2:
+            draw.line(points, fill=(58, 66, 82), width=1)
+    for lane in raw_lanes:
+        points = [xy(point) for point in lane]
+        if len(points) >= 2:
+            draw.line(points, fill=(50, 220, 120), width=3)
+    for lane, valid in zip(packed_lanes, packed_visibility):
+        points = [xy(point) for point in lane[np.asarray(valid) > 0.5]]
+        if len(points) >= 2:
+            draw.line(points, fill=(255, 145, 45), width=2)
+
+    draw.rectangle((0, 0, width, 31), fill=(8, 8, 10))
+    draw.text((8, 5), title, fill=(245, 245, 245))
+    draw.rectangle((6, height - 27, width - 6, height - 5), fill=(8, 8, 10))
+    draw.text(
+        (10, height - 23), 'raw GT  fixed-y GT  ideal shared-mode Q0',
+        fill=(220, 220, 220))
+    draw.line((10, height - 9, 38, height - 9), fill=(50, 220, 120), width=3)
+    draw.line((92, height - 9, 120, height - 9), fill=(255, 145, 45), width=2)
+    draw.line((190, height - 9, 218, height - 9), fill=(58, 66, 82), width=1)
+    return image
+
+
+def _gt_audit_image_paths(cfg):
+    configured = os.getenv('LANEFORMER_GT_AUDIT_IMAGES')
+    if configured:
+        return [
+            Path(path).expanduser().resolve()
+            for path in configured.split(os.pathsep) if path.strip()
+        ]
+    image_root = Path(cfg.dataset_cfg.data_image_dir)
+    samples = [
+        ('segment-18418533015310829002_480_000_500_000_with_camera_labels',
+         '155008811255146600.jpg'),
+        ('segment-17987556068410436875_520_610_540_610_with_camera_labels',
+         '151355503476086500.jpg'),
+        ('segment-16534202648288984983_900_000_920_000_with_camera_labels',
+         '155934386699046500.jpg'),
+        ('segment-16534202648288984983_900_000_920_000_with_camera_labels',
+         '155934386888974400.jpg'),
+        ('segment-16534202648288984983_900_000_920_000_with_camera_labels',
+         '155934387138996700.jpg'),
+        ('segment-16534202648288984983_900_000_920_000_with_camera_labels',
+         '155934387579106400.jpg'),
+    ]
+    return [image_root / 'training' / scene / filename
+            for scene, filename in samples]
+
+
+def _label_path_for_image(cfg, image_path):
+    image_root = Path(cfg.dataset_cfg.data_image_dir).resolve()
+    relative = image_path.resolve().relative_to(image_root)
+    split, scene_name = relative.parts[:2]
+    label_dir = Path(cfg.dataset_cfg.data_label_dir) / split / scene_name
+    exact = label_dir / f'{image_path.stem}.json'
+    if exact.is_file():
+        return exact
+    matches = sorted(label_dir.glob(f'{image_path.stem[:12]}*.json'))
+    if len(matches) != 1:
+        raise FileNotFoundError(
+            f'Cannot uniquely find label for {image_path}: {matches}')
+    return matches[0]
+
+
+def _audit_one_gt_sample(dataset, cfg, image_path):
+    label_path = _label_path_for_image(cfg, image_path)
+    label_info = dataset._read_json(label_path)
+    raw_lanes = _raw_visible_ground_lanes(dataset, label_info)
+    packed = dataset._parse_openlane_gt(label_info)
+    packed_lanes = packed['gt_lanes_3d'].numpy()
+    packed_visibility = packed['gt_lanes_visibility'].numpy()
+    prior_cfg = cfg.model.lane_head.anchor_prior
+    q0, curvature, grade = _fit_ideal_scene_q0(
+        packed_lanes, packed_visibility, cfg.point_cloud_range,
+        dataset.anchor_y_steps, num_queries=prior_cfg.num_anchors,
+        max_curvature=prior_cfg.max_curvature,
+        max_grade=prior_cfg.max_grade)
+
+    lane_reports = []
+    for lane_idx, raw_lane in enumerate(raw_lanes):
+        x_span = float(np.ptp(raw_lane[:, 0])) if len(raw_lane) else 0.0
+        y_span = float(np.ptp(raw_lane[:, 1])) if len(raw_lane) else 0.0
+        represented = (
+            lane_idx < len(packed_visibility)
+            and int((packed_visibility[lane_idx] > 0.5).sum()) >= 2)
+        lane_report = dict(
+            lane_index=lane_idx,
+            raw_visible_points=int(len(raw_lane)),
+            raw_x_span_m=x_span,
+            raw_y_span_m=y_span,
+            transverse=bool(x_span > y_span and x_span > 1.0),
+            y_reversal_count=_y_reversal_count(raw_lane),
+            fixed_y_anchor_count=(
+                int((packed_visibility[lane_idx] > 0.5).sum())
+                if lane_idx < len(packed_visibility) else 0),
+            represented=represented,
+            ideal_q0_mean_distance_m=None,
+            cubic_q2_mean_fit_error_m=None,
+        )
+        if represented:
+            lane_report['ideal_q0_mean_distance_m'] = _nearest_q0_error(
+                packed_lanes[lane_idx], packed_visibility[lane_idx], q0)
+            lane_report['cubic_q2_mean_fit_error_m'] = _cubic_fit_error(
+                packed_lanes[lane_idx], packed_visibility[lane_idx],
+                dataset.anchor_y_steps)
+        lane_reports.append(lane_report)
+
+    q0_errors = [lane['ideal_q0_mean_distance_m'] for lane in lane_reports
+                 if lane['ideal_q0_mean_distance_m'] is not None]
+    cubic_errors = [lane['cubic_q2_mean_fit_error_m'] for lane in lane_reports
+                    if lane['cubic_q2_mean_fit_error_m'] is not None]
+    report = dict(
+        image_path=str(image_path),
+        label_path=str(label_path),
+        raw_lane_count=len(raw_lanes),
+        represented_lane_count=sum(lane['represented'] for lane in lane_reports),
+        transverse_raw_lane_count=sum(lane['transverse'] for lane in lane_reports),
+        unrepresented_raw_lane_count=sum(
+            lane['raw_visible_points'] >= 2 and not lane['represented']
+            for lane in lane_reports),
+        ideal_scene_curvature=curvature,
+        ideal_scene_grade=grade,
+        ideal_q0_mean_distance_m=(
+            float(np.mean(q0_errors)) if q0_errors else None),
+        ideal_q0_max_mean_distance_m=(max(q0_errors) if q0_errors else None),
+        cubic_q2_mean_fit_error_m=(
+            float(np.mean(cubic_errors)) if cubic_errors else None),
+        lanes=lane_reports,
+    )
+
+    image = Image.open(image_path).convert('RGB').resize(
+        (dataset.resize_w, dataset.resize_h), Image.BILINEAR)
+    image = _draw_json_uv_lanes(
+        image, label_info, dataset.resize_w, dataset.resize_h,
+        dataset.org_w, dataset.org_h, color=(50, 220, 120))
+    calib = dataset._build_calib(label_info)
+    lane2img = dataset._image_resize_matrix() @ calib['ground_to_raw_img']
+    image = _draw_ground_lanes_on_current_image(
+        image, packed['gt_lanes_3d'], packed['gt_lanes_visibility'],
+        lane2img, point_color=(255, 145, 45))
+    draw = ImageDraw.Draw(image)
+    draw.rectangle((0, 0, image.width, 28), fill=(8, 8, 10))
+    draw.text(
+        (8, 5),
+        f'{image_path.parent.name}/{image_path.name}  '
+        f'raw={report["raw_lane_count"]} fixed-y={report["represented_lane_count"]}',
+        fill=(245, 245, 245))
+    q0_mean = report['ideal_q0_mean_distance_m']
+    q0_max = report['ideal_q0_max_mean_distance_m']
+    q0_summary = (
+        'no represented GT' if q0_mean is None else
+        f'Q0 mean/max: {q0_mean:.2f}/{q0_max:.2f} m')
+    bev = _draw_bev_gt_q0(
+        raw_lanes, packed_lanes, packed_visibility, q0,
+        cfg.point_cloud_range, q0_summary,
+        size=(380, dataset.resize_h))
+    return report, image, bev
+
+
 @pytest.mark.skipif(
     os.getenv('LANEFORMER_VIS_INPUT') != '1',
     reason='Set LANEFORMER_VIS_INPUT=1 to save one OpenLane network-input preview.')
@@ -675,4 +960,76 @@ def test_visualize_temporal_gt_enhancement_comparison():
     assert output_path.is_file()
     assert sample_index >= 0
     assert sample['gt_lanes_memory_mask'].sum() >= 0
+
+
+@pytest.mark.skipif(
+    os.getenv('LANEFORMER_AUDIT_GT') != '1',
+    reason='Set LANEFORMER_AUDIT_GT=1 to audit raw GT, fixed-y GT and Q0.')
+def test_audit_openlane_gt_representation_and_q0_coverage():
+    """Save a multi-sample GT/Q0 report for long-tail OpenLane scenes.
+
+    The image panel compares raw JSON UV labels (green) with the fixed-y 3D
+    training target (orange).  The BEV panel additionally shows the optimistic
+    Q0 obtained by fitting the current shared curvature/grade prior to GT.
+    """
+    np.random.seed(0)
+    cfg = _load_cfg()
+    _require_openlane_data(cfg)
+    dataset_cfg = dict(cfg.train_dataloader['dataset'])
+    dataset_cfg['max_samples'] = 1
+    dataset = DATASETS.build(dataset_cfg)
+
+    image_paths = _gt_audit_image_paths(cfg)
+    missing = [str(path) for path in image_paths if not path.is_file()]
+    assert not missing, f'GT audit images do not exist: {missing}'
+
+    reports = []
+    rows = []
+    for image_path in image_paths:
+        report, image_panel, bev_panel = _audit_one_gt_sample(
+            dataset, cfg, image_path)
+        reports.append(report)
+        row = Image.new(
+            'RGB',
+            (image_panel.width + bev_panel.width, image_panel.height),
+            (255, 255, 255))
+        row.paste(image_panel, (0, 0))
+        row.paste(bev_panel, (image_panel.width, 0))
+        rows.append(row)
+
+    canvas = Image.new(
+        'RGB', (max(row.width for row in rows), sum(row.height for row in rows)),
+        (255, 255, 255))
+    y_offset = 0
+    for row in rows:
+        canvas.paste(row, (0, y_offset))
+        y_offset += row.height
+
+    output_path = Path(os.getenv(
+        'LANEFORMER_GT_AUDIT_OUTPUT',
+        'tests/test_data/test_pipelines/show_load_img/'
+        'openlane_gt_q0_audit.jpg'))
+    report_path = Path(os.getenv(
+        'LANEFORMER_GT_AUDIT_REPORT', str(output_path.with_suffix('.json'))))
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    report_path.parent.mkdir(parents=True, exist_ok=True)
+    canvas.save(output_path, quality=92)
+    report_path.write_text(
+        json.dumps(reports, ensure_ascii=False, indent=2), encoding='utf-8')
+
+    assert output_path.is_file()
+    assert report_path.is_file()
+
+    max_q0_distance = os.getenv('LANEFORMER_GT_AUDIT_MAX_Q0_DISTANCE')
+    if max_q0_distance is not None:
+        threshold = float(max_q0_distance)
+        violations = [
+            (report['image_path'], lane['lane_index'],
+             lane['ideal_q0_mean_distance_m'])
+            for report in reports for lane in report['lanes']
+            if (lane['ideal_q0_mean_distance_m'] is not None
+                and lane['ideal_q0_mean_distance_m'] > threshold)
+        ]
+        assert not violations, (
+            f'Ideal shared-mode Q0 exceeds {threshold} m: {violations}')
 # ----------------------------------------------------network input visualization end----------------------------------------------------
