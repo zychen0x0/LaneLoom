@@ -51,3 +51,34 @@ tests/test_data/test_pipelines/test_openlane_pipeline.py::test_audit_openlane_gt
 LANEFORMER_GT_AUDIT_MAX_Q0_DISTANCE=1.0
 ```
 
+
+## GT 三次 Bézier 二次拟合可视化
+
+下面的测试使用一个确定性真实样本，同时绘制原始 GT、第一次全点拟合、
+基于 `0.75m` residual 的 inlier 筛选，以及被稳定性检查拒绝的第二次病态
+拟合。输出包含相机投影、局部/全局 BEV、竖向曲线和设计矩阵条件数。
+
+```bash
+cd /workspace/LaneFormer
+
+PYTHONPATH=/workspace \
+LANEFORMER_VIS_PATHOLOGICAL_GT=1 \
+LANEFORMER_PATHOLOGICAL_GT_OUTPUT=tests/test_data/test_pipelines/show_load_img/openlane_pathological_bezier_refit.jpg \
+python -m pytest \
+tests/test_data/test_pipelines/test_openlane_pipeline.py::test_visualize_pathological_openlane_bezier_refit \
+-q -s
+```
+
+下面的真实样本展示另一种情况：inlier 覆盖完整、设计矩阵稳定，因此第二次
+拟合被接受，并把保留点上的 RMSE 从约 `0.144m` 降到 `0.013m`：
+
+```bash
+cd /workspace/LaneFormer
+
+PYTHONPATH=/workspace \
+LANEFORMER_VIS_BENEFICIAL_REFIT=1 \
+LANEFORMER_BENEFICIAL_REFIT_OUTPUT=tests/test_data/test_pipelines/show_load_img/openlane_beneficial_bezier_refit.jpg \
+python -m pytest \
+tests/test_data/test_pipelines/test_openlane_pipeline.py::test_visualize_beneficial_openlane_bezier_refit \
+-q -s
+```

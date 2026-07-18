@@ -183,6 +183,11 @@ class OpenLaneDataset(Dataset):
         'LoadOpenLaneAnnotations',
         'PackLaneFormerInputs',
     )
+    GT_REFIT_MIN_INLIERS = 6
+    GT_REFIT_MIN_SPAN_RATIO = 0.6
+    GT_REFIT_ENDPOINT_MARGIN_RATIO = 0.2
+    GT_REFIT_MAX_CONDITION = 1e3
+    GT_REFIT_MIN_RMSE_IMPROVEMENT = 1e-4
 
     # ---------------------------------------------------init start---------------------------------------------------
     def __init__(self,
@@ -931,12 +936,13 @@ class OpenLaneDataset(Dataset):
         return uv
 
     def _smooth_lane_ground(self, points):
-        """Fit one robust cubic Bezier x(y), z(y) curve to a whole lane.
+        """Fit full-support GT, then sample only anchors inside model support.
 
-        Large gaps do not split the lane.  The first cubic fit identifies
-        obvious x/z outliers; the second fit uses only inliers.  The y range
-        stays unchanged, so downstream fixed-y anchoring preserves the lane's
-        physical longitudinal extent.
+        Every visible raw point participates in the first cubic fit, including
+        points beyond the model's last y anchor.  A hard-inlier second fit is
+        accepted only when its design matrix still covers the original lane
+        support and is numerically stable.  Sampling never extrapolates beyond
+        either the raw GT support or the model anchor range.
         """
         points = np.asarray(points, dtype=np.float32)
         if not self.smooth_3d_gt:
@@ -947,50 +953,125 @@ class OpenLaneDataset(Dataset):
         _, unique_indices = np.unique(sorted_points[:, 1], return_index=True)
         sorted_points = sorted_points[unique_indices]
         retained_indices = order[unique_indices]
-        if (sorted_points.shape[0] < 4
-                or sorted_points[-1, 1] - sorted_points[0, 1] < 1e-4):
-            keep = np.zeros(points.shape[0], dtype=bool)
-            keep[retained_indices] = True
-            return sorted_points, keep
+        keep_all = np.zeros(points.shape[0], dtype=bool)
+        keep_all[retained_indices] = True
+        if sorted_points.shape[0] == 0:
+            return np.zeros((0, 3), dtype=np.float32), keep_all
 
-        y_min, y_max = sorted_points[0, 1], sorted_points[-1, 1]
+        y_min = float(sorted_points[0, 1])
+        y_max = float(sorted_points[-1, 1])
+        sample_mask = self._anchors_inside_support(y_min, y_max)
+        sample_y = self.anchor_y_steps[sample_mask].astype(np.float64)
+        if sample_y.size == 0:
+            # Preserve the raw annotation in ``ground_raw``/UV audit fields,
+            # but do not manufacture a target at the nearest boundary anchor.
+            return np.zeros((0, 3), dtype=np.float32), keep_all
+
+        raw_y = sorted_points[:, 1].astype(np.float64)
+        raw_xz = sorted_points[:, (0, 2)].astype(np.float64)
+
+        def linear_fallback():
+            sample_x = np.interp(sample_y, raw_y, raw_xz[:, 0])
+            sample_z = np.interp(sample_y, raw_y, raw_xz[:, 1])
+            return np.column_stack((sample_x, sample_y, sample_z)).astype(np.float32)
+
+        if sorted_points.shape[0] < 4 or y_max - y_min < 1e-4:
+            return linear_fallback(), keep_all
 
         def bezier_basis(y_values):
-            t = (np.asarray(y_values, dtype=np.float32) - y_min) / (y_max - y_min)
+            t = (np.asarray(y_values, dtype=np.float64) - y_min) / (y_max - y_min)
             return np.stack(
                 [(1.0 - t) ** 3, 3.0 * (1.0 - t) ** 2 * t,
                  3.0 * (1.0 - t) * t ** 2, t ** 3], axis=1)
 
-        design = bezier_basis(sorted_points[:, 1])
+        design = bezier_basis(raw_y)
 
         def fit(mask):
-            controls, _, _, _ = np.linalg.lstsq(
-                design[mask], sorted_points[mask][:, (0, 2)], rcond=None)
-            return controls
+            selected_design = design[mask]
+            controls, _, rank, _ = np.linalg.lstsq(
+                selected_design, raw_xz[mask], rcond=None)
+            condition = float(np.linalg.cond(selected_design))
+            return controls, int(rank), condition
 
+        all_points = np.ones(sorted_points.shape[0], dtype=bool)
+        selected_points = all_points
         try:
-            controls = fit(np.ones(sorted_points.shape[0], dtype=bool))
+            controls, first_rank, first_condition = fit(all_points)
+            if (first_rank < 4 or not np.isfinite(first_condition)
+                    or first_condition > 1e6):
+                return linear_fallback(), keep_all
+
             predicted = design @ controls
-            residual = np.linalg.norm(
-                sorted_points[:, (0, 2)] - predicted, axis=1)
+            residual = np.linalg.norm(raw_xz - predicted, axis=1)
             inliers = residual <= self.gt_outlier_residual
-            if inliers.sum() < 4:
-                inliers[:] = True
-            controls = fit(inliers)
-        except np.linalg.LinAlgError:
-            inliers = np.ones(sorted_points.shape[0], dtype=bool)
-            controls = None
+            if (not inliers.all()
+                    and self._inliers_support_stable(raw_y, design, inliers)):
+                refit_controls, refit_rank, refit_condition = fit(inliers)
+                first_rmse = float(np.sqrt(np.mean(residual[inliers] ** 2)))
+                refit_residual = np.linalg.norm(
+                    raw_xz[inliers] - design[inliers] @ refit_controls, axis=1)
+                refit_rmse = float(np.sqrt(np.mean(refit_residual ** 2)))
+                rmse_improvement = first_rmse - refit_rmse
+                if (refit_rank == 4 and np.isfinite(refit_condition)
+                        and refit_condition <= self.GT_REFIT_MAX_CONDITION
+                        and rmse_improvement
+                        >= self.GT_REFIT_MIN_RMSE_IMPROVEMENT):
+                    controls = refit_controls
+                    selected_points = inliers
+        except (np.linalg.LinAlgError, ValueError):
+            return linear_fallback(), keep_all
+
+        sample_xz = bezier_basis(sample_y) @ controls
+        if not self._bezier_fit_is_physical(sample_xz, sample_y, raw_xz, raw_y):
+            return linear_fallback(), keep_all
 
         keep = np.zeros(points.shape[0], dtype=bool)
-        keep[retained_indices[inliers]] = True
-        if controls is None:
-            return sorted_points[inliers], keep
-
-        start_idx, end_idx = self._anchor_index_bounds(y_min, y_max)
-        sample_y = self.anchor_y_steps[start_idx:end_idx + 1]
-        sample_xz = bezier_basis(sample_y) @ controls
+        keep[retained_indices[selected_points]] = True
         result = np.column_stack([sample_xz[:, 0], sample_y, sample_xz[:, 1]])
         return result.astype(np.float32), keep
+
+    def _inliers_support_stable(self, raw_y, design, inliers):
+        """Whether hard inliers can identify a full-support cubic safely."""
+        if int(inliers.sum()) < self.GT_REFIT_MIN_INLIERS:
+            return False
+        full_span = float(raw_y[-1] - raw_y[0])
+        inlier_y = raw_y[inliers]
+        if full_span <= 1e-6:
+            return False
+        if (float(inlier_y[-1] - inlier_y[0]) / full_span
+                < self.GT_REFIT_MIN_SPAN_RATIO):
+            return False
+        endpoint_margin = self.GT_REFIT_ENDPOINT_MARGIN_RATIO * full_span
+        if (inlier_y[0] > raw_y[0] + endpoint_margin
+                or inlier_y[-1] < raw_y[-1] - endpoint_margin):
+            return False
+        inlier_design = design[inliers]
+        condition = float(np.linalg.cond(inlier_design))
+        return bool(
+            np.linalg.matrix_rank(inlier_design) == 4
+            and np.isfinite(condition)
+            and condition <= self.GT_REFIT_MAX_CONDITION)
+
+    @staticmethod
+    def _bezier_fit_is_physical(sample_xz, sample_y, raw_xz, raw_y):
+        """Reject non-finite or explosive cubic interpolation results."""
+        if not np.isfinite(sample_xz).all():
+            return False
+        linear_xz = np.column_stack((
+            np.interp(sample_y, raw_y, raw_xz[:, 0]),
+            np.interp(sample_y, raw_y, raw_xz[:, 1])))
+        raw_extent = float(np.linalg.norm(np.ptp(raw_xz, axis=0)))
+        max_allowed_deviation = max(5.0, 2.0 * raw_extent)
+        deviation = np.linalg.norm(sample_xz - linear_xz, axis=1)
+        if float(deviation.max(initial=0.0)) > max_allowed_deviation:
+            return False
+
+        raw_min = raw_xz.min(axis=0)
+        raw_max = raw_xz.max(axis=0)
+        margin = np.maximum(np.asarray([5.0, 2.0]), 2.0 * (raw_max - raw_min))
+        return bool(
+            np.all(sample_xz >= raw_min - margin)
+            and np.all(sample_xz <= raw_max + margin))
 
     def _parse_lane_records(self, label_info, frame_meta=None,
                             is_history=False):
@@ -1103,24 +1184,31 @@ class OpenLaneDataset(Dataset):
         gt_lanes_memory_mask = np.zeros((self.max_lanes, num_y), dtype=np.float32)
 
         raw_lanes = []
-        for lane_idx, lane in enumerate(lanes_3d[:self.max_lanes]):
-            category = int(categories[lane_idx])
-            gt_lanes_category[lane_idx] = category
-            if track_ids is not None:
-                gt_lane_track_ids[lane_idx] = int(track_ids[lane_idx])
-            raw_lanes.append(lane.astype(np.float32))
+        packed_lane_idx = 0
+        for source_lane_idx, lane in enumerate(lanes_3d):
             if lane.shape[0] < 2:
                 continue
+            source_y = lane[:, 1].astype(np.float32)
+            if self._anchors_inside_support(
+                    source_y.min(), source_y.max()).sum() < 2:
+                continue
+            if packed_lane_idx >= self.max_lanes:
+                break
+
+            lane_idx = packed_lane_idx
+            packed_lane_idx += 1
+            category = int(categories[source_lane_idx])
+            gt_lanes_category[lane_idx] = category
+            if track_ids is not None:
+                gt_lane_track_ids[lane_idx] = int(track_ids[source_lane_idx])
+            raw_lanes.append(lane.astype(np.float32))
 
             y = lane[:, 1].astype(np.float32)
             unique_y, unique_idx = np.unique(y, return_index=True)
             if unique_y.shape[0] < 2:
                 continue
             lane = lane[unique_idx]
-            start_idx, end_idx = self._anchor_index_bounds(
-                unique_y.min(), unique_y.max())
-            valid = np.zeros(num_y, dtype=bool)
-            valid[start_idx:end_idx + 1] = True
+            valid = self._anchors_inside_support(unique_y.min(), unique_y.max())
             xs = np.interp(self.anchor_y_steps, unique_y, lane[:, 0]).astype(np.float32)
             zs = np.interp(self.anchor_y_steps, unique_y, lane[:, 2]).astype(np.float32)
 
@@ -1131,14 +1219,16 @@ class OpenLaneDataset(Dataset):
 
             if memory_point_masks is not None:
                 memory_points = np.asarray(
-                    memory_point_masks[lane_idx], dtype=np.float32)[unique_idx]
+                    memory_point_masks[source_lane_idx],
+                    dtype=np.float32)[unique_idx]
                 memory_interp = np.interp(
                     self.anchor_y_steps, unique_y, memory_points).astype(np.float32)
                 gt_lanes_memory_mask[lane_idx] = (
                     valid & (memory_interp > 0.5)).astype(np.float32)
 
-            if lane_idx < len(lanes_uvy) and lanes_uvy[lane_idx].shape[0] >= 2:
-                uv_y = lanes_uvy[lane_idx]
+            if (source_lane_idx < len(lanes_uvy)
+                    and lanes_uvy[source_lane_idx].shape[0] >= 2):
+                uv_y = lanes_uvy[source_lane_idx]
                 uv_unique_y, uv_unique_idx = np.unique(uv_y[:, 2], return_index=True)
                 if uv_unique_y.shape[0] >= 2:
                     gt_lanes_uv[lane_idx, :, 0] = np.interp(
@@ -1295,6 +1385,14 @@ class OpenLaneDataset(Dataset):
         start_idx, end_idx = nearest_index(y_min), nearest_index(y_max)
         return min(start_idx, end_idx), max(start_idx, end_idx)
 
+    def _anchors_inside_support(self, y_min, y_max):
+        """Select fixed anchors without endpoint rounding or extrapolation."""
+        anchors = self.anchor_y_steps
+        if not np.isfinite(y_min) or not np.isfinite(y_max):
+            return np.zeros(len(anchors), dtype=bool)
+        lower, upper = sorted((float(y_min), float(y_max)))
+        return (anchors >= lower) & (anchors <= upper)
+
     def _build_temporal_enhanced_gt(self, label_infos, frame_metas):
         """Reliably supplement current GT gaps with associated history segments.
 
@@ -1315,13 +1413,18 @@ class OpenLaneDataset(Dataset):
         current_records = {
             record['track_id']: record for record in self._parse_lane_records(
                 current_label, current_meta)
-            if record['track_id'] >= 0}
+            if (record['track_id'] >= 0
+                and record['ground'].shape[0] >= 2
+                and record.get('global', np.empty((0, 3))).shape[0] >= 2)}
         history_records = []
         for frame_idx in range(current_idx):
             for record in self._parse_lane_records(
                     label_infos[frame_idx], frame_metas[frame_idx],
                     is_history=True):
-                if record['track_id'] >= 0:
+                if (record['track_id'] >= 0
+                        and record['ground'].shape[0] >= 2
+                        and record.get(
+                            'global', np.empty((0, 3))).shape[0] >= 2):
                     history_records.append((frame_idx, record))
 
         histories_by_id = {}

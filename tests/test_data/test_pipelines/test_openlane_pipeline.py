@@ -1032,4 +1032,352 @@ def test_audit_openlane_gt_representation_and_q0_coverage():
         ]
         assert not violations, (
             f'Ideal shared-mode Q0 exceeds {threshold} m: {violations}')
+
+
+@pytest.mark.skipif(
+    os.getenv('LANEFORMER_VIS_PATHOLOGICAL_GT') != '1',
+    reason='Set LANEFORMER_VIS_PATHOLOGICAL_GT=1 to visualize a pathological fit.')
+def test_visualize_pathological_openlane_bezier_refit():
+    """Visualize a rejected hard-inlier refit and the guarded GT output."""
+    import matplotlib
+
+    matplotlib.use('Agg')
+    import matplotlib.pyplot as plt
+
+    cfg = _load_cfg()
+    _require_openlane_data(cfg)
+    dataset_cfg = dict(cfg.train_dataloader['dataset'])
+    dataset_cfg['max_samples'] = 1
+    dataset = DATASETS.build(dataset_cfg)
+
+    scene = 'segment-4058410353286511411_3980_000_4000_000_with_camera_labels'
+    image_path = Path(os.getenv(
+        'LANEFORMER_PATHOLOGICAL_GT_IMAGE',
+        str(Path(cfg.dataset_cfg.data_image_dir) / 'training' / scene
+            / '155077875506292500.jpg')))
+    assert image_path.is_file(), image_path
+    label_path = _label_path_for_image(cfg, image_path)
+    label_info = dataset._read_json(label_path)
+    lane_index = int(os.getenv('LANEFORMER_PATHOLOGICAL_GT_LANE_INDEX', '0'))
+    records = dataset._parse_lane_records(label_info)
+    assert 0 <= lane_index < len(records)
+
+    raw = np.asarray(records[lane_index]['ground_raw'], dtype=np.float64)
+    raw = raw[np.argsort(raw[:, 1])]
+    _, unique_indices = np.unique(raw[:, 1], return_index=True)
+    raw = raw[unique_indices]
+    y_min, y_max = raw[0, 1], raw[-1, 1]
+
+    def basis(y_values):
+        t = (np.asarray(y_values, dtype=np.float64) - y_min) / (y_max - y_min)
+        return np.stack((
+            (1 - t) ** 3,
+            3 * (1 - t) ** 2 * t,
+            3 * (1 - t) * t ** 2,
+            t ** 3,
+        ), axis=-1)
+
+    design = basis(raw[:, 1])
+    target = raw[:, (0, 2)]
+    controls_all = np.linalg.lstsq(design, target, rcond=None)[0]
+    residual = np.linalg.norm(design @ controls_all - target, axis=-1)
+    inliers = residual <= dataset.gt_outlier_residual
+    assert inliers.sum() >= 4
+    controls_refit = np.linalg.lstsq(
+        design[inliers], target[inliers], rcond=None)[0]
+
+    start_idx, end_idx = dataset._anchor_index_bounds(y_min, y_max)
+    anchor_y = dataset.anchor_y_steps[start_idx:end_idx + 1]
+    dense_y = np.linspace(anchor_y[0], anchor_y[-1], 400)
+
+    def curve(controls, y_values):
+        xz = basis(y_values) @ controls
+        return np.column_stack((xz[:, 0], y_values, xz[:, 1]))
+
+    all_curve = curve(controls_all, dense_y)
+    refit_curve = curve(controls_refit, dense_y)
+    current_smoothed = np.asarray(records[lane_index]['ground'], dtype=np.float64)
+    cond_all = float(np.linalg.cond(design))
+    cond_refit = float(np.linalg.cond(design[inliers]))
+
+    calib = dataset._build_calib(label_info)
+    ground_to_image = np.asarray(calib['ground_to_raw_img'], dtype=np.float64)
+
+    def project(points):
+        homogeneous = np.column_stack((points, np.ones(len(points))))
+        projected = (ground_to_image @ homogeneous.T).T
+        keep = projected[:, 2] > 1e-5
+        uv = np.full((len(points), 2), np.nan, dtype=np.float64)
+        uv[keep] = projected[keep, :2] / projected[keep, 2:3]
+        return uv
+
+    figure = plt.figure(figsize=(20, 11), constrained_layout=True)
+    grid = figure.add_gridspec(2, 3)
+    image_axis = figure.add_subplot(grid[0, 0])
+    residual_axis = figure.add_subplot(grid[0, 1])
+    info_axis = figure.add_subplot(grid[0, 2])
+    local_axis = figure.add_subplot(grid[1, 0])
+    global_axis = figure.add_subplot(grid[1, 1])
+    height_axis = figure.add_subplot(grid[1, 2])
+
+    image_axis.imshow(Image.open(image_path).convert('RGB'))
+    for points, color, label, width in (
+            (raw, '#32d583', 'raw GT points', 0),
+            (all_curve, '#22d3ee', 'first fit: all points', 2),
+            (refit_curve, '#ef4444', 'rejected second fit', 2),
+            (current_smoothed, '#a855f7', 'guarded training GT', 2)):
+        uv = project(points)
+        if width:
+            image_axis.plot(uv[:, 0], uv[:, 1], color=color, linewidth=width,
+                            label=label)
+        else:
+            image_axis.scatter(uv[:, 0], uv[:, 1], color=color, s=30,
+                               label=label)
+    image_axis.set_xlim(0, dataset.org_w)
+    image_axis.set_ylim(dataset.org_h, 0)
+    image_axis.set_title('Camera projection (pathological curve is mostly off-image)')
+    image_axis.legend(loc='lower left', fontsize=8)
+    image_axis.axis('off')
+
+    residual_axis.scatter(
+        raw[inliers, 1], residual[inliers], color='#22c55e', s=50,
+        label='kept as inlier')
+    residual_axis.scatter(
+        raw[~inliers, 1], residual[~inliers], color='#f59e0b', s=50,
+        label='removed')
+    residual_axis.axhline(
+        dataset.gt_outlier_residual, color='#ef4444', linestyle='--',
+        label=f'threshold={dataset.gt_outlier_residual:.2f}m')
+    residual_axis.set_xlabel('ground y (m)')
+    residual_axis.set_ylabel('first-fit x/z residual (m)')
+    residual_axis.set_title('Hard residual filtering removes y-range support')
+    residual_axis.grid(alpha=0.25)
+    residual_axis.legend(fontsize=8)
+
+    info_axis.axis('off')
+    info_axis.text(
+        0, 1,
+        '\n'.join((
+            'PATHOLOGICAL OPENLANE GT BEZIER REFIT',
+            f'image: {image_path.name}',
+            f'lane index: {lane_index}',
+            '',
+            f'raw y support: [{y_min:.2f}, {y_max:.2f}] m',
+            f'raw points: {len(raw)}',
+            f'hard inliers: {int(inliers.sum())}',
+            f'inlier y support: [{raw[inliers, 1].min():.2f}, '
+            f'{raw[inliers, 1].max():.2f}] m',
+            '',
+            f'condition, all points: {cond_all:.1f}',
+            f'condition, hard inliers: {cond_refit:.1f}',
+            '',
+            f'raw |x|max: {np.abs(raw[:, 0]).max():.2f} m',
+            f'raw |z|max: {np.abs(raw[:, 2]).max():.2f} m',
+            f'refit |x|max: {np.abs(refit_curve[:, 0]).max():.2f} m',
+            f'refit |z|max: {np.abs(refit_curve[:, 2]).max():.2f} m',
+            '',
+            'green: raw GT',
+            'cyan: first all-point cubic fit',
+            'red: rejected hard-inlier cubic refit',
+            'purple: guarded training GT',
+        )),
+        va='top', family='monospace', fontsize=11)
+
+    def draw_bev(axis, x_limits, title):
+        axis.plot(all_curve[:, 0], all_curve[:, 1], color='#22d3ee',
+                  linewidth=2, label='first fit')
+        axis.plot(refit_curve[:, 0], refit_curve[:, 1], color='#ef4444',
+                  linewidth=2, label='rejected second refit')
+        axis.plot(current_smoothed[:, 0], current_smoothed[:, 1],
+                  color='#a855f7', linewidth=2, linestyle='--',
+                  label='guarded GT')
+        axis.scatter(raw[inliers, 0], raw[inliers, 1], color='#22c55e',
+                     s=34, label='raw inlier')
+        axis.scatter(raw[~inliers, 0], raw[~inliers, 1], color='#f59e0b',
+                     marker='x', s=55, label='raw removed')
+        axis.set_xlim(*x_limits)
+        axis.set_ylim(anchor_y[0] - 0.5, anchor_y[-1] + 0.5)
+        axis.set_xlabel('ground x (m)')
+        axis.set_ylabel('forward y (m)')
+        axis.set_title(title)
+        axis.grid(alpha=0.25)
+        axis.legend(fontsize=8)
+
+    draw_bev(local_axis, (-15, 5), 'Local BEV: raw GT and stable first fit')
+    global_x_min = min(-30.0, float(refit_curve[:, 0].min()) * 1.02)
+    global_x_max = max(30.0, float(refit_curve[:, 0].max()) * 1.02)
+    draw_bev(global_axis, (global_x_min, global_x_max),
+             'Expanded BEV: second refit explodes')
+
+    height_axis.plot(dense_y, all_curve[:, 2], color='#22d3ee', linewidth=2,
+                     label='first fit')
+    height_axis.plot(dense_y, refit_curve[:, 2], color='#ef4444', linewidth=2,
+                     label='second refit')
+    height_axis.scatter(raw[inliers, 1], raw[inliers, 2], color='#22c55e',
+                        s=34, label='raw inlier')
+    height_axis.scatter(raw[~inliers, 1], raw[~inliers, 2], color='#f59e0b',
+                        marker='x', s=55, label='raw removed')
+    height_axis.set_xlabel('forward y (m)')
+    height_axis.set_ylabel('ground z (m)')
+    height_axis.set_title('Height profile: pathological vertical oscillation')
+    height_axis.grid(alpha=0.25)
+    height_axis.legend(fontsize=8)
+
+    figure.suptitle(
+        'Guard rejects the second fit when inliers collapse to the lane end',
+        fontsize=16)
+    output_path = Path(os.getenv(
+        'LANEFORMER_PATHOLOGICAL_GT_OUTPUT',
+        'tests/test_data/test_pipelines/show_load_img/'
+        'openlane_pathological_bezier_refit.jpg'))
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    figure.savefig(output_path, dpi=150, bbox_inches='tight')
+    plt.close(figure)
+
+    assert output_path.is_file()
+    assert cond_refit > 1e4
+    assert np.abs(current_smoothed[:, 0]).max() < 20
+
+
+@pytest.mark.skipif(
+    os.getenv('LANEFORMER_VIS_BENEFICIAL_REFIT') != '1',
+    reason='Set LANEFORMER_VIS_BENEFICIAL_REFIT=1 to compare a useful refit.')
+def test_visualize_beneficial_openlane_bezier_refit():
+    """Visualize a real lane where stable inlier refitting reduces residual."""
+    import matplotlib
+
+    matplotlib.use('Agg')
+    import matplotlib.pyplot as plt
+
+    cfg = _load_cfg()
+    _require_openlane_data(cfg)
+    dataset_cfg = dict(cfg.train_dataloader['dataset'])
+    dataset_cfg['max_samples'] = 1
+    dataset = DATASETS.build(dataset_cfg)
+
+    scene = 'segment-16238753252899859750_1340_000_1360_000_with_camera_labels'
+    image_path = Path(cfg.dataset_cfg.data_image_dir) / 'training' / scene \
+        / '154906697149727700.jpg'
+    label_info = dataset._read_json(_label_path_for_image(cfg, image_path))
+    lane_index = 1
+    record = dataset._parse_lane_records(label_info)[lane_index]
+    raw = np.asarray(record['ground_raw'], dtype=np.float64)
+    raw = raw[np.argsort(raw[:, 1])]
+    _, unique_indices = np.unique(raw[:, 1], return_index=True)
+    raw = raw[unique_indices]
+    y_min, y_max = raw[0, 1], raw[-1, 1]
+
+    def basis(y_values):
+        t = (np.asarray(y_values, dtype=np.float64) - y_min) / (y_max - y_min)
+        return np.stack(((1 - t) ** 3, 3 * (1 - t) ** 2 * t,
+                         3 * (1 - t) * t ** 2, t ** 3), axis=-1)
+
+    design = basis(raw[:, 1])
+    target = raw[:, (0, 2)]
+    first_controls = np.linalg.lstsq(design, target, rcond=None)[0]
+    first_residual = np.linalg.norm(design @ first_controls - target, axis=-1)
+    inliers = first_residual <= dataset.gt_outlier_residual
+    assert dataset._inliers_support_stable(raw[:, 1], design, inliers)
+    second_controls = np.linalg.lstsq(
+        design[inliers], target[inliers], rcond=None)[0]
+    second_residual = np.linalg.norm(
+        design[inliers] @ second_controls - target[inliers], axis=-1)
+    first_rmse = float(np.sqrt(np.mean(first_residual[inliers] ** 2)))
+    second_rmse = float(np.sqrt(np.mean(second_residual ** 2)))
+
+    dense_y = np.linspace(y_min, y_max, 500)
+    first_xz = basis(dense_y) @ first_controls
+    second_xz = basis(dense_y) @ second_controls
+    first_curve = np.column_stack((first_xz[:, 0], dense_y, first_xz[:, 1]))
+    second_curve = np.column_stack((second_xz[:, 0], dense_y, second_xz[:, 1]))
+
+    ground_to_image = np.asarray(
+        dataset._build_calib(label_info)['ground_to_raw_img'], dtype=np.float64)
+
+    def project(points):
+        projected = (ground_to_image @ np.column_stack(
+            (points, np.ones(len(points)))).T).T
+        uv = np.full((len(points), 2), np.nan, dtype=np.float64)
+        valid = projected[:, 2] > 1e-5
+        uv[valid] = projected[valid, :2] / projected[valid, 2:3]
+        return uv
+
+    figure, axes = plt.subplots(2, 2, figsize=(17, 12), constrained_layout=True)
+    image_axis, bev_axis, residual_axis, height_axis = axes.ravel()
+    image_axis.imshow(Image.open(image_path).convert('RGB'))
+    for curve, color, name in (
+            (first_curve, '#22d3ee', 'first fit'),
+            (second_curve, '#a855f7', 'accepted second fit')):
+        uv = project(curve)
+        image_axis.plot(uv[:, 0], uv[:, 1], color=color, linewidth=2, label=name)
+    raw_uv = project(raw)
+    image_axis.scatter(raw_uv[inliers, 0], raw_uv[inliers, 1], color='#22c55e',
+                       s=22, label='inlier GT')
+    image_axis.scatter(raw_uv[~inliers, 0], raw_uv[~inliers, 1], color='#f59e0b',
+                       marker='x', s=38, label='removed outlier')
+    image_axis.set_xlim(0, dataset.org_w)
+    image_axis.set_ylim(dataset.org_h, 0)
+    image_axis.axis('off')
+    image_axis.set_title('Camera projection')
+    image_axis.legend(fontsize=8)
+
+    bev_axis.plot(first_curve[:, 0], first_curve[:, 1], color='#22d3ee',
+                  linewidth=2, label='first fit')
+    bev_axis.plot(second_curve[:, 0], second_curve[:, 1], color='#a855f7',
+                  linewidth=2, label='accepted second fit')
+    bev_axis.scatter(raw[inliers, 0], raw[inliers, 1], color='#22c55e', s=20)
+    bev_axis.scatter(raw[~inliers, 0], raw[~inliers, 1], color='#f59e0b',
+                     marker='x', s=38)
+    bev_axis.set_xlabel('ground x (m)')
+    bev_axis.set_ylabel('forward y (m)')
+    bev_axis.set_title('BEV geometry')
+    bev_axis.grid(alpha=0.25)
+    bev_axis.legend(fontsize=8)
+
+    residual_axis.scatter(raw[inliers, 1], first_residual[inliers],
+                          color='#22d3ee', s=25, label='first fit residual')
+    residual_axis.scatter(raw[inliers, 1], second_residual,
+                          color='#a855f7', s=25, label='second fit residual')
+    residual_axis.scatter(raw[~inliers, 1], first_residual[~inliers],
+                          color='#f59e0b', marker='x', s=38,
+                          label='rejected raw points')
+    residual_axis.axhline(dataset.gt_outlier_residual, color='#ef4444',
+                          linestyle='--', label='0.75m threshold')
+    residual_axis.set_xlabel('forward y (m)')
+    residual_axis.set_ylabel('x/z residual (m)')
+    residual_axis.set_title(
+        f'Inlier RMSE: {first_rmse:.3f}m -> {second_rmse:.3f}m')
+    residual_axis.grid(alpha=0.25)
+    residual_axis.legend(fontsize=8)
+
+    height_axis.plot(dense_y, first_curve[:, 2], color='#22d3ee',
+                     linewidth=2, label='first fit')
+    height_axis.plot(dense_y, second_curve[:, 2], color='#a855f7',
+                     linewidth=2, label='accepted second fit')
+    height_axis.scatter(raw[inliers, 1], raw[inliers, 2], color='#22c55e', s=20)
+    height_axis.scatter(raw[~inliers, 1], raw[~inliers, 2], color='#f59e0b',
+                        marker='x', s=38)
+    height_axis.set_xlabel('forward y (m)')
+    height_axis.set_ylabel('ground z (m)')
+    height_axis.set_title('Vertical profile')
+    height_axis.grid(alpha=0.25)
+    height_axis.legend(fontsize=8)
+
+    figure.suptitle(
+        'Beneficial robust refit: reject isolated points while preserving support',
+        fontsize=15)
+    output_path = Path(os.getenv(
+        'LANEFORMER_BENEFICIAL_REFIT_OUTPUT',
+        'tests/test_data/test_pipelines/show_load_img/'
+        'openlane_beneficial_bezier_refit.jpg'))
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    figure.savefig(output_path, dpi=150, bbox_inches='tight')
+    plt.close(figure)
+
+    assert output_path.is_file()
+    assert second_rmse < first_rmse
+    assert np.allclose(
+        record['ground'][:, (0, 2)],
+        basis(record['ground'][:, 1]) @ second_controls,
+        atol=1e-4)
 # ----------------------------------------------------network input visualization end----------------------------------------------------

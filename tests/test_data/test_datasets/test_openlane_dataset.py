@@ -70,6 +70,151 @@ def _queue_as_list(queue):
     return list(queue)
 
 
+def _bare_gt_dataset(anchor_y_steps=None):
+    """Build the small dataset surface needed by GT smoothing unit tests."""
+    dataset = OpenLaneDataset.__new__(OpenLaneDataset)
+    dataset.anchor_y_steps = np.asarray(
+        anchor_y_steps if anchor_y_steps is not None else np.arange(0, 101, 2),
+        dtype=np.float32)
+    dataset.smooth_3d_gt = True
+    dataset.gt_outlier_residual = 0.75
+    dataset.max_lanes = 4
+    dataset.num_category = 21
+    return dataset
+
+
+def test_smooth_lane_fits_full_raw_support_but_samples_only_model_intersection():
+    dataset = _bare_gt_dataset(np.arange(0, 101, 10))
+    dataset.gt_outlier_residual = 1e6
+    y = np.asarray([20., 40., 60., 80., 100., 115., 130.])
+    x = np.asarray([0., 0.4, 1.2, 2.8, 5.5, 9.0, 14.0])
+    z = np.asarray([0., 0.1, 0.2, 0.5, 1.0, 1.8, 3.0])
+    raw = np.column_stack((x, y, z)).astype(np.float32)
+
+    smoothed, _ = dataset._smooth_lane_ground(raw)
+
+    t = (y - y.min()) / (y.max() - y.min())
+    design = np.stack(((1 - t) ** 3, 3 * (1 - t) ** 2 * t,
+                       3 * (1 - t) * t ** 2, t ** 3), axis=1)
+    controls = np.linalg.lstsq(design, raw[:, (0, 2)], rcond=None)[0]
+    sample_y = np.arange(20., 101., 10.)
+    sample_t = (sample_y - y.min()) / (y.max() - y.min())
+    sample_design = np.stack(
+        ((1 - sample_t) ** 3, 3 * (1 - sample_t) ** 2 * sample_t,
+         3 * (1 - sample_t) * sample_t ** 2, sample_t ** 3), axis=1)
+
+    assert np.array_equal(smoothed[:, 1], sample_y)
+    assert np.allclose(smoothed[:, (0, 2)], sample_design @ controls, atol=1e-5)
+    assert smoothed[:, 1].max() == 100.
+
+
+def test_smooth_lane_ignores_gt_entirely_outside_model_y_range():
+    dataset = _bare_gt_dataset()
+    raw = np.asarray([
+        [1., 110., 0.], [1.2, 115., 0.1], [1.5, 120., 0.2],
+        [1.9, 125., 0.4], [2.4, 130., 0.7],
+    ], dtype=np.float32)
+
+    smoothed, keep = dataset._smooth_lane_ground(raw)
+
+    assert smoothed.shape == (0, 3)
+    assert keep.all()  # The source annotation itself remains intact for audit/debug.
+
+
+def test_smooth_lane_uses_only_anchors_strictly_inside_raw_support():
+    dataset = _bare_gt_dataset()
+    y = np.asarray([20.1, 21.0, 22.0, 23.0, 24.1], dtype=np.float32)
+    raw = np.column_stack((0.1 * y, y, 0.01 * y)).astype(np.float32)
+
+    smoothed, _ = dataset._smooth_lane_ground(raw)
+
+    assert np.array_equal(smoothed[:, 1], np.asarray([22., 24.], dtype=np.float32))
+
+
+def test_smooth_lane_rejects_ill_conditioned_second_fit():
+    dataset = _bare_gt_dataset()
+    raw = np.asarray([
+        [0.408259, 10.491498, -0.171423],
+        [-1.563939, 10.617766, -0.205909],
+        [-4.619934, 18.279676, -0.197012],
+        [-6.894671, 18.759672, -0.202094],
+        [-7.824201, 18.990381, -0.210537],
+        [-7.672631, 19.098595, -0.183240],
+        [-7.141119, 19.204458, -0.191206],
+        [-6.964063, 19.310049, -0.176798],
+        [-7.501328, 19.421003, -0.207724],
+        [-8.335070, 19.631893, -0.218837],
+        [-7.861882, 19.909403, -0.188786],
+    ], dtype=np.float32)
+
+    smoothed, keep = dataset._smooth_lane_ground(raw)
+
+    assert np.isfinite(smoothed).all()
+    assert np.abs(smoothed[:, 0]).max() < 20.
+    assert keep.all()
+
+
+def test_pack_lane_targets_skips_out_of_range_lane_without_consuming_slot():
+    dataset = _bare_gt_dataset()
+    outside = np.asarray(
+        [[1., 110., 0.], [2., 120., 0.]], dtype=np.float32)
+    inside = np.asarray(
+        [[2.01, 20.1, 0.2], [2.41, 24.1, 0.24]], dtype=np.float32)
+    empty_uv = np.zeros((0, 2), dtype=np.float32)
+    empty_uvy = np.zeros((0, 3), dtype=np.float32)
+
+    packed = dataset._pack_lane_targets(
+        [outside, inside], [empty_uv, empty_uv], [empty_uvy, empty_uvy],
+        [3, 7], track_ids=[30, 70])
+
+    expected_visibility = torch.zeros(len(dataset.anchor_y_steps))
+    expected_visibility[[11, 12]] = 1.  # y=22m and y=24m only.
+    assert packed['gt_lanes_category'][0].item() == 7
+    assert packed['gt_lane_track_ids'][0].item() == 70
+    assert torch.equal(packed['gt_lanes_visibility'][0], expected_visibility)
+    assert packed['gt_lanes_visibility'][1:].sum().item() == 0
+
+
+def test_temporal_gt_skips_out_of_range_history_record_without_global_geometry():
+    dataset = _bare_gt_dataset()
+    current_ground = np.asarray(
+        [[0., 20., 0.], [0., 22., 0.]], dtype=np.float32)
+    current_record = {
+        'track_id': 11,
+        'ground': current_ground,
+        'global': current_ground.copy(),
+        'category': 1,
+    }
+    outside_history_record = dict(
+        track_id=11, ground=np.zeros((0, 3), dtype=np.float32), category=1)
+    current_label = dict(frame='current')
+    history_label = dict(frame='history')
+
+    dataset._build_calib = lambda label: {}
+    dataset._global_from_ground = lambda label, meta: np.eye(4, dtype=np.float32)
+    dataset._parse_lane_records = (
+        lambda label, meta=None, is_history=False:
+        [current_record] if label is current_label else [outside_history_record])
+    dataset._clip_current_roi_and_fov = lambda points, calib: points
+    dataset._split_lane_segments = lambda points, max_gap: [points]
+    dataset._arc_length_resample = lambda segments, step: segments
+
+    num_y = len(dataset.anchor_y_steps)
+    packed = dict(
+        gt_lanes_3d=torch.zeros(dataset.max_lanes, num_y, 3),
+        gt_lanes_visibility=torch.zeros(dataset.max_lanes, num_y),
+        gt_lanes_category=torch.zeros(dataset.max_lanes, dtype=torch.long),
+        gt_lane_track_ids=torch.tensor([11, -1, -1, -1]),
+    )
+    dataset._parse_openlane_gt = lambda label: packed
+
+    enhanced = dataset._build_temporal_enhanced_gt(
+        [history_label, current_label], [{}, {}])
+
+    assert enhanced['temporal_gt_associations'] == []
+    assert enhanced['gt_lane_track_ids_enhanced'][0].item() == 11
+
+
 def _assert_temporal_frame_meta(frame_meta, num_views):
     standard_keys = [
         'sample_idx',
