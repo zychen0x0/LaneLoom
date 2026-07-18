@@ -38,15 +38,17 @@ def test_config_enables_unused_parameter_detection_for_dynamic_bev_branches():
     assert cfg.model_wrapper_cfg.find_unused_parameters is True
 
 
-def test_config_couples_fifty_lidar_bezier_anchors_to_decoder_queries():
+def test_config_routes_ten_lidar_shapes_into_fifty_decoder_queries():
     config_path = Path(__file__).resolve().parents[2] / 'configs/laneformer_openlane_image_lidar.py'
     cfg = Config.fromfile(config_path)
     prior = cfg.model.lane_head.anchor_prior
+    router = cfg.model.lane_head.proposal_router
     decoder = cfg.model.lane_head.lane_decoder
 
-    assert prior.num_anchors == decoder.num_query == 50
+    assert prior.max_templates == 10
+    assert router.num_x_seeds == router.proposal_budget == decoder.num_query == 50
     assert prior.pc_range == decoder.pc_range
-    assert prior.anchor_y_steps == decoder.anchor_y_steps
+    assert prior.anchor_y_steps == router.anchor_y_steps == decoder.anchor_y_steps
     assert decoder.num_layers == 2
 
 

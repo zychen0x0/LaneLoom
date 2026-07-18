@@ -366,6 +366,21 @@ class LaneFormer(BaseModel):
                 initial_anchor_points=(
                     predictions['anchor_points'][index]
                     if 'anchor_points' in predictions else None),
+                lidar_shape_templates=(
+                    predictions['shape_templates'][index]
+                    if 'shape_templates' in predictions else None),
+                lidar_unique_template_count=(
+                    predictions['unique_template_counts'][index]
+                    if 'unique_template_counts' in predictions else None),
+                proposal_routing_scores=(
+                    predictions['routing_scores'][index]
+                    if 'routing_scores' in predictions else None),
+                proposal_template_indices=(
+                    predictions['selected_template_indices'][index]
+                    if 'selected_template_indices' in predictions else None),
+                proposal_seed_indices=(
+                    predictions['selected_seed_indices'][index]
+                    if 'selected_seed_indices' in predictions else None),
             ))
         return samples
 

@@ -970,7 +970,7 @@ def test_audit_openlane_gt_representation_and_q0_coverage():
 
     The image panel compares raw JSON UV labels (green) with the fixed-y 3D
     training target (orange).  The BEV panel additionally shows the optimistic
-    Q0 obtained by fitting the current shared curvature/grade prior to GT.
+    Q0 obtained by fitting the legacy shared curvature/grade baseline to GT.
     """
     np.random.seed(0)
     cfg = _load_cfg()

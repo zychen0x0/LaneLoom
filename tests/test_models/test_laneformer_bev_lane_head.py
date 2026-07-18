@@ -37,13 +37,20 @@ def _head(embed_dims, bev_h, bev_w, num_query, anchors, lidar_channels,
           dn_num_groups=0):
     return LaneFormerBEVLaneHead(
         anchor_prior=dict(
-            type='LaneFormerLiDARBezierAnchorPrior',
+            type='LaneFormerLiDARShapeTokenPrior',
             lidar_in_channels=lidar_channels,
+            pc_range=[-25., 0., -5., 25., 100., 5.],
+            anchor_y_steps=anchors,
+            max_templates=3,
+            hidden_channels=8),
+        proposal_router=dict(
+            type='LaneFormerShapeProposalRouter',
             image_in_channels=embed_dims,
             embed_dims=embed_dims,
             pc_range=[-25., 0., -5., 25., 100., 5.],
             anchor_y_steps=anchors,
-            num_anchors=num_query,
+            num_x_seeds=num_query,
+            proposal_budget=num_query,
             hidden_channels=8),
         bev_encoder=dict(
             type='LaneFormerBEVEncoder', embed_dims=embed_dims,
@@ -148,11 +155,6 @@ def test_lane_query_decoder_refines_lidar_bezier_controls():
         pc_range=[-25., 0., -5., 25., 100., 5.], num_query=2,
         anchor_y_steps=[0., 2., 4.], num_layers=1, num_heads=2,
         feedforward_channels=16, dropout=0.)
-    with torch.no_grad():
-        decoder.x_head.weight.zero_()
-        decoder.x_head.bias.zero_()
-        decoder.z_head.weight.zero_()
-        decoder.z_head.bias.zero_()
     x_controls = torch.tensor([[[-2., -2., -1.5, -1.],
                                 [2., 2., 2.5, 3.]]])
     z_controls = torch.tensor([[[0., .1, .2, .3],
@@ -165,6 +167,23 @@ def test_lane_query_decoder_refines_lidar_bezier_controls():
 
     assert torch.allclose(predictions['curve_x_controls'], x_controls, atol=1e-5)
     assert torch.allclose(predictions['curve_z_controls'], z_controls, atol=1e-5)
+
+
+def test_lane_query_decoder_preserves_out_of_range_q0_without_shape_clamping():
+    decoder = LaneFormerLaneQueryDecoder(
+        embed_dims=8, bev_h=2, bev_w=2,
+        pc_range=[-2., 0., -2., 2., 4., 2.], num_query=1,
+        anchor_y_steps=[0., 2., 4.], num_layers=1, num_heads=2,
+        feedforward_channels=16, dropout=0.)
+    x_controls = torch.tensor([[[1.5, 2.5, 3.5, 4.5]]])
+    z_controls = torch.tensor([[[0., .5, 1., 2.5]]])
+
+    predictions = decoder(
+        torch.randn(1, 8, 2, 2),
+        initial_reference_controls=(x_controls, z_controls))
+
+    assert torch.allclose(predictions['curve_x_controls'], x_controls)
+    assert torch.allclose(predictions['curve_z_controls'], z_controls)
 
 
 def test_bev_encoder_keeps_lidar_bev_without_constructing_image_bev():
@@ -218,8 +237,7 @@ def test_lane_query_decoder_composes_nonzero_residual_with_previous_controls():
     predictions = decoder(
         torch.randn(2, 8, 2, 2), torch.nn.Embedding(4, 8))
     previous = predictions['aux_predictions'][0]['curve_x_controls']
-    normalized_previous = ((previous + 25.0) / 50.0).clamp(1e-4, 1 - 1e-4)
-    expected = torch.sigmoid(torch.logit(normalized_previous) + residual) * 50.0 - 25.0
+    expected = previous + torch.tanh(torch.tensor(residual)) * 5.0
 
     assert torch.allclose(predictions['curve_x_controls'], expected, atol=1e-5)
     assert not torch.allclose(predictions['curve_x_controls'], previous)
@@ -363,8 +381,8 @@ def test_final_layer_loss_reaches_layer_zero_geometry_through_q1():
         initial_reference_controls=(controls, controls))
     predictions['pred_x'].sum().backward()
 
-    assert decoder.x_head.weight.grad is not None
-    assert decoder.x_head.weight.grad.abs().sum() > 0
+    assert decoder.x_reference_head.weight.grad is not None
+    assert decoder.x_reference_head.weight.grad.abs().sum() > 0
 
 
 def test_lane_head_samples_initial_and_layer_zero_refined_anchors():
@@ -408,8 +426,10 @@ def test_lane_head_degrades_gracefully_when_lidar_features_are_empty():
         _metas(1, image_size=8))
 
     assert output['x'].shape == (1, 3, 3)
-    assert torch.all(output['road_curvature'] == 0)
-    assert torch.all(output['road_grade'] == 0)
+    assert output['shape_templates'].shape == (1, 3, 4, 3)
+    assert output['unique_template_counts'].tolist() == [1]
+    assert 'road_curvature' not in output
+    assert 'road_grade' not in output
 
 
 def test_lane_head_uses_51_anchors_and_backpropagates():
@@ -449,15 +469,20 @@ def test_lane_head_uses_51_anchors_and_backpropagates():
     auxiliary_loss_names = {
         f'loss_aux_0_{name.removeprefix("loss_")}'
         for name in final_lane_loss_names}
-    lidar_loss_names = {'loss_lidar_curvature', 'loss_lidar_grade'}
+    lidar_loss_names = {
+        'loss_lidar_shape_cover', 'loss_lidar_shape_compact',
+        'loss_proposal_router'}
     assert set(losses) == (
         final_lane_loss_names | auxiliary_loss_names | lidar_loss_names)
     assert torch.isfinite(total_loss)
     assert head.lane_decoder.query.weight.grad is not None
     assert torch.isfinite(head.lane_decoder.query.weight.grad).all()
-    assert head.anchor_prior.geometry_encoder[-1].weight.grad is not None
+    assert head.anchor_prior.template_head[-1].weight.grad is not None
     assert torch.isfinite(
-        head.anchor_prior.geometry_encoder[-1].weight.grad).all()
+        head.anchor_prior.template_head[-1].weight.grad).all()
+    assert head.proposal_router.score_head[-1].weight.grad is not None
+    assert torch.isfinite(
+        head.proposal_router.score_head[-1].weight.grad).all()
     assert head.query_sampler.image_adapter.weight.grad is not None
     assert torch.isfinite(head.query_sampler.image_adapter.weight.grad).all()
 

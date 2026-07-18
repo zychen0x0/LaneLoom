@@ -11,7 +11,7 @@ class LaneFormerBEVLaneHead(nn.Module):
     """Small interface over configurable BEV encoder, decoder, and loss modules."""
 
     def __init__(self, bev_encoder, lane_decoder, loss_module,
-                 anchor_prior=None, query_sampler=None,
+                 anchor_prior=None, proposal_router=None, query_sampler=None,
                  test_cfg=None, **kwargs):
         super().__init__()
         self.bev_encoder = MODELS.build(bev_encoder)
@@ -19,6 +19,9 @@ class LaneFormerBEVLaneHead(nn.Module):
         self.loss_module = MODELS.build(loss_module)
         self.anchor_prior = (
             MODELS.build(anchor_prior) if anchor_prior is not None else None)
+        self.proposal_router = (
+            MODELS.build(proposal_router)
+            if proposal_router is not None else None)
         self.query_sampler = (
             MODELS.build(query_sampler) if query_sampler is not None else None)
         self.test_cfg = test_cfg or {}
@@ -47,23 +50,38 @@ class LaneFormerBEVLaneHead(nn.Module):
 
     def _predict(self, current_bev, anchor_prior=None,
                  query_feature_sampler=None):
+        initial_controls = None
+        query_features = None
+        if anchor_prior is not None and 'curve_x_controls' in anchor_prior:
+            initial_controls = (
+                anchor_prior['curve_x_controls'],
+                anchor_prior['curve_z_controls'])
+            query_features = anchor_prior.get('query_features')
         predictions = self.lane_decoder(
             current_bev,
-            initial_reference_controls=(
-                (anchor_prior['curve_x_controls'],
-                 anchor_prior['curve_z_controls'])
-                if anchor_prior is not None else None),
+            query_features=query_features,
+            initial_reference_controls=initial_controls,
             query_feature_sampler=query_feature_sampler)
         if anchor_prior is not None:
-            predictions['road_curvature'] = anchor_prior['curvature']
-            predictions['road_grade'] = anchor_prior['grade']
-            predictions['anchor_points'] = anchor_prior['anchor_points']
+            for key in (
+                    'curvature', 'grade', 'anchor_points', 'shape_templates',
+                    'shape_points', 'shape_yaw', 'shape_pitch',
+                    'routing_scores',
+                    'selected_template_indices', 'selected_seed_indices'):
+                if key in anchor_prior:
+                    predictions[key] = anchor_prior[key]
+            if 'unique_template_mask' in anchor_prior:
+                predictions['unique_template_counts'] = (
+                    anchor_prior['unique_template_mask'].sum(dim=-1))
         return predictions
 
     def _anchor_prior(self, img_feats, pts_feats, img_metas):
         if self.anchor_prior is None:
             return None
-        return self.anchor_prior(pts_feats, img_feats)
+        prior = self.anchor_prior(pts_feats, img_feats, img_metas)
+        if self.proposal_router is not None:
+            prior.update(self.proposal_router(prior, img_feats, img_metas))
+        return prior
 
     def _query_feature_sampler(self, img_feats, lidar_bev, img_metas):
         if self.query_sampler is None:
@@ -86,6 +104,10 @@ class LaneFormerBEVLaneHead(nn.Module):
             losses.update(self.anchor_prior.loss(
                 anchor_prior, targets['gt_lanes_3d'],
                 targets['gt_lanes_visibility']))
+            if self.proposal_router is not None:
+                losses.update(self.proposal_router.loss(
+                    anchor_prior, targets['gt_lanes_3d'],
+                    targets['gt_lanes_visibility']))
         return losses
 
     def predict(self, img_feats, pts_feats, img_metas, prev_bev=None, **kwargs):
@@ -118,8 +140,14 @@ class LaneFormerBEVLaneHead(nn.Module):
             nms_keep_queries=nms_keep_queries,
             anchor_y_steps=self.anchor_y_steps)
         if anchor_prior is not None:
-            output.update(
-                road_curvature=predictions['road_curvature'],
-                road_grade=predictions['road_grade'],
-                anchor_points=predictions['anchor_points'])
+            if 'curvature' in predictions:
+                output['road_curvature'] = predictions['curvature']
+            if 'grade' in predictions:
+                output['road_grade'] = predictions['grade']
+            for key in (
+                    'anchor_points', 'shape_templates', 'shape_points',
+                    'routing_scores', 'unique_template_counts',
+                    'selected_template_indices', 'selected_seed_indices'):
+                if key in predictions:
+                    output[key] = predictions[key]
         return output

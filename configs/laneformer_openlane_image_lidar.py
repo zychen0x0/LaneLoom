@@ -120,21 +120,40 @@ model = dict(
     # LiDAR geometry prior plus curve-aligned temporal FV/LiDAR sampling.
     lane_head=dict(
         type='LaneFormerBEVLaneHead',
-        # LiDAR predicts one road curvature/grade pair and initializes 50
-        # one-metre Bézier anchors. Image evidence is sampled in the decoder.
+        # LiDAR predicts at most ten translation-invariant road-shape tokens.
+        # A light current-frame P3 router translates them over 50 x cells and
+        # keeps a fixed 50-query budget for the existing two-layer decoder.
         anchor_prior=dict(
-            type='LaneFormerLiDARBezierAnchorPrior',
+            type='LaneFormerLiDARShapeTokenPrior',
             lidar_in_channels=512,
             pc_range=point_cloud_range,
             anchor_y_steps=[2.0 * i for i in range(51)],
-            num_anchors=50,
+            max_templates=10,
             hidden_channels=64,
-            # At y=100 m these bounds imply at most 25 m lateral bending and
-            # 5 m height change, matching the decoder's configured xyz range.
-            max_curvature=0.005,
-            max_grade=0.05,
-            curvature_loss_weight=1.0,
-            grade_loss_weight=1.0),
+            max_yaw_degrees=30.0,
+            max_pitch_degrees=3.0,
+            yaw_scale_degrees=5.0,
+            pitch_scale_degrees=1.0,
+            curvature_scale=0.002,
+            vertical_curvature_scale=0.001,
+            shape_softmin_temperature=0.25,
+            compact_temperature=0.25,
+            shape_nms_threshold=1.0,
+            shape_cover_loss_weight=1.0,
+            compact_loss_weight=0.05),
+        proposal_router=dict(
+            type='LaneFormerShapeProposalRouter',
+            image_in_channels=_dim_,
+            embed_dims=_dim_,
+            pc_range=point_cloud_range,
+            anchor_y_steps=[2.0 * i for i in range(51)],
+            num_x_seeds=50,
+            proposal_budget=50,
+            hidden_channels=64,
+            positive_distance_threshold=1.0,
+            routing_loss_weight=1.0,
+            focal_alpha=0.75,
+            focal_gamma=2.0),
         bev_encoder=dict(
             type='LaneFormerBEVEncoder',
             embed_dims=_dim_,

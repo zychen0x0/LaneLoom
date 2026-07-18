@@ -66,6 +66,8 @@ class LaneFormerLaneQueryDecoder(nn.Module):
                  visibility_temperature=0.75,
                  visibility_start_prior=0.14,
                  visibility_end_prior=0.58,
+                 reference_x_residual_scale=5.0,
+                 reference_z_residual_scale=1.0,
                  **kwargs):
         super().__init__()
         self.embed_dims = int(embed_dims)
@@ -93,6 +95,11 @@ class LaneFormerLaneQueryDecoder(nn.Module):
                 'denoising queries are not supported by the per-query '
                 'evidence decoder; use Top2 auxiliary supervision.')
         self.visibility_temperature = float(visibility_temperature)
+        self.reference_x_residual_scale = float(reference_x_residual_scale)
+        self.reference_z_residual_scale = float(reference_z_residual_scale)
+        if (self.reference_x_residual_scale <= 0
+                or self.reference_z_residual_scale <= 0):
+            raise ValueError('Reference residual scales must be positive.')
         if self.visibility_temperature <= 0:
             raise ValueError('visibility_temperature must be positive.')
         visibility_start_prior = float(visibility_start_prior)
@@ -113,6 +120,10 @@ class LaneFormerLaneQueryDecoder(nn.Module):
         self.norm = nn.LayerNorm(embed_dims)
         self.x_head = nn.Linear(embed_dims, self.num_control_points)
         self.z_head = nn.Linear(embed_dims, self.num_control_points)
+        self.x_reference_head = nn.Linear(
+            embed_dims, self.num_control_points)
+        self.z_reference_head = nn.Linear(
+            embed_dims, self.num_control_points)
         self.x_refine_heads = nn.ModuleList([
             nn.Linear(embed_dims, self.num_control_points)
             for _ in range(max(self.num_layers - 1, 0))])
@@ -141,7 +152,8 @@ class LaneFormerLaneQueryDecoder(nn.Module):
         nn.init.constant_(
             self.vis_bounds_head.bias[1],
             torch.logit(torch.tensor(end_probability)))
-        for head in (*self.x_refine_heads, *self.z_refine_heads,
+        for head in (self.x_reference_head, self.z_reference_head,
+                     *self.x_refine_heads, *self.z_refine_heads,
                      *self.vis_bounds_refine_heads):
             nn.init.zeros_(head.weight)
             nn.init.zeros_(head.bias)
@@ -150,19 +162,27 @@ class LaneFormerLaneQueryDecoder(nn.Module):
                             reference_visibility=None, layer_idx=0):
         x_range = self.pc_range[3] - self.pc_range[0]
         z_range = max(abs(self.pc_range[2]), abs(self.pc_range[5]))
-        x_head = self.x_head if layer_idx == 0 else self.x_refine_heads[layer_idx - 1]
-        z_head = self.z_head if layer_idx == 0 else self.z_refine_heads[layer_idx - 1]
-        x_logits = x_head(query)
-        z_logits = z_head(query)
-        if reference_controls is not None:
+        if reference_controls is None:
+            if layer_idx != 0:
+                raise ValueError(
+                    'Only the first decoder layer may omit curve references.')
+            x_logits = self.x_head(query)
+            z_logits = self.z_head(query)
+            curve_x_controls = (
+                torch.sigmoid(x_logits) * x_range + self.pc_range[0])
+            curve_z_controls = torch.tanh(z_logits) * z_range
+        else:
+            x_head = (self.x_reference_head if layer_idx == 0
+                      else self.x_refine_heads[layer_idx - 1])
+            z_head = (self.z_reference_head if layer_idx == 0
+                      else self.z_refine_heads[layer_idx - 1])
+            x_logits = x_head(query)
+            z_logits = z_head(query)
             reference_x, reference_z = reference_controls
-            normalized_x = ((reference_x - self.pc_range[0]) / x_range).clamp(
-                1e-4, 1 - 1e-4)
-            normalized_z = (reference_z / z_range).clamp(-1 + 1e-4, 1 - 1e-4)
-            x_logits = x_logits + torch.logit(normalized_x)
-            z_logits = z_logits + torch.atanh(normalized_z)
-        curve_x_controls = torch.sigmoid(x_logits) * x_range + self.pc_range[0]
-        curve_z_controls = torch.tanh(z_logits) * z_range
+            curve_x_controls = reference_x + (
+                torch.tanh(x_logits) * self.reference_x_residual_scale)
+            curve_z_controls = reference_z + (
+                torch.tanh(z_logits) * self.reference_z_residual_scale)
         visibility_head = (
             self.vis_bounds_head if layer_idx == 0
             else self.vis_bounds_refine_heads[layer_idx - 1])
