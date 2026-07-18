@@ -427,6 +427,10 @@ def test_lane_head_degrades_gracefully_when_lidar_features_are_empty():
 
     assert output['x'].shape == (1, 3, 3)
     assert output['shape_templates'].shape == (1, 3, 4, 3)
+    assert output['shape_lateral_slopes'].shape == (1, 3, 3)
+    assert output['shape_vertical_slopes'].shape == (1, 3, 3)
+    assert output['shape_control_yaw_degrees'].shape == (1, 3, 3)
+    assert output['shape_control_pitch_degrees'].shape == (1, 3, 3)
     assert output['unique_template_counts'].tolist() == [1]
     assert 'road_curvature' not in output
     assert 'road_grade' not in output

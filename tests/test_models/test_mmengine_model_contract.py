@@ -46,6 +46,10 @@ def test_config_routes_ten_lidar_shapes_into_fifty_decoder_queries():
     decoder = cfg.model.lane_head.lane_decoder
 
     assert prior.max_templates == 10
+    assert prior.lateral_slope_scale == 0.1
+    assert prior.vertical_slope_scale == 0.03
+    assert 'max_yaw_degrees' not in prior
+    assert 'max_pitch_degrees' not in prior
     assert router.num_x_seeds == router.proposal_budget == decoder.num_query == 50
     assert prior.pc_range == decoder.pc_range
     assert prior.anchor_y_steps == router.anchor_y_steps == decoder.anchor_y_steps

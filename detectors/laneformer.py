@@ -369,6 +369,18 @@ class LaneFormer(BaseModel):
                 lidar_shape_templates=(
                     predictions['shape_templates'][index]
                     if 'shape_templates' in predictions else None),
+                lidar_shape_lateral_slopes=(
+                    predictions['shape_lateral_slopes'][index]
+                    if 'shape_lateral_slopes' in predictions else None),
+                lidar_shape_vertical_slopes=(
+                    predictions['shape_vertical_slopes'][index]
+                    if 'shape_vertical_slopes' in predictions else None),
+                lidar_shape_control_yaw_degrees=(
+                    predictions['shape_control_yaw_degrees'][index]
+                    if 'shape_control_yaw_degrees' in predictions else None),
+                lidar_shape_control_pitch_degrees=(
+                    predictions['shape_control_pitch_degrees'][index]
+                    if 'shape_control_pitch_degrees' in predictions else None),
                 lidar_unique_template_count=(
                     predictions['unique_template_counts'][index]
                     if 'unique_template_counts' in predictions else None),

@@ -65,7 +65,9 @@ class LaneFormerBEVLaneHead(nn.Module):
         if anchor_prior is not None:
             for key in (
                     'curvature', 'grade', 'anchor_points', 'shape_templates',
-                    'shape_points', 'shape_yaw', 'shape_pitch',
+                    'shape_points', 'shape_lateral_slopes',
+                    'shape_vertical_slopes', 'shape_control_yaw_degrees',
+                    'shape_control_pitch_degrees',
                     'routing_scores',
                     'selected_template_indices', 'selected_seed_indices'):
                 if key in anchor_prior:
@@ -146,6 +148,9 @@ class LaneFormerBEVLaneHead(nn.Module):
                 output['road_grade'] = predictions['grade']
             for key in (
                     'anchor_points', 'shape_templates', 'shape_points',
+                    'shape_lateral_slopes', 'shape_vertical_slopes',
+                    'shape_control_yaw_degrees',
+                    'shape_control_pitch_degrees',
                     'routing_scores', 'unique_template_counts',
                     'selected_template_indices', 'selected_seed_indices'):
                 if key in predictions:

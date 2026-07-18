@@ -130,8 +130,10 @@ model = dict(
             anchor_y_steps=[2.0 * i for i in range(51)],
             max_templates=10,
             hidden_channels=64,
-            max_yaw_degrees=30.0,
-            max_pitch_degrees=3.0,
+            # Scales normalize the six unbounded slope outputs; they are not
+            # hard limits and do not restrict cubic-Bézier expressiveness.
+            lateral_slope_scale=0.1,
+            vertical_slope_scale=0.03,
             yaw_scale_degrees=5.0,
             pitch_scale_degrees=1.0,
             curvature_scale=0.002,

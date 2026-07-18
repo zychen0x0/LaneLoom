@@ -19,7 +19,7 @@ class LaneFormerLiDARShapeTokenPrior(nn.Module):
 
     def __init__(self, lidar_in_channels, pc_range, anchor_y_steps,
                  max_templates=10, hidden_channels=64,
-                 max_yaw_degrees=30.0, max_pitch_degrees=3.0,
+                 lateral_slope_scale=0.1, vertical_slope_scale=0.03,
                  yaw_scale_degrees=5.0, pitch_scale_degrees=1.0,
                  curvature_scale=0.002, vertical_curvature_scale=0.001,
                  yaw_weight=1.0, pitch_weight=1.0,
@@ -31,10 +31,18 @@ class LaneFormerLiDARShapeTokenPrior(nn.Module):
                  compact_loss_weight=0.05,
                  **kwargs):
         super().__init__()
+        legacy_bounds = sorted(
+            {'max_yaw_degrees', 'max_pitch_degrees'} & kwargs.keys())
+        if legacy_bounds:
+            names = ', '.join(legacy_bounds)
+            raise TypeError(
+                f'{names} were removed because Shape Tokens now predict '
+                'unbounded slopes; use lateral_slope_scale and '
+                'vertical_slope_scale for numerical conditioning.')
         self.pc_range = tuple(float(value) for value in pc_range)
         self.max_templates = int(max_templates)
-        self.max_yaw_degrees = float(max_yaw_degrees)
-        self.max_pitch_degrees = float(max_pitch_degrees)
+        self.lateral_slope_scale = float(lateral_slope_scale)
+        self.vertical_slope_scale = float(vertical_slope_scale)
         self.shape_softmin_temperature = float(shape_softmin_temperature)
         self.compact_temperature = float(compact_temperature)
         self.shape_nms_threshold = float(shape_nms_threshold)
@@ -52,8 +60,8 @@ class LaneFormerLiDARShapeTokenPrior(nn.Module):
         )
         if self.max_templates <= 0:
             raise ValueError('max_templates must be positive.')
-        if self.max_yaw_degrees <= 0 or self.max_pitch_degrees <= 0:
-            raise ValueError('Maximum yaw and pitch must be positive.')
+        if self.lateral_slope_scale <= 0 or self.vertical_slope_scale <= 0:
+            raise ValueError('Slope scales must be positive.')
         if min(self.shape_scales) <= 0:
             raise ValueError('All shape feature scales must be positive.')
         if self.shape_softmin_temperature <= 0 or self.compact_temperature <= 0:
@@ -112,15 +120,18 @@ class LaneFormerLiDARShapeTokenPrior(nn.Module):
             tokens = context.unsqueeze(1) + self.shape_tokens.weight.unsqueeze(0)
             raw = self.template_head(tokens)
             from_lidar = True
-        yaw = torch.tanh(raw[..., :3]) * self.max_yaw_degrees
-        pitch = torch.tanh(raw[..., 3:]) * self.max_pitch_degrees
+        lateral_slopes = raw[..., :3] * self.lateral_slope_scale
+        vertical_slopes = raw[..., 3:] * self.vertical_slope_scale
         segment_length = self.anchor_y_steps[-1].to(raw) / 3.0
-        delta_x = segment_length * torch.tan(torch.deg2rad(yaw))
-        delta_z = segment_length * torch.tan(torch.deg2rad(pitch))
+        delta_x = segment_length * lateral_slopes
+        delta_z = segment_length * vertical_slopes
         zeros = raw.new_zeros(raw.size(0), self.max_templates, 1)
         x_controls = torch.cat((zeros, torch.cumsum(delta_x, dim=-1)), dim=-1)
         z_controls = torch.cat((zeros, torch.cumsum(delta_z, dim=-1)), dim=-1)
-        return x_controls, z_controls, yaw, pitch, from_lidar
+        control_yaw_degrees = torch.rad2deg(torch.atan(lateral_slopes))
+        control_pitch_degrees = torch.rad2deg(torch.atan(vertical_slopes))
+        return (x_controls, z_controls, lateral_slopes, vertical_slopes,
+                control_yaw_degrees, control_pitch_degrees, from_lidar)
 
     def _sample_curves(self, x_controls, z_controls):
         basis = self.bezier_basis.to(x_controls)
@@ -240,8 +251,9 @@ class LaneFormerLiDARShapeTokenPrior(nn.Module):
             pairwise.detach(), self.shape_nms_threshold)
 
     def forward(self, pts_feats, img_feats=None, img_metas=None):
-        x_controls, z_controls, yaw, pitch, from_lidar = self._relative_controls(
-            pts_feats, img_feats)
+        (x_controls, z_controls, lateral_slopes, vertical_slopes,
+         control_yaw_degrees, control_pitch_degrees,
+         from_lidar) = self._relative_controls(pts_feats, img_feats)
         shape_points = self._sample_curves(x_controls, z_controls)
         control_y = self.control_y.to(x_controls).view(1, 1, 4).expand_as(
             x_controls)
@@ -251,8 +263,10 @@ class LaneFormerLiDARShapeTokenPrior(nn.Module):
         return dict(
             shape_x_controls=x_controls,
             shape_z_controls=z_controls,
-            shape_yaw=yaw,
-            shape_pitch=pitch,
+            shape_lateral_slopes=lateral_slopes,
+            shape_vertical_slopes=vertical_slopes,
+            shape_control_yaw_degrees=control_yaw_degrees,
+            shape_control_pitch_degrees=control_pitch_degrees,
             shape_templates=shape_templates,
             shape_points=shape_points,
             unique_template_indices=unique_indices,

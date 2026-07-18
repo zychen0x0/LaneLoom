@@ -1,3 +1,4 @@
+import pytest
 import torch
 
 from LaneFormer.models.head.lidar_shape_token_prior import (
@@ -19,8 +20,8 @@ def _prior(max_templates=3):
         anchor_y_steps=ANCHORS,
         max_templates=max_templates,
         hidden_channels=8,
-        max_yaw_degrees=30.,
-        max_pitch_degrees=3.,
+        lateral_slope_scale=.1,
+        vertical_slope_scale=.03,
         shape_nms_threshold=.5,
         shape_softmin_temperature=.2,
         compact_temperature=.2,
@@ -66,21 +67,22 @@ def test_shape_prior_predicts_cubic_templates_and_deduplicates_without_confidenc
     assert output['shape_z_controls'].shape == (2, 3, 4)
     assert torch.all(output['shape_x_controls'][..., 0] == 0)
     assert torch.all(output['shape_z_controls'][..., 0] == 0)
-    assert output['shape_yaw'].shape == (2, 3, 3)
-    assert output['shape_pitch'].shape == (2, 3, 3)
+    assert output['shape_control_yaw_degrees'].shape == (2, 3, 3)
+    assert output['shape_control_pitch_degrees'].shape == (2, 3, 3)
+    assert output['shape_lateral_slopes'].shape == (2, 3, 3)
+    assert output['shape_vertical_slopes'].shape == (2, 3, 3)
     assert 'confidence' not in output
     assert output['unique_template_indices'].shape == (2, 3)
     assert output['unique_template_mask'].shape == (2, 3)
 
 
-def test_shape_prior_converts_three_yaw_and_pitch_values_to_controls():
+def test_shape_prior_converts_three_unbounded_slopes_to_controls():
     prior = _prior(max_templates=1)
-    yaw_degrees = torch.tensor([0., 5., 15.])
-    pitch_degrees = torch.tensor([1., 0., -1.])
+    lateral_slopes = torch.tensor([0., .5, 2.])
+    vertical_slopes = torch.tensor([.1, 0., -.2])
     raw = torch.cat((
-        torch.atanh(yaw_degrees / 30.),
-        torch.atanh(pitch_degrees / 3.),
-    ))
+        lateral_slopes / prior.lateral_slope_scale,
+        vertical_slopes / prior.vertical_slope_scale))
     with torch.no_grad():
         prior.template_head[-1].weight.zero_()
         prior.template_head[-1].bias.copy_(raw)
@@ -89,17 +91,75 @@ def test_shape_prior_converts_three_yaw_and_pitch_values_to_controls():
     dy = ANCHORS[-1] / 3
     expected_x = torch.cat((
         torch.zeros(1),
-        torch.cumsum(dy * torch.tan(torch.deg2rad(yaw_degrees)), dim=0),
+        torch.cumsum(dy * lateral_slopes, dim=0),
     ))
     expected_z = torch.cat((
         torch.zeros(1),
-        torch.cumsum(dy * torch.tan(torch.deg2rad(pitch_degrees)), dim=0),
+        torch.cumsum(dy * vertical_slopes, dim=0),
     ))
 
-    assert torch.allclose(output['shape_yaw'][0, 0], yaw_degrees, atol=1e-5)
-    assert torch.allclose(output['shape_pitch'][0, 0], pitch_degrees, atol=1e-5)
+    assert torch.allclose(
+        output['shape_lateral_slopes'][0, 0], lateral_slopes, atol=1e-5)
+    assert torch.allclose(
+        output['shape_vertical_slopes'][0, 0], vertical_slopes, atol=1e-5)
+    assert torch.allclose(
+        output['shape_control_yaw_degrees'][0, 0],
+        torch.rad2deg(torch.atan(lateral_slopes)))
+    assert torch.allclose(
+        output['shape_control_pitch_degrees'][0, 0],
+        torch.rad2deg(torch.atan(vertical_slopes)))
     assert torch.allclose(output['shape_x_controls'][0, 0], expected_x, atol=1e-5)
     assert torch.allclose(output['shape_z_controls'][0, 0], expected_z, atol=1e-5)
+
+
+def test_unbounded_slopes_reconstruct_arbitrary_relative_cubic_controls():
+    prior = _prior(max_templates=1)
+    target_x = torch.tensor([0., 2., -3., 25.])
+    target_z = torch.tensor([0., 1., -4., 7.])
+    dy = ANCHORS[-1] / 3
+    lateral_slopes = torch.diff(target_x) / dy
+    vertical_slopes = torch.diff(target_z) / dy
+    raw = torch.cat((
+        lateral_slopes / prior.lateral_slope_scale,
+        vertical_slopes / prior.vertical_slope_scale))
+    with torch.no_grad():
+        prior.template_head[-1].weight.zero_()
+        prior.template_head[-1].bias.copy_(raw)
+
+    output = prior([torch.randn(1, 8, 3, 3)])
+
+    assert torch.allclose(output['shape_x_controls'][0, 0], target_x)
+    assert torch.allclose(output['shape_z_controls'][0, 0], target_z)
+
+
+def test_legacy_angle_bounds_fail_instead_of_silently_changing_semantics():
+    with pytest.raises(TypeError, match='unbounded slopes'):
+        LaneFormerLiDARShapeTokenPrior(
+            lidar_in_channels=8, pc_range=PC_RANGE,
+            anchor_y_steps=ANCHORS, max_yaw_degrees=30.)
+
+
+def test_steep_unbounded_slopes_keep_shape_loss_and_gradients_finite():
+    prior = _prior(max_templates=1)
+    slopes = torch.tensor([5., -4., 3., 1., -.8, .5])
+    scales = slopes.new_tensor([
+        prior.lateral_slope_scale] * 3
+        + [prior.vertical_slope_scale] * 3)
+    with torch.no_grad():
+        prior.template_head[-1].weight.zero_()
+        prior.template_head[-1].bias.copy_(slopes / scales)
+    output = prior([torch.randn(1, 8, 3, 3)])
+    gt = torch.zeros(1, 1, len(ANCHORS), 3)
+    gt[..., 1] = torch.tensor(ANCHORS)
+    visibility = torch.ones(1, 1, len(ANCHORS))
+
+    losses = prior.loss(output, gt, visibility)
+    total = sum(losses.values())
+    total.backward()
+
+    assert torch.isfinite(output['shape_points']).all()
+    assert torch.isfinite(total)
+    assert torch.isfinite(prior.template_head[-1].bias.grad).all()
 
 
 def test_true_softmin_gives_every_template_a_distance_reducing_gradient():

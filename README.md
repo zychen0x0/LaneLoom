@@ -16,10 +16,12 @@ LiDAR-BEV → 10 Shape Tokens → shape clustering (K=1..10)
 confidence、类别或可见区间。`loss_proposal_router` 使用当前图像证据监督模板
 的绝对横向放置。Decoder 输入仍固定为 50 条 Q0。
 
-每个 Shape Token 只预测 6 个几何量：三段连续的
-`yaw1/yaw2/yaw3`（限制在 ±30°）和
-`pitch1/pitch2/pitch3`（限制在 ±3°）。三段方向被累积转换为四个
-三次 Bézier 控制点；固定的 `x_seed` 只在 Router 阶段做严格横向平移。
+每个 Shape Token 只预测 6 个无界几何量：三段横向斜率和三段纵向
+斜率。`0.1/0.03` 仅作为输出数值尺度，不使用 `tanh/clamp`，因此不限制
+三次 Bézier 的形状表达。三段斜率被累积转换为四个控制点；固定的
+`x_seed` 只在 Router 阶段做严格横向平移。控制多边形三段的
+`yaw/pitch` 角度由斜率反算，仅用于诊断；Shape Coverage 的方向与曲率
+仍从采样后的完整曲线计算。
 
 由于 LiDAR prior 参数结构已经改变，旧版单一 `curvature/grade` checkpoint
 不能完整恢复新模块；新实验应从头训练，或仅选择性加载兼容的 backbone 权重。
