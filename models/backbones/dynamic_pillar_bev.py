@@ -6,13 +6,17 @@ import spconv.pytorch as spconv
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from torch.utils.checkpoint import checkpoint
 
 from mmdet3d.registry import MODELS
 
 
-def _replace_feature(tensor, features):
-    return tensor.replace_feature(features)
+XYZ = slice(0, 3)
+X = 0
+Y = 1
+Z = 2
+INTENSITY = 3
+ELONGATION = 4
+QUEUE_INDEX = 5
 
 
 class _SparseBasicBlock(spconv.SparseModule):
@@ -33,11 +37,11 @@ class _SparseBasicBlock(spconv.SparseModule):
     def forward(self, inputs):
         identity = inputs.features
         output = self.conv1(inputs)
-        output = _replace_feature(
-            output, self.relu(self.norm1(output.features)))
+        output = output.replace_feature(
+            self.relu(self.norm1(output.features)))
         output = self.conv2(output)
-        output = _replace_feature(
-            output, self.relu(self.norm2(output.features) + identity))
+        output = output.replace_feature(
+            self.relu(self.norm2(output.features) + identity))
         return output
 
 
@@ -140,8 +144,6 @@ class _ASPPNeck(nn.Module):
         return self.post_conv(torch.cat(branches, dim=1))
 
     def forward(self, inputs):
-        if inputs.requires_grad:
-            return checkpoint(self._forward, inputs, use_reentrant=False)
         return self._forward(inputs)
 
 
@@ -240,12 +242,12 @@ class LaneFormerDynamicPillarBEVEncoder(nn.Module):
                 (sample[:, 1] - self.point_cloud_range[1])
                 / self.pillar_size[1]).long()
             valid = (
-                (sample[:, 0] >= self.point_cloud_range[0])
-                & (sample[:, 0] <= self.point_cloud_range[3])
-                & (sample[:, 1] >= self.point_cloud_range[1])
-                & (sample[:, 1] <= self.point_cloud_range[4])
-                & (sample[:, 2] >= self.point_cloud_range[2])
-                & (sample[:, 2] <= self.point_cloud_range[5]))
+                (sample[:, X] >= self.point_cloud_range[0])
+                & (sample[:, X] <= self.point_cloud_range[3])
+                & (sample[:, Y] >= self.point_cloud_range[1])
+                & (sample[:, Y] <= self.point_cloud_range[4])
+                & (sample[:, Z] >= self.point_cloud_range[2])
+                & (sample[:, Z] <= self.point_cloud_range[5]))
             if not valid.any():
                 continue
             sample = sample[valid, :6]
@@ -262,14 +264,13 @@ class LaneFormerDynamicPillarBEVEncoder(nn.Module):
                 torch.zeros(0, dtype=torch.long, device=reference.device))
         return torch.cat(all_points), torch.cat(all_flat_indices)
 
-    def _pillar_statistics(self, points, inverse, pillar_count):
-        count = self._scatter_sum(
-            points.new_ones(points.size(0)), inverse, pillar_count)
-        denominator = count.clamp_min(1)
-        z = points[:, 2]
-        intensity = torch.log1p(points[:, 3].clamp_min(0))
-        elongation = points[:, 4]
-        queue = points[:, 5] / max(self.queue_length - 1, 1)
+    def _pillar_statistics(
+            self, points, inverse, pillar_count, count, denominator):
+        z = points[:, Z]
+        intensity = torch.log1p(points[:, INTENSITY].clamp_min(0))
+        elongation = points[:, ELONGATION]
+        queue = (
+            points[:, QUEUE_INDEX] / max(self.queue_length - 1, 1))
         z_sum = self._scatter_sum(z, inverse, pillar_count)
         z_mean = z_sum / denominator
         z_std = (
@@ -311,13 +312,16 @@ class LaneFormerDynamicPillarBEVEncoder(nn.Module):
         unique_indices, inverse = torch.unique(
             flat_indices, sorted=True, return_inverse=True)
         pillar_count = unique_indices.numel()
+        count = self._scatter_sum(
+            point_values.new_ones(point_values.size(0)),
+            inverse, pillar_count)
+        denominator = count.clamp_min(1)
         xyz_mean = (
             self._scatter_sum(
-                point_values[:, :3], inverse, pillar_count)
-            / self._scatter_sum(
-                point_values.new_ones(point_values.size(0)),
-                inverse, pillar_count).clamp_min(1).unsqueeze(-1))
-        point_cluster_offset = point_values[:, :3] - xyz_mean[inverse]
+                point_values[:, XYZ], inverse, pillar_count)
+            / denominator.unsqueeze(-1))
+        point_cluster_offset = (
+            point_values[:, XYZ] - xyz_mean[inverse])
 
         cells = self.grid_h * self.grid_w
         cell_indices = flat_indices.remainder(cells)
@@ -334,12 +338,13 @@ class LaneFormerDynamicPillarBEVEncoder(nn.Module):
                 (self.point_cloud_range[2]
                  + self.point_cloud_range[5]) * .5),
         ), dim=-1)
-        point_center_offset = point_values[:, :3] - pillar_centers
+        point_center_offset = point_values[:, XYZ] - pillar_centers
         normalized_raw = point_values.clone()
-        normalized_raw[:, 3] = torch.log1p(
-            normalized_raw[:, 3].clamp_min(0))
-        normalized_raw[:, 5] = (
-            normalized_raw[:, 5] / max(self.queue_length - 1, 1))
+        normalized_raw[:, INTENSITY] = torch.log1p(
+            normalized_raw[:, INTENSITY].clamp_min(0))
+        normalized_raw[:, QUEUE_INDEX] = (
+            normalized_raw[:, QUEUE_INDEX]
+            / max(self.queue_length - 1, 1))
         point_inputs = torch.cat((
             normalized_raw, point_cluster_offset, point_center_offset), dim=-1)
         learned_points = self.point_mlp(point_inputs)
@@ -347,11 +352,9 @@ class LaneFormerDynamicPillarBEVEncoder(nn.Module):
             learned_points, inverse, pillar_count, 'amax')
         learned_mean = (
             self._scatter_sum(learned_points, inverse, pillar_count)
-            / self._scatter_sum(
-                point_values.new_ones(point_values.size(0)),
-                inverse, pillar_count).clamp_min(1).unsqueeze(-1))
+            / denominator.unsqueeze(-1))
         statistics = self._pillar_statistics(
-            point_values, inverse, pillar_count)
+            point_values, inverse, pillar_count, count, denominator)
 
         batch_indices = torch.div(
             unique_indices, cells, rounding_mode='floor')
@@ -391,7 +394,13 @@ class LaneFormerDynamicPillarBEVEncoder(nn.Module):
             occupancy[
                 coordinates[:, 0], 0,
                 coordinates[:, 1], coordinates[:, 2]] = 1
-        return F.max_pool2d(occupancy, kernel_size=2, stride=2) > 0
+        occupancy = F.max_pool2d(
+            occupancy, kernel_size=3, stride=2, padding=1)
+        occupancy = F.max_pool2d(
+            occupancy, kernel_size=3, stride=2, padding=1)
+        return F.interpolate(
+            occupancy, size=(self.grid_h // 2, self.grid_w // 2),
+            mode='nearest') > 0
 
     def forward(self, points, img_feats=None, img_metas=None):
         del img_feats, img_metas

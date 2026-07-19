@@ -23,6 +23,7 @@ model_wrapper_cfg = dict(
 # in the same metric space.
 point_cloud_range = [-25.0, 0.0, -5.0, 25.0, 100.0, 5.0]
 _dim_ = 256
+_lidar_dim_ = 128
 _ffn_dim_ = _dim_ * 2
 _num_levels_ = 1
 # The sparse backbone downsamples the 0.25 m pillar grid by four, then the
@@ -76,7 +77,7 @@ model = dict(
         type='LaneFormerDynamicPillarBEVEncoder',
         point_cloud_range=point_cloud_range,
         pillar_size=[0.25, 0.25],
-        out_channels=128,
+        out_channels=_lidar_dim_,
         # PillarNeXt-T style sparse widths: 32 -> 64 -> 128.
         base_channels=32,
         queue_length=queue_length),
@@ -89,7 +90,7 @@ model = dict(
         # LiDAR predicts five translation-invariant road-shape tokens.
         anchor_prior=dict(
             type='LaneFormerLiDARShapeTokenPrior',
-            lidar_in_channels=128,
+            lidar_in_channels=_lidar_dim_,
             pc_range=point_cloud_range,
             anchor_y_steps=output_y_steps,
             max_templates=5,
@@ -138,14 +139,14 @@ model = dict(
             pc_range=point_cloud_range,
             lidar_bev_adapter=dict(
                 type='LaneFormerLiDARBEVAdapter',
-                embed_dims=128,
-                lidar_in_channels=128)),
+                embed_dims=_lidar_dim_,
+                lidar_in_channels=_lidar_dim_)),
         query_sampler=dict(
             type='LaneFormerDualPlaneTemporalSampler',
             image_in_channels=_dim_,
             # Project sampled 128-D lane evidence to decoder width only after
             # curve-aligned sampling, instead of widening the complete map.
-            lidar_in_channels=128,
+            lidar_in_channels=_lidar_dim_,
             embed_dims=_dim_,
             pc_range=point_cloud_range,
             num_image_levels=_num_levels_,

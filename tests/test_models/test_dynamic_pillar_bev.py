@@ -57,6 +57,18 @@ def test_dynamic_pfe_aggregates_point_features_once_per_pillar():
     assert pillars['statistics'].shape == (1, 10)
 
 
+def test_lane_neck_updates_batch_norm_once_per_training_step():
+    encoder = _encoder()
+    encoder.train()
+    features = torch.randn(2, 16, 4, 4, requires_grad=True)
+    batch_norm = encoder.lane_neck.post_conv[1]
+
+    output = encoder.lane_neck(features)
+    output.mean().backward()
+
+    assert batch_norm.num_batches_tracked.item() == 1
+
+
 @pytest.mark.skipif(not torch.cuda.is_available(), reason='spconv requires CUDA')
 def test_dynamic_pillar_returns_stride_two_features_and_empty_occupancy():
     encoder = _encoder()
@@ -76,3 +88,21 @@ def test_dynamic_pillar_returns_stride_two_features_and_empty_occupancy():
     assert output['occupancy'][0].any()
     assert not output['occupancy'][1].any()
     assert torch.all(output['features'][1] == 0)
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason='spconv requires CUDA')
+def test_configured_sparse_lane_grid_densifies_at_half_pillar_resolution():
+    encoder = LaneFormerDynamicPillarBEVEncoder(
+        point_cloud_range=[-25., 0., -5., 25., 100., 5.],
+        pillar_size=[.25, .25],
+        out_channels=128,
+        base_channels=32,
+        queue_length=3,
+    ).cuda().eval()
+    points = [torch.tensor(
+        [[0., 10., 0., 1., 0., 2.]], device='cuda')]
+
+    output = encoder(points)
+
+    assert output['features'].shape == (1, 128, 200, 100)
+    assert output['occupancy'].shape == (1, 1, 200, 100)
