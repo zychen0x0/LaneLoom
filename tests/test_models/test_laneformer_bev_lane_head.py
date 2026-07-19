@@ -105,6 +105,31 @@ def test_lane_query_decoder_samples_cubic_bezier_at_anchors():
         predictions['pred_z'][:, :, -1], predictions['curve_z_controls'][:, :, -1])
 
 
+def test_decoder_prunes_after_layer_zero_and_keeps_required_training_queries():
+    decoder = LaneFormerLaneQueryDecoder(
+        embed_dims=8, bev_h=2, bev_w=2,
+        pc_range=[-25., 0., -5., 25., 100., 5.], num_query=8,
+        layer_query_budget=4,
+        anchor_y_steps=[0.0, 2.0, 4.0], num_layers=2, num_heads=2,
+        feedforward_channels=16, dropout=0.0)
+    required = torch.zeros(1, 8, dtype=torch.bool)
+    required[0, 0] = True
+    layer_required = torch.zeros(1, 8, dtype=torch.bool)
+    layer_required[0, 7] = True
+
+    predictions = decoder(
+        torch.randn(1, 8, 2, 2),
+        required_query_mask=required,
+        required_query_selector=lambda _: layer_required)
+
+    assert predictions['pred_x'].shape[:2] == (1, 4)
+    assert predictions['aux_predictions'][0]['pred_x'].shape[:2] == (1, 8)
+    assert predictions['selected_query_indices'].shape == (1, 4)
+    assert 0 in predictions['selected_query_indices'][0].tolist()
+    assert 7 in predictions['selected_query_indices'][0].tolist()
+    assert predictions['layer0_topk_indices'].shape == (1, 4)
+
+
 def test_lidar_prior_generates_one_metre_bezier_anchors():
     prior = LaneFormerLiDARBezierAnchorPrior(
         lidar_in_channels=8, image_in_channels=8, embed_dims=8,
@@ -552,6 +577,106 @@ def test_one_to_one_lane_loss_uses_hungarian_assignment():
     assert loss_module.emit_diagnostics is True
 
 
+def test_one_to_one_loss_separates_objectness_from_positive_only_category():
+    loss_module = LaneFormerOneToOneLaneLoss(
+        negative_objectness_weight=.1)
+    predictions = dict(
+        pred_x=torch.tensor([[[0., 0.], [10., 10.]]]),
+        pred_z=torch.zeros(1, 2, 2),
+        pred_vis=torch.zeros(1, 2, 2, requires_grad=True),
+        pred_cls=torch.zeros(1, 2, requires_grad=True),
+        pred_category=torch.zeros(1, 2, 21, requires_grad=True))
+    gt_lanes = torch.zeros(1, 1, 2, 3)
+    gt_visibility = torch.ones(1, 1, 2)
+
+    losses = loss_module(
+        predictions, gt_lanes_3d=gt_lanes,
+        gt_lanes_visibility=gt_visibility,
+        gt_lanes_category=torch.tensor([[2]]))
+    (losses['loss_objectness'] + losses['loss_category']).backward()
+
+    assert 'loss_cls' not in losses
+    assert losses['loss_objectness'] > 0
+    assert losses['loss_category'] > 0
+    assert predictions['pred_cls'].grad.abs().sum() > 0
+    assert predictions['pred_category'].grad[0, 0].abs().sum() > 0
+    assert torch.all(predictions['pred_category'].grad[0, 1] == 0)
+
+
+def test_balanced_objectness_loss_is_invariant_to_easy_negative_count():
+    loss_module = LaneFormerOneToOneLaneLoss(
+        negative_objectness_weight=.1)
+
+    def objectness_loss(num_queries):
+        predictions = dict(
+            pred_x=torch.cat((
+                torch.zeros(1, 1, 2),
+                torch.full((1, num_queries - 1, 2), 10.)), dim=1),
+            pred_z=torch.zeros(1, num_queries, 2),
+            pred_vis=torch.zeros(1, num_queries, 2),
+            pred_cls=torch.zeros(1, num_queries),
+            pred_category=torch.zeros(1, num_queries, 21))
+        gt_lanes = torch.zeros(1, 1, 2, 3)
+        return loss_module(
+            predictions, gt_lanes_3d=gt_lanes,
+            gt_lanes_visibility=torch.ones(1, 1, 2),
+            gt_lanes_category=torch.zeros(1, 1, dtype=torch.long),
+        )['loss_objectness']
+
+    assert torch.allclose(objectness_loss(4), objectness_loss(40))
+
+
+def test_geometrically_ambiguous_unmatched_query_is_downweighted():
+    loss_module = LaneFormerOneToOneLaneLoss(
+        negative_objectness_weight=1.0,
+        ambiguous_negative_weight=.1,
+        ambiguous_distance_threshold=.5,
+        ambiguous_match_ratio=.75)
+    pred_cls = torch.zeros(1, 3, requires_grad=True)
+    predictions = dict(
+        pred_x=torch.tensor([[[0., 0.], [.1, .1], [10., 10.]]]),
+        pred_z=torch.zeros(1, 3, 2),
+        pred_vis=torch.zeros(1, 3, 2),
+        pred_cls=pred_cls,
+        pred_category=torch.zeros(1, 3, 21))
+    gt_lanes = torch.zeros(1, 1, 2, 3)
+
+    losses = loss_module(
+        predictions, gt_lanes_3d=gt_lanes,
+        gt_lanes_visibility=torch.ones(1, 1, 2),
+        gt_lanes_category=torch.zeros(1, 1, dtype=torch.long))
+    losses['loss_objectness'].backward()
+
+    assert pred_cls.grad[0, 1].abs() < pred_cls.grad[0, 2].abs() * .2
+
+
+def test_layer_zero_topk_recall_uses_unforced_ranking():
+    loss_module = LaneFormerOneToOneLaneLoss()
+    auxiliary = dict(
+        pred_x=torch.tensor([[[0., 0.], [10., 10.], [20., 20.]]]),
+        pred_z=torch.zeros(1, 3, 2),
+        pred_vis=torch.zeros(1, 3, 2),
+        pred_cls=torch.zeros(1, 3),
+        pred_category=torch.zeros(1, 3, 21))
+    predictions = dict(
+        pred_x=auxiliary['pred_x'][:, :2],
+        pred_z=auxiliary['pred_z'][:, :2],
+        pred_vis=auxiliary['pred_vis'][:, :2],
+        pred_cls=auxiliary['pred_cls'][:, :2],
+        pred_category=auxiliary['pred_category'][:, :2],
+        aux_predictions=[auxiliary],
+        layer0_topk_indices=torch.tensor([[0, 2]]))
+    gt_lanes = torch.zeros(1, 2, 2, 3)
+    gt_lanes[0, 1, :, 0] = 10.
+
+    losses = loss_module(
+        predictions, gt_lanes_3d=gt_lanes,
+        gt_lanes_visibility=torch.ones(1, 2, 2),
+        gt_lanes_category=torch.zeros(1, 2, dtype=torch.long))
+
+    assert losses['diag_layer0_topk_gt_recall'] == .5
+
+
 def test_one_to_one_lane_loss_reports_background_collapse_diagnostics():
     loss_module = LaneFormerOneToOneLaneLoss()
     predictions = dict(
@@ -604,8 +729,8 @@ def test_one_to_one_lane_loss_prediction_diagnostics_match_inference_filter():
         gt_lanes_visibility=gt_visibility,
         gt_lanes_category=gt_category)
 
-    # Query 0 passes score and visibility. Query 2 has the same class score
-    # but no visible point, matching the inference-time filtering contract.
+    # Query 0 passes objectness and visibility even while category is
+    # uncertain. Query 2 has the same objectness but no visible point.
     assert losses['diag_objectness_queries'] == 2
     assert losses['diag_prediction_queries'] == 1
     assert losses['diag_pred_gt_ratio'] == 1

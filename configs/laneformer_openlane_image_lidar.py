@@ -169,6 +169,9 @@ model = dict(
             # Each layer samples temporal FV and LiDAR-BEV along its input
             # curve. Layer 0 consumes Q0 and emits Q1; Layer 1 consumes Q1.
             num_layers=2,
+            # Layer 0 sees all 505 Q0 curves. Layer 1 keeps 64 proposals:
+            # 3.2x the dataset's max_lanes=20 and 4x a 16-lane scene.
+            layer_query_budget=64,
             num_heads=8,
             feedforward_channels=_ffn_dim_,
             dropout=0.1,
@@ -182,7 +185,17 @@ model = dict(
         loss_module=dict(
             type='LaneFormerOneToOneLaneLoss',
             assigner=dict(type='LaneFormerHungarianAssigner'),
-            cls_loss_weight=1.0,
+            objectness_loss_weight=1.0,
+            category_loss_weight=0.25,
+            # Normalize positive/negative objectness separately, then cap the
+            # entire negative group. Near-GT unmatched candidates are weaker
+            # ambiguous negatives rather than full-strength background.
+            negative_objectness_weight=0.1,
+            ambiguous_negative_weight=0.1,
+            ambiguous_distance_threshold=0.5,
+            ambiguous_match_ratio=0.75,
+            diagnostic_geometry_distance_threshold=0.3,
+            diagnostic_geometry_match_ratio=0.8,
             x_loss_weight=1.0,
             z_loss_weight=1.0,
             visibility_loss_weight=1.0,

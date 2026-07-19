@@ -52,6 +52,7 @@ def test_config_expands_five_lidar_shapes_into_505_decoder_queries():
     assert 'max_pitch_degrees' not in prior
     assert expander.num_x_seeds == 101
     assert decoder.num_query == 505
+    assert decoder.layer_query_budget == 64
     assert prior.pc_range == decoder.pc_range
     assert prior.anchor_y_steps == expander.anchor_y_steps == decoder.anchor_y_steps
     assert decoder.anchor_y_steps == [2. * index for index in range(1, 51)]
@@ -94,6 +95,12 @@ def test_config_uses_strict_q0_and_one_to_one_assignment():
     loss = cfg.model.lane_head.loss_module
 
     assert loss.type == 'LaneFormerOneToOneLaneLoss'
+    assert loss.objectness_loss_weight == 1.0
+    assert loss.category_loss_weight == 0.25
+    assert loss.negative_objectness_weight == 0.1
+    assert loss.ambiguous_negative_weight == 0.1
+    assert loss.diagnostic_geometry_distance_threshold == 0.3
+    assert loss.diagnostic_geometry_match_ratio == 0.8
     assert loss.assigner.type == 'LaneFormerHungarianAssigner'
     assert loss.visibility_loss_weight == 1.0
     assert loss.focal_alpha == 0.25

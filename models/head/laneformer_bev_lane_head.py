@@ -54,7 +54,8 @@ class LaneFormerBEVLaneHead(nn.Module):
         return self.bev_encoder.forward_image_bev(img_feats, img_metas)
 
     def _predict(self, current_bev, anchor_prior=None,
-                 query_feature_sampler=None):
+                 query_feature_sampler=None, required_query_mask=None,
+                 required_query_selector=None):
         initial_controls = None
         query_features = None
         if anchor_prior is not None and 'curve_x_controls' in anchor_prior:
@@ -66,8 +67,11 @@ class LaneFormerBEVLaneHead(nn.Module):
             current_bev,
             query_features=query_features,
             initial_reference_controls=initial_controls,
-            query_feature_sampler=query_feature_sampler)
+            query_feature_sampler=query_feature_sampler,
+            required_query_mask=required_query_mask,
+            required_query_selector=required_query_selector)
         if anchor_prior is not None:
+            selected = predictions.get('selected_query_indices')
             for key in (
                     'curvature', 'grade', 'anchor_points', 'shape_templates',
                     'shape_points', 'shape_lateral_slopes',
@@ -76,7 +80,19 @@ class LaneFormerBEVLaneHead(nn.Module):
                     'routing_scores',
                     'selected_template_indices', 'selected_seed_indices'):
                 if key in anchor_prior:
-                    predictions[key] = anchor_prior[key]
+                    value = anchor_prior[key]
+                    if (selected is not None and hasattr(value, 'shape')
+                            and value.ndim >= 2
+                            and value.shape[:2] == (
+                                selected.size(0),
+                                self.lane_decoder.num_query)):
+                        index = selected
+                        for _ in range(value.ndim - 2):
+                            index = index.unsqueeze(-1)
+                        value = value.gather(
+                            1, index.expand(
+                                *selected.shape, *value.shape[2:]))
+                    predictions[key] = value
             if 'unique_template_mask' in anchor_prior:
                 predictions['unique_template_counts'] = (
                     anchor_prior['unique_template_mask'].sum(dim=-1))
@@ -119,17 +135,31 @@ class LaneFormerBEVLaneHead(nn.Module):
         anchor_prior = self._anchor_prior(img_feats, pts_feats, img_metas)
         current_bev = self.forward_bev(img_feats, pts_feats, img_metas)
         lidar_occupancy = self._lidar_occupancy(pts_feats, current_bev)
+        prior_lanes = targets['gt_lanes_3d']
+        prior_visibility = targets['gt_lanes_visibility']
+        if (targets.get('gt_lanes_3d_enhanced') is not None
+                and targets.get('gt_lanes_visibility_enhanced') is not None):
+            prior_lanes = targets['gt_lanes_3d_enhanced']
+            prior_visibility = targets['gt_lanes_visibility_enhanced']
+        required_query_mask = None
+        if (anchor_prior is not None
+                and 'anchor_points' in anchor_prior
+                and hasattr(self.loss_module, 'required_query_mask')):
+            required_query_mask = self.loss_module.required_query_mask(
+                anchor_prior['anchor_points'],
+                prior_lanes, prior_visibility)
+        required_query_selector = None
+        if hasattr(self.loss_module, 'required_prediction_mask'):
+            def required_query_selector(predictions):
+                return self.loss_module.required_prediction_mask(
+                    predictions, prior_lanes, prior_visibility)
         losses = self.loss_module(self._predict(
             current_bev, anchor_prior=anchor_prior,
             query_feature_sampler=self._query_feature_sampler(
-                img_feats, current_bev, img_metas, lidar_occupancy)), **targets)
+                img_feats, current_bev, img_metas, lidar_occupancy),
+            required_query_mask=required_query_mask,
+            required_query_selector=required_query_selector), **targets)
         if anchor_prior is not None:
-            prior_lanes = targets['gt_lanes_3d']
-            prior_visibility = targets['gt_lanes_visibility']
-            if (targets.get('gt_lanes_3d_enhanced') is not None
-                    and targets.get('gt_lanes_visibility_enhanced') is not None):
-                prior_lanes = targets['gt_lanes_3d_enhanced']
-                prior_visibility = targets['gt_lanes_visibility_enhanced']
             losses.update(self.anchor_prior.loss(
                 anchor_prior, prior_lanes, prior_visibility))
             if self.proposal_expander is not None:
@@ -148,8 +178,9 @@ class LaneFormerBEVLaneHead(nn.Module):
             current_bev, anchor_prior=anchor_prior,
             query_feature_sampler=self._query_feature_sampler(
                 img_feats, current_bev, img_metas, lidar_occupancy))
-        class_probability = predictions['pred_logits'].softmax(dim=-1)[..., 1:]
-        scores, category = class_probability.max(dim=-1)
+        category_probability = predictions['pred_category'].softmax(dim=-1)
+        _, category = category_probability.max(dim=-1)
+        scores = predictions['pred_cls'].sigmoid()
         visibility = predictions['pred_vis'].sigmoid()
         visibility_threshold = float(
             (self.curve_nms_cfg or {}).get('visibility_threshold', .5))

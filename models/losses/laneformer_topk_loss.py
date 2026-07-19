@@ -146,9 +146,7 @@ class LaneFormerTopKLaneLoss(nn.Module):
         foreground_probability = reference.sigmoid()
         objectness_queries = int((
             foreground_probability >= self.diagnostic_score_threshold).sum())
-        class_probability = self._classification_logits(
-            predictions).softmax(dim=-1)[..., 1:]
-        scores = class_probability.max(dim=-1).values
+        scores = foreground_probability
         visible = (
             predictions['pred_vis'].sigmoid()
             >= self.diagnostic_visibility_threshold).any(dim=-1)
@@ -217,6 +215,33 @@ class LaneFormerTopKLaneLoss(nn.Module):
                     losses[
                         f'diag_aux_{layer_idx}_{name.removeprefix("diag_")}'] = (
                             value)
+        topk_indices = predictions.get('layer0_topk_indices')
+        if (self.emit_diagnostics and topk_indices is not None
+                and predictions.get('aux_predictions')):
+            auxiliary = predictions['aux_predictions'][0]
+            selected_x = auxiliary['pred_x'].gather(
+                1, topk_indices.unsqueeze(-1).expand(
+                    -1, -1, auxiliary['pred_x'].size(-1)))
+            selected_z = auxiliary['pred_z'].gather(
+                1, topk_indices.unsqueeze(-1).expand(
+                    -1, -1, auxiliary['pred_z'].size(-1)))
+            visible = gt_lanes_visibility > .5
+            valid_gt = visible.sum(dim=-1) >= 2
+            distance = torch.linalg.vector_norm(torch.stack((
+                selected_x.unsqueeze(2) - gt_lanes_3d[
+                    ..., 0].unsqueeze(1),
+                selected_z.unsqueeze(2) - gt_lanes_3d[
+                    ..., 2].unsqueeze(1)), dim=-1), dim=-1)
+            close_ratio = (
+                ((distance < self.diagnostic_geometry_distance_threshold)
+                 & visible.unsqueeze(1)).sum(dim=-1)
+                / visible.sum(dim=-1).unsqueeze(1).clamp_min(1))
+            covered = (
+                close_ratio >= self.diagnostic_geometry_match_ratio
+            ).any(dim=1) & valid_gt
+            losses['diag_layer0_topk_gt_recall'] = (
+                covered.sum().to(predictions['pred_cls'].dtype)
+                / valid_gt.sum().clamp_min(1))
         return losses
 
 
@@ -224,9 +249,45 @@ class LaneFormerTopKLaneLoss(nn.Module):
 class LaneFormerOneToOneLaneLoss(LaneFormerTopKLaneLoss):
     """Keep the compact lane objectives with Hungarian one-to-one matching."""
 
-    def __init__(self, assigner=None, **kwargs):
+    def __init__(self, assigner=None, objectness_loss_weight=1.0,
+                 category_loss_weight=.25,
+                 negative_objectness_weight=.1,
+                 ambiguous_negative_weight=.1,
+                 ambiguous_distance_threshold=.5,
+                 ambiguous_match_ratio=.75,
+                 diagnostic_geometry_distance_threshold=.3,
+                 diagnostic_geometry_match_ratio=.8,
+                 **kwargs):
         if assigner is None:
             assigner = dict(type='LaneFormerHungarianAssigner')
+        self.objectness_loss_weight = float(objectness_loss_weight)
+        self.category_loss_weight = float(category_loss_weight)
+        self.negative_objectness_weight = float(negative_objectness_weight)
+        self.ambiguous_negative_weight = float(ambiguous_negative_weight)
+        self.ambiguous_distance_threshold = float(
+            ambiguous_distance_threshold)
+        self.ambiguous_match_ratio = float(ambiguous_match_ratio)
+        self.diagnostic_geometry_distance_threshold = float(
+            diagnostic_geometry_distance_threshold)
+        self.diagnostic_geometry_match_ratio = float(
+            diagnostic_geometry_match_ratio)
+        if min(
+                self.objectness_loss_weight,
+                self.category_loss_weight,
+                self.negative_objectness_weight,
+                self.ambiguous_negative_weight) < 0:
+            raise ValueError('Lane loss weights must be non-negative.')
+        if self.ambiguous_distance_threshold <= 0:
+            raise ValueError(
+                'ambiguous_distance_threshold must be positive.')
+        if self.diagnostic_geometry_distance_threshold <= 0:
+            raise ValueError(
+                'diagnostic_geometry_distance_threshold must be positive.')
+        if not 0 < self.ambiguous_match_ratio <= 1:
+            raise ValueError('ambiguous_match_ratio must be in (0, 1].')
+        if not 0 < self.diagnostic_geometry_match_ratio <= 1:
+            raise ValueError(
+                'diagnostic_geometry_match_ratio must be in (0, 1].')
         super().__init__(
             assigner=assigner, emit_diagnostics=True, **kwargs)
 
@@ -244,3 +305,133 @@ class LaneFormerOneToOneLaneLoss(LaneFormerTopKLaneLoss):
     def _auxiliary_assignments(self, predictions, assignments,
                                gt_lanes_3d, gt_visibility):
         return self._assign(predictions, gt_lanes_3d, gt_visibility)
+
+    def required_query_mask(
+            self, anchor_points, gt_lanes_3d, gt_visibility):
+        assignments = self.assigner.assign_batch(
+            anchor_points[..., 0].detach(),
+            anchor_points[..., 2].detach(),
+            gt_lanes_3d[..., 0], gt_lanes_3d[..., 2],
+            gt_visibility)
+        return assignments >= 0
+
+    def required_prediction_mask(
+            self, predictions, gt_lanes_3d, gt_visibility):
+        assignments = self.assigner.assign_batch(
+            predictions['pred_x'].detach(),
+            predictions['pred_z'].detach(),
+            gt_lanes_3d[..., 0], gt_lanes_3d[..., 2],
+            gt_visibility)
+        return assignments >= 0
+
+    def _binary_focal_terms(self, logits, targets):
+        probability = logits.sigmoid()
+        bce = F.binary_cross_entropy_with_logits(
+            logits, targets, reduction='none')
+        target_probability = torch.where(
+            targets > .5, probability, 1 - probability)
+        alpha = torch.where(
+            targets > .5,
+            logits.new_tensor(self.focal_alpha),
+            logits.new_tensor(1 - self.focal_alpha))
+        return alpha * (1 - target_probability).pow(
+            self.focal_gamma) * bce
+
+    def _ambiguous_negative_mask(
+            self, predictions, gt_lanes_3d, gt_visibility):
+        visible = gt_visibility > .5
+        valid_gt = visible.sum(dim=-1) >= 2
+        distance = torch.linalg.vector_norm(torch.stack((
+            predictions['pred_x'].unsqueeze(2) - gt_lanes_3d[
+                ..., 0].unsqueeze(1),
+            predictions['pred_z'].unsqueeze(2) - gt_lanes_3d[
+                ..., 2].unsqueeze(1)), dim=-1), dim=-1)
+        close_ratio = (
+            ((distance < self.ambiguous_distance_threshold)
+             & visible.unsqueeze(1)).sum(dim=-1)
+            / visible.sum(dim=-1).unsqueeze(1).clamp_min(1))
+        return (
+            (close_ratio >= self.ambiguous_match_ratio)
+            & valid_gt.unsqueeze(1)).any(dim=-1)
+
+    def _prediction_losses(self, predictions, gt_lanes_3d,
+                           gt_visibility, gt_category, assignments):
+        pred_x, pred_z = predictions['pred_x'], predictions['pred_z']
+        pred_visibility = predictions['pred_vis']
+        pred_objectness = predictions['pred_cls']
+        pred_category = predictions['pred_category']
+        total_objectness = pred_objectness.sum() * 0
+        total_category = pred_category.sum() * 0
+        total_x = pred_x.sum() * 0
+        total_z = pred_z.sum() * 0
+        total_visibility = pred_visibility.sum() * 0
+        positive_count = 0
+        visible_point_count = 0
+        ambiguous = self._ambiguous_negative_mask(
+            predictions, gt_lanes_3d, gt_visibility)
+
+        for batch_idx, assignment in enumerate(assignments):
+            positive_queries = torch.where(assignment >= 0)[0]
+            positive = torch.zeros(
+                pred_objectness.size(1), dtype=torch.bool,
+                device=pred_objectness.device)
+            positive[positive_queries] = True
+            objectness_target = positive.to(pred_objectness.dtype)
+            focal = self._binary_focal_terms(
+                pred_objectness[batch_idx], objectness_target)
+            positive_loss = torch.where(positive, focal, 0).sum()
+            positive_loss = positive_loss / positive.sum().clamp_min(1)
+            negative = ~positive
+            negative_weight = torch.where(
+                ambiguous[batch_idx] & negative,
+                focal.new_tensor(self.ambiguous_negative_weight),
+                focal.new_tensor(1.0))
+            negative_loss = torch.where(
+                negative, focal * negative_weight, 0).sum()
+            negative_loss = (
+                negative_loss / negative.sum().clamp_min(1))
+            total_objectness = total_objectness + (
+                positive_loss
+                + self.negative_objectness_weight * negative_loss)
+
+            if positive_queries.numel() == 0:
+                continue
+            matched_gt = assignment[positive_queries]
+            positive_count += int(positive_queries.numel())
+            total_category = total_category + F.cross_entropy(
+                pred_category[batch_idx, positive_queries],
+                gt_category[batch_idx, matched_gt].long(),
+                reduction='sum')
+            visible = gt_visibility[batch_idx, matched_gt].to(pred_x.dtype)
+            visible_point_count += int(visible.sum())
+            target_x = gt_lanes_3d[batch_idx, matched_gt, :, 0]
+            target_z = gt_lanes_3d[batch_idx, matched_gt, :, 2]
+            total_x = total_x + (
+                F.smooth_l1_loss(
+                    pred_x[batch_idx, positive_queries], target_x,
+                    beta=self.smooth_l1_beta, reduction='none')
+                * visible).sum()
+            total_z = total_z + (
+                F.smooth_l1_loss(
+                    pred_z[batch_idx, positive_queries], target_z,
+                    beta=self.smooth_l1_beta, reduction='none')
+                * visible).sum()
+            total_visibility = total_visibility + F.smooth_l1_loss(
+                pred_visibility[batch_idx, positive_queries].sigmoid(),
+                visible, beta=self.smooth_l1_beta, reduction='sum')
+
+        batch_size = max(pred_x.size(0), 1)
+        visibility_count = max(positive_count * pred_x.size(-1), 1)
+        return dict(
+            loss_objectness=(
+                total_objectness / batch_size
+                * self.objectness_loss_weight),
+            loss_category=(
+                total_category / max(positive_count, 1)
+                * self.category_loss_weight),
+            loss_x=(total_x / max(visible_point_count, 1)
+                    * self.x_loss_weight),
+            loss_z=(total_z / max(visible_point_count, 1)
+                    * self.z_loss_weight),
+            loss_visibility=(total_visibility / visibility_count
+                             * self.visibility_loss_weight))

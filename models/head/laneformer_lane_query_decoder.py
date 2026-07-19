@@ -63,6 +63,7 @@ class LaneFormerLaneQueryDecoder(nn.Module):
                  num_layers=3, num_heads=8,
                  feedforward_channels=1024, dropout=0.1, num_category=21,
                  dn_num_groups=0,
+                 layer_query_budget=None,
                  objectness_prior_probability=0.01,
                  visibility_temperature=0.75,
                  visibility_start_prior=0.14,
@@ -75,6 +76,12 @@ class LaneFormerLaneQueryDecoder(nn.Module):
         self.pc_range = pc_range
         self.num_query = num_query
         self.num_layers = int(num_layers)
+        self.layer_query_budget = (
+            None if layer_query_budget is None else int(layer_query_budget))
+        if (self.layer_query_budget is not None
+                and not 0 < self.layer_query_budget <= self.num_query):
+            raise ValueError(
+                'layer_query_budget must be in (0, num_query].')
         self.register_buffer('anchor_y_steps', torch.tensor(anchor_y_steps, dtype=torch.float32))
         self.num_anchors = len(anchor_y_steps)
         self.num_control_points = 4
@@ -275,11 +282,12 @@ class LaneFormerLaneQueryDecoder(nn.Module):
 
     def _sample_evidence(self, reference_controls, sampler, batch, dtype,
                          device, query_features):
+        num_query = query_features.size(1)
         null = self.null_evidence.to(dtype=dtype).expand(
-            batch, self.num_query, -1, -1)
+            batch, num_query, -1, -1)
         if reference_controls is None or sampler is None:
             return null, torch.zeros(
-                batch, self.num_query, 1, dtype=torch.bool, device=device), {}
+                batch, num_query, 1, dtype=torch.bool, device=device), {}
         points = self._reference_points(reference_controls, evidence=True)
         sampled = sampler(points, query_features)
         if torch.is_tensor(sampled):
@@ -290,7 +298,7 @@ class LaneFormerLaneQueryDecoder(nn.Module):
                     device=sampled.device))
         evidence = sampled['tokens']
         padding_mask = sampled['key_padding_mask']
-        expected = (batch, self.num_query)
+        expected = (batch, num_query)
         if (tuple(evidence.shape[:2]) != expected
                 or evidence.size(-1) != self.embed_dims):
             raise ValueError(
@@ -299,7 +307,7 @@ class LaneFormerLaneQueryDecoder(nn.Module):
         evidence = torch.cat((evidence, null), dim=2)
         padding_mask = torch.cat((
             padding_mask,
-            torch.zeros(batch, self.num_query, 1, dtype=torch.bool,
+            torch.zeros(batch, num_query, 1, dtype=torch.bool,
                         device=padding_mask.device)), dim=2)
         diagnostics = {}
         for modality in ('image', 'lidar'):
@@ -309,9 +317,30 @@ class LaneFormerLaneQueryDecoder(nn.Module):
                     valid_mask.float().mean())
         return evidence, padding_mask, diagnostics
 
+    @staticmethod
+    def _gather_query_tensor(tensor, indices):
+        index = indices
+        for _ in range(tensor.ndim - 2):
+            index = index.unsqueeze(-1)
+        return tensor.gather(
+            1, index.expand(*indices.shape, *tensor.shape[2:]))
+
+    def _select_layer_queries(self, objectness, required_query_mask):
+        budget = min(self.layer_query_budget, objectness.size(1))
+        predicted = objectness.detach().topk(budget, dim=-1).indices
+        if required_query_mask is None:
+            return predicted, predicted
+        if tuple(required_query_mask.shape) != tuple(objectness.shape):
+            raise ValueError(
+                'required_query_mask must match the initial query shape.')
+        ranking = objectness.detach().masked_fill(required_query_mask, torch.inf)
+        selected = ranking.topk(budget, dim=-1).indices
+        return selected, predicted
+
     def forward(self, bev, bev_pos=None,
                 query_features=None, initial_reference_controls=None,
-                query_feature_sampler=None):
+                query_feature_sampler=None, required_query_mask=None,
+                required_query_selector=None):
         if bev is not None:
             batch = bev.size(0)
         elif initial_reference_controls is not None:
@@ -321,6 +350,15 @@ class LaneFormerLaneQueryDecoder(nn.Module):
                 'The decoder requires LiDAR BEV or initial curve controls.')
         query_pos = self.query_pos.weight.unsqueeze(0).expand(batch, -1, -1)
         query = self.query.weight.unsqueeze(0).expand(batch, -1, -1)
+        source_query_indices = torch.arange(
+            self.num_query, device=query.device).view(1, -1).expand(batch, -1)
+        if required_query_mask is not None:
+            required_query_mask = required_query_mask.to(
+                device=query.device, dtype=torch.bool)
+            if tuple(required_query_mask.shape) != (batch, self.num_query):
+                raise ValueError(
+                    'required_query_mask must have shape '
+                    f'{(batch, self.num_query)}.')
         if query_features is not None:
             expected_shape = (batch, self.num_query, query.size(-1))
             if tuple(query_features.shape) != expected_shape:
@@ -337,19 +375,22 @@ class LaneFormerLaneQueryDecoder(nn.Module):
                     'initial_reference_controls must contain x/z tensors with '
                     f'shape {expected_shape}.')
         layer_predictions = []
+        selected_query_indices = None
+        layer0_topk_indices = None
         main_reference = initial_reference_controls
         main_visibility_reference = None
         for layer_idx, layer in enumerate(self.layers):
+            current_queries = query.size(1)
             evidence, evidence_padding_mask, sampling_diagnostics = (
                 self._sample_evidence(
-                main_reference, query_feature_sampler, batch, query.dtype,
-                query.device, self.norm(query[:, :self.num_query])))
+                    main_reference, query_feature_sampler, batch, query.dtype,
+                    query.device, self.norm(query)))
             query = layer(
                 query, query_pos, evidence, evidence_padding_mask,
-                None, self.num_query)
+                None, current_queries)
             normalized_query = self.norm(query)
             predictions = self._decode_predictions(
-                normalized_query[:, :self.num_query], main_reference,
+                normalized_query, main_reference,
                 main_visibility_reference,
                 layer_idx=layer_idx)
             predictions.update(sampling_diagnostics)
@@ -360,7 +401,45 @@ class LaneFormerLaneQueryDecoder(nn.Module):
                 predictions['pred_vis_start'],
                 predictions['pred_vis_end'])
             layer_predictions.append(predictions)
+            should_prune = (
+                layer_idx == 0 and layer_idx + 1 < self.num_layers
+                and self.layer_query_budget is not None
+                and self.layer_query_budget < current_queries)
+            if should_prune:
+                layer_required_mask = None
+                if required_query_selector is not None:
+                    layer_required_mask = required_query_selector(predictions)
+                    layer_required_mask = layer_required_mask.to(
+                        device=query.device, dtype=torch.bool)
+                    if tuple(layer_required_mask.shape) != (
+                            batch, current_queries):
+                        raise ValueError(
+                            'required_query_selector must return shape '
+                            f'{(batch, current_queries)}.')
+                if required_query_mask is not None:
+                    layer_required_mask = (
+                        required_query_mask
+                        if layer_required_mask is None
+                        else layer_required_mask | required_query_mask)
+                selected, predicted = self._select_layer_queries(
+                    predictions['pred_cls'], layer_required_mask)
+                layer0_topk_indices = self._gather_query_tensor(
+                    source_query_indices, predicted)
+                source_query_indices = self._gather_query_tensor(
+                    source_query_indices, selected)
+                selected_query_indices = source_query_indices
+                query = self._gather_query_tensor(query, selected)
+                query_pos = self._gather_query_tensor(query_pos, selected)
+                main_reference = tuple(
+                    self._gather_query_tensor(value, selected)
+                    for value in main_reference)
+                main_visibility_reference = tuple(
+                    self._gather_query_tensor(value, selected)
+                    for value in main_visibility_reference)
         predictions = layer_predictions[-1]
         predictions['aux_predictions'] = layer_predictions[:-1]
+        if selected_query_indices is not None:
+            predictions['selected_query_indices'] = selected_query_indices
+            predictions['layer0_topk_indices'] = layer0_topk_indices
         predictions['bev'] = bev
         return predictions

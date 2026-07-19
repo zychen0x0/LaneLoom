@@ -11,7 +11,9 @@
       → 每个模板平移到 [-25,25] 的101个0.5m横向种子
       → 5×101=505条 Q0（不做 Router 预筛）
       → P3 FV + LiDAR-BEV 双平面局部 deformable sampling
-      → two-layer curve decoder
+      → Decoder Layer 0处理505条
+      → 根据Layer 0 objectness保留64条
+      → Decoder Layer 1精修64条
 ```
 
 模板只学习相对三维形状，不使用模板 confidence 或类别。训练期只把 GT
@@ -37,8 +39,20 @@ Shape Prior 使用三项监督：
 
 当前 5 个模板全部参与 Q0 展开。`loss_q0_geometry` 直接约束送入 Decoder 的505条 Q0，
 要求至少 80% 的 GT 可见点误差小于 0.3m，比最终评测的
-0.5m/75% 标准更严格。Decoder 输入固定为505条 Q0，并通过 Hungarian
-一对一匹配保证每条 GT 只监督一个 query。
+0.5m/75% 标准更严格。Decoder Layer 0输入固定为505条 Q0，并通过
+Hungarian一对一匹配保证每条 GT 只监督一个 query。
+
+Layer 0仍使用全部505条 Q0，避免在获得图像证据前误删远端分叉。Layer 1
+只保留64条：训练时强制包含Q0与Layer 0 Hungarian正样本的并集，推理时
+完全使用Layer 0预测排序；`diag_layer0_topk_gt_recall` 只统计未强制的
+原始Top-64是否以0.3m/80%标准覆盖GT，防止teacher forcing让诊断虚高。
+
+分类监督分为 binary objectness 和仅正样本 category。正负objectness分别
+归一化，整个负样本组权重为0.1；与GT在75%可见点上距离小于0.5m、但未被
+Hungarian选中的相邻候选视为模糊负样本，再降权到0.1。这样保留一对一
+训练目标，同时避免约500个背景query压制几何与前景学习。
+推理筛选和Curve NMS只使用binary objectness；positive-only category
+只决定已检测车道的类别，不会再次压低车道存在概率。
 
 每个 Shape Token 只预测 6 个无界几何量：三段横向斜率和三段纵向
 斜率。`0.1/0.03` 仅作为输出数值尺度，不使用 `tanh/clamp`，因此不限制
