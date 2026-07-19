@@ -137,14 +137,11 @@ class _ASPPNeck(nn.Module):
             nn.BatchNorm2d(channels, **norm),
             nn.ReLU(inplace=True))
 
-    def _forward(self, inputs):
+    def forward(self, inputs):
         inputs = self.pre_conv(inputs)
         branches = [self.point_branch(inputs)]
         branches.extend(branch(inputs) for branch in self.dilated_branches)
         return self.post_conv(torch.cat(branches, dim=1))
-
-    def forward(self, inputs):
-        return self._forward(inputs)
 
 
 @MODELS.register_module()
@@ -236,10 +233,10 @@ class LaneFormerDynamicPillarBEVEncoder(nn.Module):
             if sample.numel() == 0:
                 continue
             x_index = torch.floor(
-                (sample[:, 0] - self.point_cloud_range[0])
+                (sample[:, X] - self.point_cloud_range[0])
                 / self.pillar_size[0]).long()
             y_index = torch.floor(
-                (sample[:, 1] - self.point_cloud_range[1])
+                (sample[:, Y] - self.point_cloud_range[1])
                 / self.pillar_size[1]).long()
             valid = (
                 (sample[:, X] >= self.point_cloud_range[0])
