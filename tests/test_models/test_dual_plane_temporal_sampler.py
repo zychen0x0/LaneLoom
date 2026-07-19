@@ -40,9 +40,10 @@ def test_sampler_builds_temporal_image_and_lidar_tokens_per_query():
     ], [
         [1.0, 0.0, 0.0], [1.0, 2.0, 0.0], [1.0, 4.0, 0.0],
     ]]], requires_grad=True)
+    query_features = torch.randn(1, 2, 8, requires_grad=True)
 
     output = sampler(
-        curves, image_features, lidar_bev,
+        curves, query_features, image_features, lidar_bev,
         _temporal_metas(batch_size=1, time_steps=3, image_size=8))
 
     assert output['tokens'].shape == (1, 2, 9, 8)
@@ -52,7 +53,27 @@ def test_sampler_builds_temporal_image_and_lidar_tokens_per_query():
     output['tokens'].sum().backward()
     assert curves.grad is not None
     assert lidar_bev.grad is not None
+    assert query_features.grad is not None
+    assert sampler.image_offset_head.weight.grad is not None
+    assert sampler.lidar_offset_head.weight.grad is not None
     assert sampler.temporal_pointwise.weight.grad is not None
+
+
+def test_sampler_masks_lidar_offsets_without_pillar_occupancy():
+    sampler = LaneFormerDualPlaneTemporalSampler(
+        image_in_channels=4, lidar_in_channels=4, embed_dims=4,
+        pc_range=[-2., 0., -2., 2., 4., 2.], num_image_levels=1,
+        temporal_kernel_size=3)
+    curves = torch.tensor([[[[0., 1., 0.], [0., 3., 0.]]]])
+    lidar_bev = torch.randn(1, 4, 4, 4)
+    occupancy = torch.zeros(1, 1, 4, 4, dtype=torch.bool)
+
+    output = sampler(
+        curves, torch.zeros(1, 1, 4), None, lidar_bev, None,
+        lidar_occupancy=occupancy)
+
+    assert not output['lidar_valid_mask'].any()
+    assert output['key_padding_mask'].all()
 
 
 def test_sampler_uses_history_pose_before_projecting_curves():
@@ -68,7 +89,8 @@ def test_sampler_uses_history_pose_before_projecting_curves():
     history_to_current[0, 3] = 100.0
     metas[0]['queue'][0]['lidaradj2lidarcurr'] = history_to_current
 
-    output = sampler(curves, images, lidar_bev, metas)
+    output = sampler(
+        curves, torch.zeros(1, 1, 4), images, lidar_bev, metas)
 
     assert not output['image_valid_mask'][0, 0, :, 0, 0].any()
     assert output['image_valid_mask'][0, 0, :, 0, 1].any()

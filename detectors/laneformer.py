@@ -29,6 +29,7 @@ class LaneFormer(BaseModel):
                  pts_voxel_layer=None,
                  pts_voxel_encoder=None,
                  pts_middle_encoder=None,
+                 pts_bev_encoder=None,
                  img_backbone=None,
                  pts_backbone=None,
                  img_neck=None,
@@ -45,6 +46,7 @@ class LaneFormer(BaseModel):
         self.pts_voxel_layer = _build_voxel_layer(pts_voxel_layer)
         self.pts_voxel_encoder = _build_module(pts_voxel_encoder)
         self.pts_middle_encoder = _build_module(pts_middle_encoder)
+        self.pts_bev_encoder = _build_module(pts_bev_encoder)
         self.pts_backbone = _build_module(pts_backbone)
         self.pts_neck = _build_module(pts_neck)
 
@@ -72,6 +74,7 @@ class LaneFormer(BaseModel):
             (self.img_neck, None),
             (self.pts_voxel_encoder, None),
             (self.pts_middle_encoder, None),
+            (self.pts_bev_encoder, None),
             (self.pts_backbone, None),
             (self.pts_neck, None),
             (self.lane_head, None),
@@ -117,7 +120,7 @@ class LaneFormer(BaseModel):
 
     @property
     def with_pts_branch(self):
-        return self.with_pts_backbone
+        return self.pts_bev_encoder is not None or self.with_pts_backbone
 
     # ----------------------------------------------------properties end----------------------------------------------------
 
@@ -223,10 +226,12 @@ class LaneFormer(BaseModel):
 
     def extract_pts_feat(self, points, img_feats=None, img_metas=None):
         """Extract LiDAR BEV features from variable-length points."""
-        if points is None or not self.with_pts_backbone:
+        if points is None or not self.with_pts_branch:
             return None
         if not isinstance(points, (list, tuple)):
             points = [points]
+        if self.pts_bev_encoder is not None:
+            return self.pts_bev_encoder(points, img_feats, img_metas)
 
         voxels, num_points, coors = self.voxelize(points)
         if voxels is None:

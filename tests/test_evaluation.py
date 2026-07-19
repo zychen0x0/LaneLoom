@@ -121,6 +121,9 @@ def test_anchor_metric_excludes_queries_suppressed_by_curve_nms():
     values = metric.compute_metrics(metric.results)
 
     assert values['num_pred'] == 1.0
+    assert values['num_pred_before_nms'] == 2.0
+    assert values['num_nms_suppressed'] == 1.0
+    assert values['nms_suppression_ratio'] == .5
     assert values['num_tp'] == 1.0
     assert values['F1'] == 1.0
 

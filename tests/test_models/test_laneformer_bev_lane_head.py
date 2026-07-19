@@ -312,7 +312,8 @@ def test_two_layer_decoder_resamples_refined_curve_for_second_layer():
         feedforward_channels=16, dropout=0.0)
     sampled = []
 
-    def sample_image_features(points):
+    def sample_image_features(points, query_features):
+        assert query_features.shape == (2, 3, 8)
         sampled.append(points.clone())
         return points.new_zeros(points.size(0), points.size(1), 8)
 
@@ -348,7 +349,8 @@ def test_decoder_cross_attention_keeps_each_query_evidence_separate():
     controls = torch.zeros(1, 2, 4)
 
     def sample(value):
-        def sampler(points):
+        def sampler(points, query_features):
+            assert query_features.shape == (1, 2, 8)
             tokens = points.new_zeros(1, 2, 1, 8)
             tokens[:, 0] = value
             return dict(
@@ -490,7 +492,8 @@ def test_lane_head_uses_51_anchors_and_backpropagates():
         for name in final_lane_loss_names}
     lidar_loss_names = {
         'loss_lidar_shape_cover', 'loss_lidar_shape_compact',
-        'loss_proposal_router', 'loss_q0_geometry'}
+        'loss_proposal_router', 'loss_q0_geometry',
+        'diag_unique_template_count'}
     assert set(losses) == (
         final_lane_loss_names | auxiliary_loss_names | lidar_loss_names)
     assert torch.isfinite(total_loss)
@@ -544,6 +547,66 @@ def test_one_to_one_lane_loss_uses_hungarian_assignment():
     loss_module = LaneFormerOneToOneLaneLoss()
 
     assert isinstance(loss_module.assigner, LaneFormerHungarianAssigner)
+    assert loss_module.emit_diagnostics is True
+
+
+def test_one_to_one_lane_loss_reports_background_collapse_diagnostics():
+    loss_module = LaneFormerOneToOneLaneLoss()
+    predictions = dict(
+        pred_x=torch.tensor([[[0., 0.], [10., 10.]]]),
+        pred_z=torch.zeros(1, 2, 2),
+        pred_vis=torch.full((1, 2, 2), 10.),
+        pred_cls=torch.full((1, 2), -10.),
+        pred_category=torch.zeros(1, 2, 21),
+        pred_logits=torch.cat((
+            torch.zeros(1, 2, 1),
+            torch.full((1, 2, 21), -10.)), dim=-1))
+    gt_lanes = torch.zeros(1, 1, 2, 3)
+    gt_visibility = torch.ones(1, 1, 2)
+    gt_category = torch.zeros(1, 1, dtype=torch.long)
+
+    losses = loss_module(
+        predictions, gt_lanes_3d=gt_lanes,
+        gt_lanes_visibility=gt_visibility,
+        gt_lanes_category=gt_category)
+
+    assert losses['diag_gt_match_recall'] == 1
+    assert losses['diag_unmatched_gt'] == 0
+    assert losses['diag_duplicate_gt_assignments'] == 0
+    assert losses['diag_positive_queries'] == 1
+    assert losses['diag_objectness_queries'] == 0
+    assert losses['diag_prediction_queries'] == 0
+    assert losses['diag_pred_gt_ratio'] == 0
+
+
+def test_one_to_one_lane_loss_prediction_diagnostics_match_inference_filter():
+    loss_module = LaneFormerOneToOneLaneLoss()
+    predictions = dict(
+        pred_x=torch.tensor([[[0., 0.], [10., 10.], [20., 20.]]]),
+        pred_z=torch.zeros(1, 3, 2),
+        pred_vis=torch.tensor([[
+            [10., 10.], [10., 10.], [-10., -10.]]]),
+        pred_cls=torch.tensor([[10., -10., 10.]]),
+        pred_category=torch.zeros(1, 3, 21),
+        pred_logits=torch.tensor([[
+            [0., 10.] + [-10.] * 20,
+            [0.] + [-10.] * 21,
+            [0., 10.] + [-10.] * 20,
+        ]]))
+    gt_lanes = torch.zeros(1, 1, 2, 3)
+    gt_visibility = torch.ones(1, 1, 2)
+    gt_category = torch.zeros(1, 1, dtype=torch.long)
+
+    losses = loss_module(
+        predictions, gt_lanes_3d=gt_lanes,
+        gt_lanes_visibility=gt_visibility,
+        gt_lanes_category=gt_category)
+
+    # Query 0 passes score and visibility. Query 2 has the same class score
+    # but no visible point, matching the inference-time filtering contract.
+    assert losses['diag_objectness_queries'] == 2
+    assert losses['diag_prediction_queries'] == 1
+    assert losses['diag_pred_gt_ratio'] == 1
 
 
 def test_one_to_one_lane_loss_matches_final_predictions_not_q0():
@@ -584,6 +647,37 @@ def test_one_to_one_lane_loss_matches_each_decoder_layer_independently():
 
     assert final_assignment[0].tolist() == [0, 1]
     assert auxiliary_assignment[0].tolist() == [1, 0]
+
+
+def test_one_to_one_lane_loss_reports_auxiliary_matching_health():
+    loss_module = LaneFormerOneToOneLaneLoss()
+
+    def prediction(x):
+        return dict(
+            pred_x=x,
+            pred_z=torch.zeros_like(x),
+            pred_vis=torch.full_like(x, 10.),
+            pred_cls=torch.full(x.shape[:2], -10.),
+            pred_category=torch.zeros(*x.shape[:2], 21),
+            pred_logits=torch.cat((
+                torch.zeros(*x.shape[:2], 1),
+                torch.full((*x.shape[:2], 21), -10.)), dim=-1))
+
+    predictions = prediction(torch.tensor([[[0., 0.], [10., 10.]]]))
+    predictions['aux_predictions'] = [
+        prediction(torch.tensor([[[10., 10.], [0., 0.]]]))]
+    gt_lanes = torch.zeros(1, 2, 2, 3)
+    gt_lanes[0, 1, :, 0] = 10.
+    gt_visibility = torch.ones(1, 2, 2)
+
+    losses = loss_module(
+        predictions, gt_lanes_3d=gt_lanes,
+        gt_lanes_visibility=gt_visibility,
+        gt_lanes_category=torch.zeros(1, 2, dtype=torch.long))
+
+    assert losses['diag_aux_0_gt_match_recall'] == 1
+    assert losses['diag_aux_0_unmatched_gt'] == 0
+    assert losses['diag_aux_0_duplicate_gt_assignments'] == 0
 
 
 def test_topk_lane_loss_has_one_visibility_objective():

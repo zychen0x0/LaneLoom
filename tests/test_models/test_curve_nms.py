@@ -52,3 +52,20 @@ def test_curve_nms_uses_height_when_comparing_3d_lanes():
         scores=[0.9, 0.8])
 
     assert keep.tolist() == [[True, True]]
+
+
+def test_curve_nms_only_compares_score_and_visibility_candidates():
+    x = torch.zeros(1, 3, 4)
+    z = torch.zeros_like(x)
+    visibility = torch.ones_like(x)
+    scores = torch.tensor([[.9, .8, .1]])
+    candidate_mask = torch.tensor([[True, True, False]])
+
+    keep = curve_nms(
+        x, z, visibility, scores,
+        visibility_threshold=.5,
+        distance_threshold=.3,
+        match_ratio_threshold=.75,
+        candidate_mask=candidate_mask)
+
+    assert keep.tolist() == [[True, False, False]]

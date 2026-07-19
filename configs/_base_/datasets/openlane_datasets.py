@@ -210,9 +210,9 @@ gt_outlier_residual = 0.75
 
 
 # ---------------------------------------------------lane gt settings start---------------------------------------------------
-# Fifty-one uniformly spaced forward anchors at 2 m intervals, including
-# both the ego origin and the 100 m range boundary.
-anchor_y_steps = [2.0 * i for i in range(51)]
+# Fifty uniformly spaced forward anchors at 2 m intervals. The first output
+# anchor is y=2 m; y=0 is excluded while the 100 m boundary is retained.
+anchor_y_steps = [2.0 * i for i in range(1, 51)]
 num_y_steps = len(anchor_y_steps)
 # ----------------------------------------------------lane gt settings end----------------------------------------------------
 

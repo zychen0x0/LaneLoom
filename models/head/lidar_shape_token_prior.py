@@ -13,8 +13,8 @@ from mmdet3d.registry import MODELS
 class LaneFormerLiDARShapeTokenPrior(nn.Module):
     """Predict a compact dictionary of relative cubic-Bézier road shapes.
 
-    Templates start at ``(x=0, y=0, z=0)``.  Consequently they describe only
-    shape; absolute lateral placement is delegated to the proposal router.
+    Templates start at ``(x=0, y=0, z=0)``. Consequently they describe only
+    shape; absolute lateral placement is delegated to proposal expansion.
     """
 
     def __init__(self, lidar_in_channels, pc_range, anchor_y_steps,
@@ -70,10 +70,10 @@ class LaneFormerLiDARShapeTokenPrior(nn.Module):
         anchor_y_steps = torch.as_tensor(anchor_y_steps, dtype=torch.float32)
         if anchor_y_steps.ndim != 1 or anchor_y_steps.numel() < 2:
             raise ValueError('anchor_y_steps must contain at least two values.')
-        if anchor_y_steps[0] != 0 or not torch.all(
+        if anchor_y_steps[0] < 0 or not torch.all(
                 anchor_y_steps[1:] > anchor_y_steps[:-1]):
             raise ValueError(
-                'Shape templates require increasing anchors starting at y=0.')
+                'Shape templates require non-negative increasing anchors.')
         self.register_buffer('anchor_y_steps', anchor_y_steps)
         length = anchor_y_steps[-1]
         t = anchor_y_steps / length
@@ -104,7 +104,15 @@ class LaneFormerLiDARShapeTokenPrior(nn.Module):
 
     @staticmethod
     def _feature(features):
+        if isinstance(features, dict):
+            features = features['features']
         return features[-1] if isinstance(features, (list, tuple)) else features
+
+    @staticmethod
+    def _lidar_sample_valid(pts_feats, batch, device):
+        if isinstance(pts_feats, dict) and 'occupancy' in pts_feats:
+            return pts_feats['occupancy'].flatten(1).any(dim=-1)
+        return torch.ones(batch, dtype=torch.bool, device=device)
 
     def _relative_controls(self, pts_feats, img_feats=None):
         if pts_feats is None:
@@ -114,12 +122,18 @@ class LaneFormerLiDARShapeTokenPrior(nn.Module):
             image = self._feature(img_feats)
             batch = image.size(0)
             raw = image.new_zeros(batch, self.max_templates, 6)
-            from_lidar = False
+            tokens = image.new_zeros(
+                batch, self.max_templates, self.shape_tokens.embedding_dim)
+            from_lidar = torch.zeros(
+                batch, dtype=torch.bool, device=image.device)
         else:
-            context = self.feature_encoder(self._feature(pts_feats))
+            feature = self._feature(pts_feats)
+            context = self.feature_encoder(feature)
+            from_lidar = self._lidar_sample_valid(
+                pts_feats, context.size(0), context.device)
+            context = context * from_lidar[:, None].to(context.dtype)
             tokens = context.unsqueeze(1) + self.shape_tokens.weight.unsqueeze(0)
             raw = self.template_head(tokens)
-            from_lidar = True
         lateral_slopes = raw[..., :3] * self.lateral_slope_scale
         vertical_slopes = raw[..., 3:] * self.vertical_slope_scale
         segment_length = self.anchor_y_steps[-1].to(raw) / 3.0
@@ -131,7 +145,8 @@ class LaneFormerLiDARShapeTokenPrior(nn.Module):
         control_yaw_degrees = torch.rad2deg(torch.atan(lateral_slopes))
         control_pitch_degrees = torch.rad2deg(torch.atan(vertical_slopes))
         return (x_controls, z_controls, lateral_slopes, vertical_slopes,
-                control_yaw_degrees, control_pitch_degrees, from_lidar)
+                control_yaw_degrees, control_pitch_degrees, tokens,
+                from_lidar)
 
     def _sample_curves(self, x_controls, z_controls):
         basis = self.bezier_basis.to(x_controls)
@@ -253,6 +268,7 @@ class LaneFormerLiDARShapeTokenPrior(nn.Module):
     def forward(self, pts_feats, img_feats=None, img_metas=None):
         (x_controls, z_controls, lateral_slopes, vertical_slopes,
          control_yaw_degrees, control_pitch_degrees,
+         shape_query_features,
          from_lidar) = self._relative_controls(pts_feats, img_feats)
         shape_points = self._sample_curves(x_controls, z_controls)
         control_y = self.control_y.to(x_controls).view(1, 1, 4).expand_as(
@@ -267,6 +283,7 @@ class LaneFormerLiDARShapeTokenPrior(nn.Module):
             shape_vertical_slopes=vertical_slopes,
             shape_control_yaw_degrees=control_yaw_degrees,
             shape_control_pitch_degrees=control_pitch_degrees,
+            shape_query_features=shape_query_features,
             shape_templates=shape_templates,
             shape_points=shape_points,
             unique_template_indices=unique_indices,
@@ -275,13 +292,20 @@ class LaneFormerLiDARShapeTokenPrior(nn.Module):
         )
 
     def loss(self, prior, lanes_3d, visibility):
-        if not prior['from_lidar']:
+        from_lidar = prior['from_lidar']
+        if not torch.is_tensor(from_lidar):
+            from_lidar = torch.full(
+                (prior['shape_points'].size(0),), bool(from_lidar),
+                dtype=torch.bool, device=prior['shape_points'].device)
+        if not from_lidar.any():
             zero = prior['shape_points'].sum() * 0
             return dict(
                 loss_lidar_shape_cover=zero,
-                loss_lidar_shape_compact=zero)
+                loss_lidar_shape_compact=zero,
+                diag_unique_template_count=zero)
         distance, valid = self.shape_distance(
             prior['shape_points'], lanes_3d.float(), visibility)
+        valid = valid & from_lidar.unsqueeze(-1)
         if valid.any():
             cover = self._softmin(
                 distance, self.shape_softmin_temperature)[valid].mean()
@@ -294,9 +318,19 @@ class LaneFormerLiDARShapeTokenPrior(nn.Module):
         pairwise, _ = self.shape_distance(
             prior['shape_points'], prior['shape_points'], template_visibility)
         similarity = torch.exp(-pairwise / self.compact_temperature)
-        effective_count = (1.0 / similarity.sum(dim=-1).clamp_min(1e-6)).sum(
-            dim=-1).mean()
+        effective_count = (
+            1.0 / similarity.sum(dim=-1).clamp_min(1e-6)).sum(dim=-1)
+        effective_count = effective_count[from_lidar].mean()
+        unique_mask = prior.get('unique_template_mask')
+        if unique_mask is None:
+            unique_count = prior['shape_points'].new_full(
+                (prior['shape_points'].size(0),),
+                prior['shape_points'].size(1))
+        else:
+            unique_count = unique_mask.sum(dim=-1).to(
+                prior['shape_points'].dtype)
         return dict(
             loss_lidar_shape_cover=cover * self.shape_cover_loss_weight,
             loss_lidar_shape_compact=effective_count * self.compact_loss_weight,
+            diag_unique_template_count=unique_count[from_lidar].mean(),
         )

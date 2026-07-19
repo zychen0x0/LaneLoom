@@ -89,6 +89,7 @@ class OpenLaneAnchorMetric(BaseMetric):
 
         prediction_mask = pred_scores >= self.score_threshold
         prediction_mask &= (pred_vis >= self.visibility_threshold).any(axis=1)
+        raw_prediction_count = int(prediction_mask.sum())
         if sample.get('pred_nms_keep_queries') is not None:
             prediction_mask &= self._numpy(
                 sample['pred_nms_keep_queries']).astype(bool)
@@ -99,6 +100,9 @@ class OpenLaneAnchorMetric(BaseMetric):
         summary = self._empty_summary()
         summary['gt'] = int(gt_indices.size)
         summary['pred'] = int(pred_indices.size)
+        summary['raw_pred'] = raw_prediction_count
+        summary['nms_suppressed'] = raw_prediction_count - int(
+            pred_indices.size)
         if gt_indices.size and pred_indices.size:
             cost = np.empty((gt_indices.size, pred_indices.size), dtype=np.float64)
             pair_data: dict[tuple[int, int], dict[str, Any]] = {}
@@ -160,6 +164,7 @@ class OpenLaneAnchorMetric(BaseMetric):
     @staticmethod
     def _empty_summary() -> dict[str, float | int]:
         return dict(gt=0, pred=0, tp=0, category_count=0, category_correct=0,
+                    raw_pred=0, nms_suppressed=0,
                     x_near_sum=0.0, z_near_sum=0.0,
                     near_count=0, x_far_sum=0.0, z_far_sum=0.0, far_count=0)
 
@@ -189,4 +194,9 @@ class OpenLaneAnchorMetric(BaseMetric):
             num_gt=float(gt),
             num_pred=float(pred),
             num_tp=float(tp),
+            num_pred_before_nms=float(summary['raw_pred']),
+            num_nms_suppressed=float(summary['nms_suppressed']),
+            nms_suppression_ratio=(
+                float(summary['nms_suppressed'])
+                / max(int(summary['raw_pred']), 1)),
         )

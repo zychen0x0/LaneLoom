@@ -59,7 +59,8 @@ class LaneFormerLaneQueryDecoder(nn.Module):
     """Decode BEV memory into cubic-Bézier 3D lanes sampled at anchors."""
 
     def __init__(self, embed_dims, bev_h, bev_w, pc_range, num_query,
-                 anchor_y_steps, num_layers=3, num_heads=8,
+                 anchor_y_steps, evidence_y_steps=None,
+                 num_layers=3, num_heads=8,
                  feedforward_channels=1024, dropout=0.1, num_category=21,
                  dn_num_groups=0,
                  objectness_prior_probability=0.01,
@@ -77,10 +78,13 @@ class LaneFormerLaneQueryDecoder(nn.Module):
         self.register_buffer('anchor_y_steps', torch.tensor(anchor_y_steps, dtype=torch.float32))
         self.num_anchors = len(anchor_y_steps)
         self.num_control_points = 4
-        anchor_span = self.anchor_y_steps[-1] - self.anchor_y_steps[0]
-        if anchor_span <= 0:
+        curve_length = self.anchor_y_steps[-1]
+        if curve_length <= 0:
             raise ValueError('anchor_y_steps must be strictly increasing.')
-        t = (self.anchor_y_steps - self.anchor_y_steps[0]) / anchor_span
+        if not torch.all(
+                self.anchor_y_steps[1:] > self.anchor_y_steps[:-1]):
+            raise ValueError('anchor_y_steps must be strictly increasing.')
+        t = self.anchor_y_steps / curve_length
         self.register_buffer(
             'bezier_basis',
             torch.stack((
@@ -88,6 +92,28 @@ class LaneFormerLaneQueryDecoder(nn.Module):
                 3 * (1 - t) ** 2 * t,
                 3 * (1 - t) * t ** 2,
                 t ** 3,
+            ), dim=-1))
+        if evidence_y_steps is None:
+            evidence_y_steps = anchor_y_steps
+        evidence_y_steps = torch.as_tensor(
+            evidence_y_steps, dtype=torch.float32)
+        if (evidence_y_steps.ndim != 1 or evidence_y_steps.numel() < 2
+                or evidence_y_steps[0] < 0
+                or evidence_y_steps[-1] > curve_length
+                or not torch.all(
+                    evidence_y_steps[1:] > evidence_y_steps[:-1])):
+            raise ValueError(
+                'evidence_y_steps must be positive, increasing and within '
+                'the output curve range.')
+        self.register_buffer('evidence_y_steps', evidence_y_steps)
+        evidence_t = evidence_y_steps / curve_length
+        self.register_buffer(
+            'evidence_bezier_basis',
+            torch.stack((
+                (1 - evidence_t) ** 3,
+                3 * (1 - evidence_t) ** 2 * evidence_t,
+                3 * (1 - evidence_t) * evidence_t ** 2,
+                evidence_t ** 3,
             ), dim=-1))
         self.num_category = int(num_category)
         if int(dn_num_groups) != 0:
@@ -234,24 +260,28 @@ class LaneFormerLaneQueryDecoder(nn.Module):
             pred_category=pred_category,
             pred_logits=pred_logits)
 
-    def _reference_points(self, reference_controls):
+    def _reference_points(self, reference_controls, evidence=False):
         reference_x, reference_z = reference_controls
+        basis = (
+            self.evidence_bezier_basis if evidence else self.bezier_basis)
+        y_steps = (
+            self.evidence_y_steps if evidence else self.anchor_y_steps)
         x = torch.einsum(
-            'ac,bqc->bqa', self.bezier_basis, reference_x)
+            'ac,bqc->bqa', basis, reference_x)
         z = torch.einsum(
-            'ac,bqc->bqa', self.bezier_basis, reference_z)
-        y = self.anchor_y_steps.to(x).view(1, 1, -1).expand_as(x)
+            'ac,bqc->bqa', basis, reference_z)
+        y = y_steps.to(x).view(1, 1, -1).expand_as(x)
         return torch.stack((x, y, z), dim=-1)
 
     def _sample_evidence(self, reference_controls, sampler, batch, dtype,
-                         device):
+                         device, query_features):
         null = self.null_evidence.to(dtype=dtype).expand(
             batch, self.num_query, -1, -1)
         if reference_controls is None or sampler is None:
             return null, torch.zeros(
-                batch, self.num_query, 1, dtype=torch.bool, device=device)
-        points = self._reference_points(reference_controls)
-        sampled = sampler(points)
+                batch, self.num_query, 1, dtype=torch.bool, device=device), {}
+        points = self._reference_points(reference_controls, evidence=True)
+        sampled = sampler(points, query_features)
         if torch.is_tensor(sampled):
             sampled = dict(
                 tokens=sampled.unsqueeze(2),
@@ -271,7 +301,13 @@ class LaneFormerLaneQueryDecoder(nn.Module):
             padding_mask,
             torch.zeros(batch, self.num_query, 1, dtype=torch.bool,
                         device=padding_mask.device)), dim=2)
-        return evidence, padding_mask
+        diagnostics = {}
+        for modality in ('image', 'lidar'):
+            valid_mask = sampled.get(f'{modality}_valid_mask')
+            if valid_mask is not None:
+                diagnostics[f'diag_{modality}_valid_ratio'] = (
+                    valid_mask.float().mean())
+        return evidence, padding_mask, diagnostics
 
     def forward(self, bev, bev_pos=None,
                 query_features=None, initial_reference_controls=None,
@@ -304,9 +340,10 @@ class LaneFormerLaneQueryDecoder(nn.Module):
         main_reference = initial_reference_controls
         main_visibility_reference = None
         for layer_idx, layer in enumerate(self.layers):
-            evidence, evidence_padding_mask = self._sample_evidence(
+            evidence, evidence_padding_mask, sampling_diagnostics = (
+                self._sample_evidence(
                 main_reference, query_feature_sampler, batch, query.dtype,
-                query.device)
+                query.device, self.norm(query[:, :self.num_query])))
             query = layer(
                 query, query_pos, evidence, evidence_padding_mask,
                 None, self.num_query)
@@ -315,6 +352,7 @@ class LaneFormerLaneQueryDecoder(nn.Module):
                 normalized_query[:, :self.num_query], main_reference,
                 main_visibility_reference,
                 layer_idx=layer_idx)
+            predictions.update(sampling_diagnostics)
             main_reference = (
                 predictions['curve_x_controls'],
                 predictions['curve_z_controls'])

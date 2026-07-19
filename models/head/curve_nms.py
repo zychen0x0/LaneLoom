@@ -5,7 +5,7 @@ import torch
 
 def curve_nms(x, z, visibility, scores, *, visibility_threshold,
               distance_threshold,
-              match_ratio_threshold):
+              match_ratio_threshold, candidate_mask=None):
     """Return the highest-scoring non-duplicate lane queries.
 
     Two predictions are duplicates only when anchors closer than
@@ -13,26 +13,37 @@ def curve_nms(x, z, visibility, scores, *, visibility_threshold,
     predictions' visible intervals.  This prevents a short shared segment from
     suppressing two lanes that diverge later.
     """
-    visible = visibility >= visibility_threshold
-    shared = visible.unsqueeze(2) & visible.unsqueeze(1)
-    distance = torch.hypot(
-        x.unsqueeze(2) - x.unsqueeze(1),
-        z.unsqueeze(2) - z.unsqueeze(1))
-    matched_count = (shared & (distance < distance_threshold)).sum(dim=-1)
-    visible_count = visible.sum(dim=-1)
-    duplicate = (
-        (matched_count > 0) &
-        (matched_count >=
-         match_ratio_threshold * visible_count.unsqueeze(2)) &
-        (matched_count >=
-         match_ratio_threshold * visible_count.unsqueeze(1)))
-    duplicate.diagonal(dim1=1, dim2=2).fill_(False)
-
     keep = torch.zeros_like(scores, dtype=torch.bool)
-    for batch_idx, order in enumerate(torch.argsort(scores, dim=1, descending=True)):
-        suppressed = torch.zeros_like(scores[batch_idx], dtype=torch.bool)
-        for candidate in order:
-            selected = ~suppressed[candidate]
-            keep[batch_idx, candidate] = selected
-            suppressed |= duplicate[batch_idx, candidate] & selected
+    if candidate_mask is None:
+        candidate_mask = torch.ones_like(scores, dtype=torch.bool)
+    for batch_idx in range(scores.size(0)):
+        indices = torch.where(candidate_mask[batch_idx])[0]
+        if indices.numel() == 0:
+            continue
+        local_x = x[batch_idx, indices]
+        local_z = z[batch_idx, indices]
+        local_visible = (
+            visibility[batch_idx, indices] >= visibility_threshold)
+        shared = local_visible.unsqueeze(1) & local_visible.unsqueeze(0)
+        distance = torch.hypot(
+            local_x.unsqueeze(1) - local_x.unsqueeze(0),
+            local_z.unsqueeze(1) - local_z.unsqueeze(0))
+        matched_count = (
+            shared & (distance < distance_threshold)).sum(dim=-1)
+        visible_count = local_visible.sum(dim=-1)
+        duplicate = (
+            (matched_count > 0)
+            & (matched_count >=
+               match_ratio_threshold * visible_count.unsqueeze(1))
+            & (matched_count >=
+               match_ratio_threshold * visible_count.unsqueeze(0)))
+        duplicate.diagonal().fill_(False)
+
+        order = torch.argsort(scores[batch_idx, indices], descending=True)
+        suppressed = torch.zeros(
+            indices.numel(), dtype=torch.bool, device=scores.device)
+        for local_candidate in order:
+            selected = ~suppressed[local_candidate]
+            keep[batch_idx, indices[local_candidate]] = selected
+            suppressed |= duplicate[local_candidate] & selected
     return keep

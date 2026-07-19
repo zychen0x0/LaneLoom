@@ -1,5 +1,6 @@
 """Orchestrate configurable BEV encoding, lane decoding, and supervision."""
 import torch.nn as nn
+import torch.nn.functional as F
 
 from mmdet3d.registry import MODELS
 
@@ -11,7 +12,8 @@ class LaneFormerBEVLaneHead(nn.Module):
     """Small interface over configurable BEV encoder, decoder, and loss modules."""
 
     def __init__(self, bev_encoder, lane_decoder, loss_module,
-                 anchor_prior=None, proposal_router=None, query_sampler=None,
+                 anchor_prior=None, proposal_expander=None,
+                 proposal_router=None, query_sampler=None,
                  test_cfg=None, **kwargs):
         super().__init__()
         self.bev_encoder = MODELS.build(bev_encoder)
@@ -22,6 +24,9 @@ class LaneFormerBEVLaneHead(nn.Module):
         self.proposal_router = (
             MODELS.build(proposal_router)
             if proposal_router is not None else None)
+        self.proposal_expander = (
+            MODELS.build(proposal_expander)
+            if proposal_expander is not None else None)
         self.query_sampler = (
             MODELS.build(query_sampler) if query_sampler is not None else None)
         self.test_cfg = test_cfg or {}
@@ -81,27 +86,43 @@ class LaneFormerBEVLaneHead(nn.Module):
         if self.anchor_prior is None:
             return None
         prior = self.anchor_prior(pts_feats, img_feats, img_metas)
-        if self.proposal_router is not None:
+        if self.proposal_expander is not None:
+            prior.update(self.proposal_expander(
+                prior, img_feats, img_metas))
+        elif self.proposal_router is not None:
             prior.update(self.proposal_router(prior, img_feats, img_metas))
         return prior
 
-    def _query_feature_sampler(self, img_feats, lidar_bev, img_metas):
+    @staticmethod
+    def _lidar_occupancy(pts_feats, lidar_bev):
+        if (not isinstance(pts_feats, dict)
+                or pts_feats.get('occupancy') is None
+                or lidar_bev is None):
+            return None
+        return F.interpolate(
+            pts_feats['occupancy'].float(),
+            size=lidar_bev.shape[-2:], mode='nearest') > .5
+
+    def _query_feature_sampler(self, img_feats, lidar_bev, img_metas,
+                               lidar_occupancy=None):
         if self.query_sampler is None:
             return None
 
-        def sample(anchor_points):
+        def sample(anchor_points, query_features):
             return self.query_sampler(
-                anchor_points, img_feats, lidar_bev, img_metas)
+                anchor_points, query_features, img_feats, lidar_bev,
+                img_metas, lidar_occupancy=lidar_occupancy)
 
         return sample
 
     def loss(self, img_feats, pts_feats, img_metas, prev_bev=None, **targets):
         anchor_prior = self._anchor_prior(img_feats, pts_feats, img_metas)
         current_bev = self.forward_bev(img_feats, pts_feats, img_metas)
+        lidar_occupancy = self._lidar_occupancy(pts_feats, current_bev)
         losses = self.loss_module(self._predict(
             current_bev, anchor_prior=anchor_prior,
             query_feature_sampler=self._query_feature_sampler(
-                img_feats, current_bev, img_metas)), **targets)
+                img_feats, current_bev, img_metas, lidar_occupancy)), **targets)
         if anchor_prior is not None:
             prior_lanes = targets['gt_lanes_3d']
             prior_visibility = targets['gt_lanes_visibility']
@@ -111,7 +132,10 @@ class LaneFormerBEVLaneHead(nn.Module):
                 prior_visibility = targets['gt_lanes_visibility_enhanced']
             losses.update(self.anchor_prior.loss(
                 anchor_prior, prior_lanes, prior_visibility))
-            if self.proposal_router is not None:
+            if self.proposal_expander is not None:
+                losses.update(self.proposal_expander.loss(
+                    anchor_prior, prior_lanes, prior_visibility))
+            elif self.proposal_router is not None:
                 losses.update(self.proposal_router.loss(
                     anchor_prior, prior_lanes, prior_visibility))
         return losses
@@ -119,24 +143,30 @@ class LaneFormerBEVLaneHead(nn.Module):
     def predict(self, img_feats, pts_feats, img_metas, prev_bev=None, **kwargs):
         anchor_prior = self._anchor_prior(img_feats, pts_feats, img_metas)
         current_bev = self.forward_bev(img_feats, pts_feats, img_metas)
+        lidar_occupancy = self._lidar_occupancy(pts_feats, current_bev)
         predictions = self._predict(
             current_bev, anchor_prior=anchor_prior,
             query_feature_sampler=self._query_feature_sampler(
-                img_feats, current_bev, img_metas))
+                img_feats, current_bev, img_metas, lidar_occupancy))
         class_probability = predictions['pred_logits'].softmax(dim=-1)[..., 1:]
         scores, category = class_probability.max(dim=-1)
         visibility = predictions['pred_vis'].sigmoid()
-        valid_queries = scores >= self.score_threshold
+        visibility_threshold = float(
+            (self.curve_nms_cfg or {}).get('visibility_threshold', .5))
+        candidate_queries = (
+            (scores >= self.score_threshold)
+            & (visibility >= visibility_threshold).any(dim=-1))
+        valid_queries = candidate_queries
         nms_keep_queries = scores.new_ones(scores.shape, dtype=bool)
         if self.curve_nms_cfg is not None:
             nms_keep_queries = curve_nms(
                 predictions['pred_x'], predictions['pred_z'], visibility,
-                scores, visibility_threshold=float(
-                    self.curve_nms_cfg.get('visibility_threshold', 0.5)),
+                scores, visibility_threshold=visibility_threshold,
                 distance_threshold=float(
                     self.curve_nms_cfg.get('distance_threshold', 0.3)),
                 match_ratio_threshold=float(
-                    self.curve_nms_cfg.get('match_ratio_threshold', 0.75)))
+                    self.curve_nms_cfg.get('match_ratio_threshold', 0.75)),
+                candidate_mask=candidate_queries)
             valid_queries &= nms_keep_queries
         output = dict(
             x=predictions['pred_x'], z=predictions['pred_z'],

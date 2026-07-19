@@ -38,30 +38,36 @@ def test_config_enables_unused_parameter_detection_for_dynamic_bev_branches():
     assert cfg.model_wrapper_cfg.find_unused_parameters is True
 
 
-def test_config_routes_ten_lidar_shapes_into_fifty_decoder_queries():
+def test_config_expands_five_lidar_shapes_into_505_decoder_queries():
     config_path = Path(__file__).resolve().parents[2] / 'configs/laneformer_openlane_image_lidar.py'
     cfg = Config.fromfile(config_path)
     prior = cfg.model.lane_head.anchor_prior
-    router = cfg.model.lane_head.proposal_router
+    expander = cfg.model.lane_head.proposal_expander
     decoder = cfg.model.lane_head.lane_decoder
 
-    assert prior.max_templates == 10
+    assert prior.max_templates == 5
     assert prior.lateral_slope_scale == 0.1
     assert prior.vertical_slope_scale == 0.03
     assert 'max_yaw_degrees' not in prior
     assert 'max_pitch_degrees' not in prior
-    assert router.num_x_seeds == router.proposal_budget == decoder.num_query == 50
+    assert expander.num_x_seeds == 101
+    assert decoder.num_query == 505
     assert prior.pc_range == decoder.pc_range
-    assert prior.anchor_y_steps == router.anchor_y_steps == decoder.anchor_y_steps
+    assert prior.anchor_y_steps == expander.anchor_y_steps == decoder.anchor_y_steps
+    assert decoder.anchor_y_steps == [2. * index for index in range(1, 51)]
+    assert decoder.evidence_y_steps == [5. * index for index in range(1, 21)]
     assert decoder.num_layers == 2
 
 
-def test_config_uses_two_level_temporal_fv_and_no_image_bev():
+def test_config_uses_single_level_temporal_fv_and_dynamic_pillar_bev():
     config_path = Path(__file__).resolve().parents[2] / 'configs/laneformer_openlane_image_lidar.py'
     cfg = Config.fromfile(config_path)
 
-    assert cfg.model.num_levels == 2
-    assert cfg.model.img_backbone.out_indices == (1, 2)
+    assert cfg.model.num_levels == 1
+    assert cfg.model.img_backbone.out_indices == (1,)
+    assert cfg.model.pts_bev_encoder.type == (
+        'LaneFormerDynamicPillarBEVEncoder')
+    assert 'pts_voxel_layer' not in cfg.model
     assert cfg.model.lane_head.query_sampler.type == (
         'LaneFormerDualPlaneTemporalSampler')
     assert 'spatial_cross_attn' not in cfg.model.lane_head.bev_encoder
@@ -77,13 +83,18 @@ def test_config_uses_strict_q0_and_one_to_one_assignment():
     assert loss.type == 'LaneFormerOneToOneLaneLoss'
     assert loss.assigner.type == 'LaneFormerHungarianAssigner'
     assert loss.visibility_loss_weight == 1.0
+    assert loss.focal_alpha == 0.25
+    assert loss.focal_gamma == 2.0
     assert 'visibility_dice_loss_weight' not in loss
     assert 'visibility_boundary_loss_weight' not in loss
     assert cfg.model.lane_head.lane_decoder.get('dn_num_groups', 0) == 0
-    router = cfg.model.lane_head.proposal_router
-    assert router.q0_distance_threshold == 0.3
-    assert router.q0_match_ratio == 0.8
-    assert router.q0_geometry_loss_weight == 1.0
+    assert (
+        cfg.model.lane_head.lane_decoder.objectness_prior_probability
+        == 0.01)
+    expander = cfg.model.lane_head.proposal_expander
+    assert expander.q0_distance_threshold == 0.3
+    assert expander.q0_match_ratio == 0.8
+    assert expander.q0_geometry_loss_weight == 1.0
     assert cfg.model.lane_head.test_cfg.curve_nms.distance_threshold == 0.3
     assert cfg.model.lane_head.test_cfg.curve_nms.match_ratio_threshold == 0.75
 

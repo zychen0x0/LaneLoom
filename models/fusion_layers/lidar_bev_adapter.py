@@ -16,6 +16,8 @@ class LaneFormerLiDARBEVAdapter(nn.Module):
     def forward(self, pts_feats, output_size):
         if pts_feats is None:
             return None
+        if isinstance(pts_feats, dict):
+            pts_feats = pts_feats['features']
         feature = pts_feats[-1] if isinstance(pts_feats, (list, tuple)) else pts_feats
         feature = F.interpolate(
             feature, output_size, mode='bilinear', align_corners=False)

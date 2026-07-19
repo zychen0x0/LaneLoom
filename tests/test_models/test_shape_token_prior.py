@@ -76,6 +76,23 @@ def test_shape_prior_predicts_cubic_templates_and_deduplicates_without_confidenc
     assert output['unique_template_mask'].shape == (2, 3)
 
 
+def test_shape_prior_does_not_learn_gt_geometry_from_empty_lidar():
+    prior = _prior(max_templates=2)
+    output = prior(dict(
+        features=torch.randn(1, 8, 3, 3),
+        occupancy=torch.zeros(1, 1, 3, 3, dtype=torch.bool)))
+    gt = torch.zeros(1, 1, len(ANCHORS), 3)
+    gt[..., 1] = torch.tensor(ANCHORS)
+    visibility = torch.ones(1, 1, len(ANCHORS))
+
+    losses = prior.loss(output, gt, visibility)
+
+    assert output['from_lidar'].tolist() == [False]
+    assert losses['loss_lidar_shape_cover'] == 0
+    assert losses['loss_lidar_shape_compact'] == 0
+    assert losses['diag_unique_template_count'] == 0
+
+
 def test_shape_prior_converts_three_unbounded_slopes_to_controls():
     prior = _prior(max_templates=1)
     lateral_slopes = torch.tensor([0., .5, 2.])
@@ -216,10 +233,12 @@ def test_shape_coverage_allows_one_template_to_cover_parallel_gt_lanes():
     losses = prior.loss(prior_output, lanes, visibility)
 
     assert set(losses) == {
-        'loss_lidar_shape_cover', 'loss_lidar_shape_compact'}
+        'loss_lidar_shape_cover', 'loss_lidar_shape_compact',
+        'diag_unique_template_count'}
     assert losses['loss_lidar_shape_cover'].item() < 1e-4
     assert torch.allclose(
         losses['loss_lidar_shape_compact'], torch.tensor(.05), atol=1e-4)
+    assert losses['diag_unique_template_count'] == 2
 
 
 def test_proposal_router_expands_unique_shapes_and_returns_fixed_budget():

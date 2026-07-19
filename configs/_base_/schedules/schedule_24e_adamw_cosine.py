@@ -13,7 +13,8 @@ optim_wrapper = dict(
     paramwise_cfg=dict(
         custom_keys={
             'img_backbone': dict(lr_mult=0.1),
-            'sampling_offsets': dict(lr_mult=0.1, decay_mult=1.0),
+            'image_offset_head': dict(lr_mult=0.1, decay_mult=1.0),
+            'lidar_offset_head': dict(lr_mult=0.1, decay_mult=1.0),
         }),
     clip_grad=dict(max_norm=20, norm_type=2))
 # ----------------------------------------------------optimizer wrapper end----------------------------------------------------

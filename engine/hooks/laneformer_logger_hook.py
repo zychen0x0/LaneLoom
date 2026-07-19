@@ -125,6 +125,8 @@ class LaneFormerLoggerHook(Hook):
             '===> Evaluation laneline Precision: {:.8f}\n'
             '===> Evaluation laneline Category Accuracy: {:.8f}\n'
             '===> Evaluation laneline GT / Pred / TP: {:.0f} / {:.0f} / {:.0f}\n'
+            '===> Evaluation predictions before NMS / suppressed / ratio: '
+            '{:.0f} / {:.0f} / {:.4f}\n'
             '===> Evaluation laneline x error (close): {:.8f} m\n'
             '===> Evaluation laneline x error (far): {:.8f} m\n'
             '===> Evaluation laneline z error (close): {:.8f} m\n'
@@ -136,6 +138,9 @@ class LaneFormerLoggerHook(Hook):
                 self._metric_value(metrics, 'num_gt'),
                 self._metric_value(metrics, 'num_pred'),
                 self._metric_value(metrics, 'num_tp'),
+                self._metric_value(metrics, 'num_pred_before_nms'),
+                self._metric_value(metrics, 'num_nms_suppressed'),
+                self._metric_value(metrics, 'nms_suppression_ratio'),
                 self._metric_value(metrics, 'x_error_near'),
                 self._metric_value(metrics, 'x_error_far'),
                 self._metric_value(metrics, 'z_error_near'),

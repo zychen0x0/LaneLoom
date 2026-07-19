@@ -17,7 +17,8 @@ class LaneFormerTopKLaneLoss(nn.Module):
                  x_loss_weight=1.0, z_loss_weight=1.0,
                  visibility_loss_weight=1.0, aux_loss_weight=0.5,
                  smooth_l1_beta=0.5, focal_alpha=0.25, focal_gamma=2.0,
-                 **kwargs):
+                 emit_diagnostics=False, diagnostic_score_threshold=.3,
+                 diagnostic_visibility_threshold=.5, **kwargs):
         super().__init__()
         self.assigner = (
             TASK_UTILS.build(assigner) if assigner is not None
@@ -30,6 +31,10 @@ class LaneFormerTopKLaneLoss(nn.Module):
         self.smooth_l1_beta = float(smooth_l1_beta)
         self.focal_alpha = float(focal_alpha)
         self.focal_gamma = float(focal_gamma)
+        self.emit_diagnostics = bool(emit_diagnostics)
+        self.diagnostic_score_threshold = float(diagnostic_score_threshold)
+        self.diagnostic_visibility_threshold = float(
+            diagnostic_visibility_threshold)
 
     def _focal_loss(self, logits, target, positive_count):
         probability = logits.softmax(dim=-1)
@@ -128,6 +133,53 @@ class LaneFormerTopKLaneLoss(nn.Module):
                                gt_lanes_3d, gt_visibility):
         return assignments
 
+    def _assignment_diagnostics(self, predictions, assignments,
+                                gt_visibility):
+        reference = predictions['pred_cls']
+        matched = 0
+        unique_matched = 0
+        for assignment in assignments:
+            matched_gt = assignment[assignment >= 0]
+            matched += int(matched_gt.numel())
+            unique_matched += int(torch.unique(matched_gt).numel())
+        valid_gt = int((gt_visibility > .5).any(dim=-1).sum())
+        foreground_probability = reference.sigmoid()
+        objectness_queries = int((
+            foreground_probability >= self.diagnostic_score_threshold).sum())
+        class_probability = self._classification_logits(
+            predictions).softmax(dim=-1)[..., 1:]
+        scores = class_probability.max(dim=-1).values
+        visible = (
+            predictions['pred_vis'].sigmoid()
+            >= self.diagnostic_visibility_threshold).any(dim=-1)
+        predicted = int((
+            (scores >= self.diagnostic_score_threshold) & visible).sum())
+        batch = max(reference.size(0), 1)
+        queries = max(reference.numel(), 1)
+        diagnostics = dict(
+            diag_gt_match_recall=reference.new_tensor(
+                unique_matched / max(valid_gt, 1)),
+            diag_unmatched_gt=reference.new_tensor(
+                max(valid_gt - unique_matched, 0) / batch),
+            diag_duplicate_gt_assignments=reference.new_tensor(
+                max(matched - unique_matched, 0) / batch),
+            diag_positive_queries=reference.new_tensor(matched / batch),
+            diag_positive_query_ratio=reference.new_tensor(
+                matched / queries),
+            diag_objectness_probability=foreground_probability.mean(),
+            diag_objectness_queries=reference.new_tensor(
+                objectness_queries / batch),
+            diag_prediction_queries=reference.new_tensor(
+                predicted / batch),
+            diag_pred_gt_ratio=reference.new_tensor(
+                predicted / max(valid_gt, 1)),
+        )
+        for modality in ('image', 'lidar'):
+            name = f'diag_{modality}_valid_ratio'
+            if name in predictions:
+                diagnostics[name] = predictions[name]
+        return diagnostics
+
     def forward(self, predictions, gt_lanes_3d, gt_lanes_visibility,
                 gt_lanes_category, gt_lanes_3d_enhanced=None,
                 gt_lanes_visibility_enhanced=None,
@@ -144,6 +196,9 @@ class LaneFormerTopKLaneLoss(nn.Module):
         losses = self._prediction_losses(
             predictions, gt_lanes_3d, gt_lanes_visibility,
             gt_lanes_category, assignments)
+        if self.emit_diagnostics:
+            losses.update(self._assignment_diagnostics(
+                predictions, assignments, gt_lanes_visibility))
         for layer_idx, auxiliary in enumerate(
                 predictions.get('aux_predictions', ())):
             auxiliary_assignments = self._auxiliary_assignments(
@@ -155,6 +210,13 @@ class LaneFormerTopKLaneLoss(nn.Module):
             for name, value in auxiliary_losses.items():
                 losses[f'loss_aux_{layer_idx}_{name.removeprefix("loss_")}'] = (
                     value * self.aux_loss_weight)
+            if self.emit_diagnostics:
+                auxiliary_diagnostics = self._assignment_diagnostics(
+                    auxiliary, auxiliary_assignments, gt_lanes_visibility)
+                for name, value in auxiliary_diagnostics.items():
+                    losses[
+                        f'diag_aux_{layer_idx}_{name.removeprefix("diag_")}'] = (
+                            value)
         return losses
 
 
@@ -165,7 +227,8 @@ class LaneFormerOneToOneLaneLoss(LaneFormerTopKLaneLoss):
     def __init__(self, assigner=None, **kwargs):
         if assigner is None:
             assigner = dict(type='LaneFormerHungarianAssigner')
-        super().__init__(assigner=assigner, **kwargs)
+        super().__init__(
+            assigner=assigner, emit_diagnostics=True, **kwargs)
 
     def _assign(self, predictions, gt_lanes_3d, gt_visibility):
         final_predictions = dict(predictions)
