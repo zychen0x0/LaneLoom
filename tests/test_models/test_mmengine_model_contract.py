@@ -97,10 +97,11 @@ def test_config_uses_strict_q0_and_one_to_one_assignment():
     assert loss.type == 'LaneFormerOneToOneLaneLoss'
     assert loss.objectness_loss_weight == 1.0
     assert loss.category_loss_weight == 0.25
-    assert loss.negative_objectness_weight == 0.1
+    assert loss.negative_objectness_weight == 1.0
     assert loss.ambiguous_negative_weight == 0.1
     assert loss.diagnostic_geometry_distance_threshold == 0.3
     assert loss.diagnostic_geometry_match_ratio == 0.8
+    assert loss.diagnostic_score_threshold == 0.5
     assert loss.assigner.type == 'LaneFormerHungarianAssigner'
     assert loss.visibility_loss_weight == 1.0
     assert loss.focal_alpha == 0.25
@@ -117,6 +118,8 @@ def test_config_uses_strict_q0_and_one_to_one_assignment():
     assert expander.q0_geometry_loss_weight == 1.0
     assert cfg.model.lane_head.test_cfg.curve_nms.distance_threshold == 0.3
     assert cfg.model.lane_head.test_cfg.curve_nms.match_ratio_threshold == 0.75
+    assert cfg.model.lane_head.test_cfg.score_threshold == 0.5
+    assert cfg.val_evaluator.score_threshold == 0.5
 
 
 def _bare_laneformer():

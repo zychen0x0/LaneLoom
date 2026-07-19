@@ -96,6 +96,35 @@ work_dirs/laneformer_openlane_image_lidar/exp_date_20260715_191319/checkpoints/b
 --launcher pytorch
 ```
 
+一次推理扫描多个 objectness 阈值：
+
+```bash
+PYTHONPATH=/workspace CUDA_VISIBLE_DEVICES=0,1 \
+torchrun --nproc_per_node=2 --master_port=29503 \
+tools/test.py \
+configs/laneformer_openlane_image_lidar.py \
+path/to/checkpoint.pth \
+--work-dir work_dirs/laneformer_openlane_image_lidar/threshold_scan \
+--case validation \
+--score-thresholds 0.3 0.5 0.6 0.7 0.8 \
+--launcher pytorch
+```
+
+从已有权重启动新优化器，并只训练一轮做诊断：
+
+```bash
+PYTHONPATH=/workspace CUDA_VISIBLE_DEVICES=0,1 \
+torchrun --nproc_per_node=2 --master_port=29504 \
+tools/train.py \
+configs/laneformer_openlane_image_lidar.py \
+--load-from path/to/checkpoint.pth \
+--max-epochs 1 \
+--work-dir work_dirs/laneformer_openlane_image_lidar/objectness_warmstart \
+--launcher pytorch
+```
+
+`--load-from`只加载模型权重，不恢复旧优化器；不要与`--resume`同时使用。
+
 
 # 其他模式
 

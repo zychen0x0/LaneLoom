@@ -229,6 +229,35 @@ def test_openlane_test_configs_reject_unknown_case():
         build_openlane_test_configs(cfg, 'unknown')
 
 
+def test_openlane_test_configs_build_one_pass_score_threshold_scan():
+    cfg = Config.fromfile(
+        '/workspace/LaneFormer/configs/laneformer_openlane_image_lidar.py')
+
+    cases = build_openlane_test_configs(
+        cfg, 'validation', score_thresholds=[0.8, 0.3, 0.5, 0.5])
+
+    assert len(cases) == 1
+    _, scan_cfg = cases[0]
+    assert scan_cfg.model.lane_head.test_cfg.score_threshold == 0.3
+    assert [metric.score_threshold for metric in scan_cfg.test_evaluator] == [
+        0.3, 0.5, 0.8]
+    assert [metric.prefix for metric in scan_cfg.test_evaluator] == [
+        'OpenLane/validation@0.3',
+        'OpenLane/validation@0.5',
+        'OpenLane/validation@0.8',
+    ]
+
+
+@pytest.mark.parametrize('thresholds', [[], [0.0], [1.0], [-0.1], [1.1]])
+def test_openlane_test_configs_reject_invalid_score_threshold_scan(thresholds):
+    cfg = Config.fromfile(
+        '/workspace/LaneFormer/configs/laneformer_openlane_image_lidar.py')
+
+    with pytest.raises(ValueError, match='score thresholds'):
+        build_openlane_test_configs(
+            cfg, 'validation', score_thresholds=thresholds)
+
+
 def test_logger_reports_validation_progress_and_final_lane_metrics(monkeypatch):
     messages = []
     runner = SimpleNamespace(

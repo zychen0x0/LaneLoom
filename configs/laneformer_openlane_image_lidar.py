@@ -33,6 +33,7 @@ bev_w_ = 100
 queue_length = 3
 output_y_steps = [2.0 * i for i in range(1, 51)]
 evidence_y_steps = [5.0 * i for i in range(1, 21)]
+score_threshold = 0.5
 
 backbone_init = 'torchvision://resnet50'
 # ----------------------------------------------------model common config end----------------------------------------------------
@@ -187,10 +188,10 @@ model = dict(
             assigner=dict(type='LaneFormerHungarianAssigner'),
             objectness_loss_weight=1.0,
             category_loss_weight=0.25,
-            # Normalize positive/negative objectness separately, then cap the
-            # entire negative group. Near-GT unmatched candidates are weaker
-            # ambiguous negatives rather than full-strength background.
-            negative_objectness_weight=0.1,
+            # Positive/negative objectness are normalized separately, so an
+            # equal group weight cannot be amplified by the 505-query count.
+            # Near-GT unmatched candidates remain weaker ambiguous negatives.
+            negative_objectness_weight=1.0,
             ambiguous_negative_weight=0.1,
             ambiguous_distance_threshold=0.5,
             ambiguous_match_ratio=0.75,
@@ -202,9 +203,10 @@ model = dict(
             aux_loss_weight=0.5,
             smooth_l1_beta=0.5,
             focal_alpha=0.25,
-            focal_gamma=2.0),
+            focal_gamma=2.0,
+            diagnostic_score_threshold=score_threshold),
         test_cfg=dict(
-            score_threshold=0.3,
+            score_threshold=score_threshold,
             # Keep light geometric de-duplication as an inference safeguard.
             curve_nms=dict(
                 visibility_threshold=0.5,
@@ -220,7 +222,7 @@ default_hooks = dict(logger=dict(type='LaneFormerLoggerHook', interval=50))
 val_evaluator = dict(
     type='OpenLaneAnchorMetric',
     prefix='OpenLane',
-    score_threshold=0.3,
+    score_threshold=score_threshold,
     visibility_threshold=0.5,
     distance_threshold=0.5,
     match_ratio_threshold=0.75,
