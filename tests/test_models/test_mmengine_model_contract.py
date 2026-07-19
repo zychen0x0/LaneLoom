@@ -67,9 +67,22 @@ def test_config_uses_single_level_temporal_fv_and_dynamic_pillar_bev():
     assert cfg.model.img_backbone.out_indices == (1,)
     assert cfg.model.pts_bev_encoder.type == (
         'LaneFormerDynamicPillarBEVEncoder')
+    assert cfg.model.pts_bev_encoder.pillar_size == [0.25, 0.25]
+    assert cfg.model.pts_bev_encoder.out_channels == 128
+    assert cfg.model.pts_bev_encoder.base_channels == 32
     assert 'pts_voxel_layer' not in cfg.model
+    assert cfg.model.lane_head.anchor_prior.lidar_in_channels == 128
+    assert cfg.model.lane_head.bev_encoder.bev_h == 200
+    assert cfg.model.lane_head.bev_encoder.bev_w == 100
+    assert (
+        cfg.model.lane_head.bev_encoder.lidar_bev_adapter.lidar_in_channels
+        == 128)
+    assert (
+        cfg.model.lane_head.bev_encoder.lidar_bev_adapter.embed_dims
+        == 128)
     assert cfg.model.lane_head.query_sampler.type == (
         'LaneFormerDualPlaneTemporalSampler')
+    assert cfg.model.lane_head.query_sampler.lidar_in_channels == 128
     assert 'spatial_cross_attn' not in cfg.model.lane_head.bev_encoder
     assert 'lidar_fusion' not in cfg.model.lane_head.bev_encoder
     assert 'temporal_self_attn' not in cfg.model.lane_head.bev_encoder

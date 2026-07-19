@@ -9,3 +9,4 @@ numpy
 scipy
 Pillow
 albumentations
+spconv-cu118
