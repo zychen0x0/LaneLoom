@@ -103,13 +103,17 @@ class LaneFormerBEVLaneHead(nn.Module):
             query_feature_sampler=self._query_feature_sampler(
                 img_feats, current_bev, img_metas)), **targets)
         if anchor_prior is not None:
+            prior_lanes = targets['gt_lanes_3d']
+            prior_visibility = targets['gt_lanes_visibility']
+            if (targets.get('gt_lanes_3d_enhanced') is not None
+                    and targets.get('gt_lanes_visibility_enhanced') is not None):
+                prior_lanes = targets['gt_lanes_3d_enhanced']
+                prior_visibility = targets['gt_lanes_visibility_enhanced']
             losses.update(self.anchor_prior.loss(
-                anchor_prior, targets['gt_lanes_3d'],
-                targets['gt_lanes_visibility']))
+                anchor_prior, prior_lanes, prior_visibility))
             if self.proposal_router is not None:
                 losses.update(self.proposal_router.loss(
-                    anchor_prior, targets['gt_lanes_3d'],
-                    targets['gt_lanes_visibility']))
+                    anchor_prior, prior_lanes, prior_visibility))
         return losses
 
     def predict(self, img_feats, pts_feats, img_metas, prev_bev=None, **kwargs):

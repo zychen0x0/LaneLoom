@@ -6,6 +6,8 @@ import torch.nn.functional as F
 
 from mmdet3d.registry import MODELS
 
+from ..losses.hungarian_assigner import batched_hungarian_assignment
+
 
 @MODELS.register_module()
 class LaneFormerShapeProposalRouter(nn.Module):
@@ -13,14 +15,17 @@ class LaneFormerShapeProposalRouter(nn.Module):
 
     def __init__(self, image_in_channels, embed_dims, pc_range,
                  anchor_y_steps, num_x_seeds=50, proposal_budget=50,
-                 hidden_channels=64, positive_distance_threshold=1.0,
+                 hidden_channels=64, q0_distance_threshold=0.3,
+                 q0_match_ratio=0.8, q0_geometry_loss_weight=1.0,
                  routing_loss_weight=1.0, focal_alpha=0.75,
                  focal_gamma=2.0, **kwargs):
         super().__init__()
         self.pc_range = tuple(float(value) for value in pc_range)
         self.num_x_seeds = int(num_x_seeds)
         self.proposal_budget = int(proposal_budget)
-        self.positive_distance_threshold = float(positive_distance_threshold)
+        self.q0_distance_threshold = float(q0_distance_threshold)
+        self.q0_match_ratio = float(q0_match_ratio)
+        self.q0_geometry_loss_weight = float(q0_geometry_loss_weight)
         self.routing_loss_weight = float(routing_loss_weight)
         self.focal_alpha = float(focal_alpha)
         self.focal_gamma = float(focal_gamma)
@@ -29,6 +34,10 @@ class LaneFormerShapeProposalRouter(nn.Module):
         if self.proposal_budget > self.num_x_seeds:
             raise ValueError(
                 'proposal_budget cannot exceed the one-shape candidate count.')
+        if self.q0_distance_threshold <= 0:
+            raise ValueError('q0_distance_threshold must be positive.')
+        if not 0 < self.q0_match_ratio <= 1:
+            raise ValueError('q0_match_ratio must be in (0, 1].')
 
         anchor_y_steps = torch.as_tensor(anchor_y_steps, dtype=torch.float32)
         if anchor_y_steps.ndim != 1 or anchor_y_steps.numel() < 2:
@@ -204,9 +213,9 @@ class LaneFormerShapeProposalRouter(nn.Module):
             candidate_valid_mask=candidate_valid,
         )
 
-    def _routing_targets(self, candidate_points, candidate_valid,
-                         lanes_3d, visibility):
-        """Assign geometric positives and guarantee one candidate per GT."""
+    def _strict_candidate_matches(self, candidate_points, candidate_valid,
+                                  lanes_3d, visibility):
+        """Measure Q0 candidates using stricter-than-evaluation point overlap."""
         gt_valid = (visibility > 0.5).sum(dim=-1) >= 2
         weights = (visibility > 0.5).to(candidate_points.dtype)
         candidate_xz = candidate_points[..., (0, 2)]
@@ -217,25 +226,71 @@ class LaneFormerShapeProposalRouter(nn.Module):
         distance = distance / weights.sum(dim=-1).unsqueeze(1).clamp_min(1)
         distance = distance.masked_fill(~gt_valid.unsqueeze(1), torch.inf)
         distance = distance.masked_fill(~candidate_valid.unsqueeze(-1), torch.inf)
-        nearest = distance.min(dim=-1).values
-        positive = nearest < self.positive_distance_threshold
+        matched = (
+            (point_distance < self.q0_distance_threshold)
+            & (visibility > 0.5).unsqueeze(1))
+        matched_ratio = (
+            matched.sum(dim=-1)
+            / (visibility > 0.5).sum(dim=-1).unsqueeze(1).clamp_min(1))
+        strict = (
+            (matched_ratio >= self.q0_match_ratio)
+            & gt_valid.unsqueeze(1)
+            & candidate_valid.unsqueeze(-1))
+        return strict, distance, gt_valid
 
-        # Early in training no translated template may be within the metric
-        # threshold.  Still give each valid GT its nearest valid candidate so
-        # that the router cannot collapse into an all-background solution.
-        available = candidate_valid.clone()
-        guaranteed = torch.zeros_like(candidate_valid)
-        for gt_idx in range(distance.size(-1)):
-            candidate_cost = distance[..., gt_idx].masked_fill(
-                ~available, torch.inf)
-            candidate_idx = candidate_cost.argmin(dim=-1)
-            assign = F.one_hot(
-                candidate_idx, num_classes=candidate_valid.size(1)).bool()
-            assign &= (
-                gt_valid[:, gt_idx] & available.any(dim=-1)).unsqueeze(-1)
-            guaranteed |= assign
-            available &= ~assign
-        return (positive | guaranteed) & candidate_valid
+    def _routing_assignments(self, candidate_points, candidate_valid,
+                             lanes_3d, visibility):
+        """Globally maximize strict Q0 matches, then minimize distance."""
+        strict, distance, gt_valid = self._strict_candidate_matches(
+            candidate_points, candidate_valid, lanes_3d, visibility)
+        cost = distance + (~strict).to(distance.dtype) * 1e6
+        cost = cost.masked_fill(~candidate_valid.unsqueeze(-1), torch.inf)
+        cost = cost.masked_fill(~gt_valid.unsqueeze(1), torch.inf)
+        return batched_hungarian_assignment(cost)
+
+    def _routing_targets(self, candidate_points, candidate_valid,
+                         lanes_3d, visibility):
+        assignments = self._routing_assignments(
+            candidate_points, candidate_valid, lanes_3d, visibility)
+        return (assignments >= 0) & candidate_valid
+
+    def _q0_geometry_loss(self, candidate_points, candidate_valid,
+                          lanes_3d, visibility):
+        """Require one Q0 per GT to beat the evaluator's pointwise standard."""
+        point_distance = torch.linalg.vector_norm(
+            candidate_points[..., (0, 2)].unsqueeze(2)
+            - lanes_3d.float()[..., (0, 2)].unsqueeze(1), dim=-1)
+        visible = visibility > 0.5
+        visible_count = visible.sum(dim=-1)
+        required_count = torch.ceil(
+            visible_count * self.q0_match_ratio).long().clamp_min(1)
+        sorted_distance = point_distance.masked_fill(
+            ~visible.unsqueeze(1), torch.inf).sort(dim=-1).values
+        required_index = (required_count - 1).unsqueeze(1).unsqueeze(-1)
+        required_index = required_index.expand(
+            -1, candidate_points.size(1), -1, -1)
+        percentile_distance = sorted_distance.gather(
+            dim=-1, index=required_index).squeeze(-1)
+        violation = (
+            percentile_distance - self.q0_distance_threshold).clamp_min(0)
+        pair_loss = F.smooth_l1_loss(
+            violation, torch.zeros_like(violation),
+            beta=self.q0_distance_threshold, reduction='none')
+        pair_loss = pair_loss.masked_fill(
+            ~candidate_valid.unsqueeze(-1), torch.inf)
+        valid_gt = (
+            (visible_count >= 2)
+            & candidate_valid.any(dim=-1).unsqueeze(-1))
+        pair_loss = pair_loss.masked_fill(
+            ~valid_gt.unsqueeze(1), torch.inf)
+        assignments = batched_hungarian_assignment(pair_loss)
+        matched = assignments >= 0
+        matched_gt = assignments.clamp_min(0).unsqueeze(-1)
+        matched_loss = pair_loss.gather(
+            dim=-1, index=matched_gt).squeeze(-1)
+        matched_loss = torch.where(
+            matched, matched_loss, torch.zeros_like(matched_loss))
+        return matched_loss.sum() / matched.sum().clamp_min(1)
 
     def loss(self, routed, lanes_3d, visibility):
         candidate_valid = routed['candidate_valid_mask']
@@ -257,4 +312,11 @@ class LaneFormerShapeProposalRouter(nn.Module):
             (focal * candidate_valid.to(focal.dtype)).sum(dim=-1)
             / valid_count.clamp_min(1).to(focal.dtype))
         loss = per_sample.mean()
-        return dict(loss_proposal_router=loss * self.routing_loss_weight)
+        q0_geometry = self._q0_geometry_loss(
+            routed['anchor_points'],
+            torch.ones_like(routed['routing_scores'], dtype=torch.bool),
+            lanes_3d, visibility)
+        return dict(
+            loss_proposal_router=loss * self.routing_loss_weight,
+            loss_q0_geometry=(
+                q0_geometry * self.q0_geometry_loss_weight))

@@ -69,18 +69,21 @@ def test_config_uses_two_level_temporal_fv_and_no_image_bev():
     assert 'temporal_self_attn' not in cfg.model.lane_head.bev_encoder
 
 
-def test_config_uses_top2_assignment_and_one_visibility_loss():
+def test_config_uses_strict_q0_and_one_to_one_assignment():
     config_path = Path(__file__).resolve().parents[2] / 'configs/laneformer_openlane_image_lidar.py'
     cfg = Config.fromfile(config_path)
     loss = cfg.model.lane_head.loss_module
 
-    assert loss.type == 'LaneFormerTopKLaneLoss'
-    assert loss.assigner.type == 'LaneFormerTopKAssigner'
-    assert loss.assigner.pos_k == 2
+    assert loss.type == 'LaneFormerOneToOneLaneLoss'
+    assert loss.assigner.type == 'LaneFormerHungarianAssigner'
     assert loss.visibility_loss_weight == 1.0
     assert 'visibility_dice_loss_weight' not in loss
     assert 'visibility_boundary_loss_weight' not in loss
     assert cfg.model.lane_head.lane_decoder.get('dn_num_groups', 0) == 0
+    router = cfg.model.lane_head.proposal_router
+    assert router.q0_distance_threshold == 0.3
+    assert router.q0_match_ratio == 0.8
+    assert router.q0_geometry_loss_weight == 1.0
     assert cfg.model.lane_head.test_cfg.curve_nms.distance_threshold == 0.3
     assert cfg.model.lane_head.test_cfg.curve_nms.match_ratio_threshold == 0.75
 

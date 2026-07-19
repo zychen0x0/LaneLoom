@@ -1,4 +1,4 @@
-from unittest.mock import Mock
+from unittest.mock import Mock, patch
 
 import pytest
 import torch
@@ -14,7 +14,11 @@ from LaneFormer.models.losses.laneformer_hungarian_loss import (
     LaneFormerHungarianLaneLoss,
 )
 from LaneFormer.models.losses.laneformer_topk_loss import (
+    LaneFormerOneToOneLaneLoss,
     LaneFormerTopKLaneLoss,
+)
+from LaneFormer.models.losses.hungarian_assigner import (
+    LaneFormerHungarianAssigner,
 )
 from LaneFormer.models.losses.topk_assigner import LaneFormerTopKAssigner
 
@@ -458,12 +462,23 @@ def test_lane_head_uses_51_anchors_and_backpropagates():
     enhanced_visibility = gt_visibility.clone()
     enhanced_lanes[:, 0, 30:35, 0] = -1.5
     enhanced_visibility[:, 0, 30:35] = 1.0
-    losses = head.loss(
-        image_features, lidar_features, metas,
-        gt_lanes_3d=gt_lanes, gt_lanes_visibility=gt_visibility,
-        gt_lanes_category=gt_category,
-        gt_lanes_3d_enhanced=enhanced_lanes,
-        gt_lanes_visibility_enhanced=enhanced_visibility)
+    prior_loss = head.anchor_prior.loss
+    router_loss = head.proposal_router.loss
+    with (
+        patch.object(head.anchor_prior, 'loss', wraps=prior_loss) as prior_spy,
+        patch.object(
+            head.proposal_router, 'loss', wraps=router_loss) as router_spy,
+    ):
+        losses = head.loss(
+            image_features, lidar_features, metas,
+            gt_lanes_3d=gt_lanes, gt_lanes_visibility=gt_visibility,
+            gt_lanes_category=gt_category,
+            gt_lanes_3d_enhanced=enhanced_lanes,
+            gt_lanes_visibility_enhanced=enhanced_visibility)
+    assert prior_spy.call_args.args[1] is enhanced_lanes
+    assert prior_spy.call_args.args[2] is enhanced_visibility
+    assert router_spy.call_args.args[1] is enhanced_lanes
+    assert router_spy.call_args.args[2] is enhanced_visibility
     total_loss = sum(losses.values())
     total_loss.backward()
 
@@ -475,7 +490,7 @@ def test_lane_head_uses_51_anchors_and_backpropagates():
         for name in final_lane_loss_names}
     lidar_loss_names = {
         'loss_lidar_shape_cover', 'loss_lidar_shape_compact',
-        'loss_proposal_router'}
+        'loss_proposal_router', 'loss_q0_geometry'}
     assert set(losses) == (
         final_lane_loss_names | auxiliary_loss_names | lidar_loss_names)
     assert torch.isfinite(total_loss)
@@ -507,6 +522,68 @@ def test_topk_assigner_selects_two_exclusive_anchors_per_gt():
     assert (assigned == 0).sum() == 2
     assert (assigned == 1).sum() == 2
     assert (assigned == -1).sum() == 2
+
+
+def test_hungarian_assigner_gives_every_gt_one_exclusive_query():
+    assigner = LaneFormerHungarianAssigner()
+    anchor_x = torch.tensor([[0., 0.], [.1, .1], [20., 20.]])
+    anchor_z = torch.zeros_like(anchor_x)
+    gt_x = torch.tensor([[0., 0.], [10., 10.]])
+    gt_z = torch.zeros_like(gt_x)
+    gt_visibility = torch.ones(2, 2)
+
+    assigned = assigner.assign(
+        anchor_x, anchor_z, gt_x, gt_z, gt_visibility)
+
+    assert (assigned == 0).sum() == 1
+    assert (assigned == 1).sum() == 1
+    assert (assigned == -1).sum() == 1
+
+
+def test_one_to_one_lane_loss_uses_hungarian_assignment():
+    loss_module = LaneFormerOneToOneLaneLoss()
+
+    assert isinstance(loss_module.assigner, LaneFormerHungarianAssigner)
+
+
+def test_one_to_one_lane_loss_matches_final_predictions_not_q0():
+    loss_module = LaneFormerOneToOneLaneLoss()
+    predictions = dict(
+        pred_x=torch.tensor([[[0., 0.], [10., 10.]]]),
+        pred_z=torch.zeros(1, 2, 2),
+        anchor_points=torch.tensor([[
+            [[0., 0., 0.], [0., 1., 0.]],
+            [[.1, 0., 0.], [.1, 1., 0.]],
+        ]]))
+    gt_lanes = torch.zeros(1, 2, 2, 3)
+    gt_lanes[0, 1, :, 0] = 10.
+    gt_visibility = torch.ones(1, 2, 2)
+
+    assignment = loss_module._assign(
+        predictions, gt_lanes, gt_visibility)[0]
+
+    assert assignment.tolist() == [0, 1]
+
+
+def test_one_to_one_lane_loss_matches_each_decoder_layer_independently():
+    loss_module = LaneFormerOneToOneLaneLoss()
+    gt_lanes = torch.zeros(1, 2, 2, 3)
+    gt_lanes[0, 1, :, 0] = 10.
+    gt_visibility = torch.ones(1, 2, 2)
+    final = dict(
+        pred_x=torch.tensor([[[0., 0.], [10., 10.]]]),
+        pred_z=torch.zeros(1, 2, 2))
+    auxiliary = dict(
+        pred_x=torch.tensor([[[10., 10.], [0., 0.]]]),
+        pred_z=torch.zeros(1, 2, 2))
+    final_assignment = loss_module._assign(
+        final, gt_lanes, gt_visibility)
+
+    auxiliary_assignment = loss_module._auxiliary_assignments(
+        auxiliary, final_assignment, gt_lanes, gt_visibility)
+
+    assert final_assignment[0].tolist() == [0, 1]
+    assert auxiliary_assignment[0].tolist() == [1, 0]
 
 
 def test_topk_lane_loss_has_one_visibility_objective():

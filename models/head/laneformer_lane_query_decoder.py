@@ -93,7 +93,7 @@ class LaneFormerLaneQueryDecoder(nn.Module):
         if int(dn_num_groups) != 0:
             raise ValueError(
                 'denoising queries are not supported by the per-query '
-                'evidence decoder; use Top2 auxiliary supervision.')
+                'evidence decoder; use decoder-layer auxiliary supervision.')
         self.visibility_temperature = float(visibility_temperature)
         self.reference_x_residual_scale = float(reference_x_residual_scale)
         self.reference_z_residual_scale = float(reference_z_residual_scale)

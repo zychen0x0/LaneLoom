@@ -124,6 +124,10 @@ class LaneFormerTopKLaneLoss(nn.Module):
             loss_visibility=(total_visibility / visibility_count
                              * self.visibility_loss_weight))
 
+    def _auxiliary_assignments(self, predictions, assignments,
+                               gt_lanes_3d, gt_visibility):
+        return assignments
+
     def forward(self, predictions, gt_lanes_3d, gt_lanes_visibility,
                 gt_lanes_category, gt_lanes_3d_enhanced=None,
                 gt_lanes_visibility_enhanced=None,
@@ -142,10 +146,38 @@ class LaneFormerTopKLaneLoss(nn.Module):
             gt_lanes_category, assignments)
         for layer_idx, auxiliary in enumerate(
                 predictions.get('aux_predictions', ())):
+            auxiliary_assignments = self._auxiliary_assignments(
+                auxiliary, assignments,
+                gt_lanes_3d, gt_lanes_visibility)
             auxiliary_losses = self._prediction_losses(
                 auxiliary, gt_lanes_3d, gt_lanes_visibility,
-                gt_lanes_category, assignments)
+                gt_lanes_category, auxiliary_assignments)
             for name, value in auxiliary_losses.items():
                 losses[f'loss_aux_{layer_idx}_{name.removeprefix("loss_")}'] = (
                     value * self.aux_loss_weight)
         return losses
+
+
+@MODELS.register_module()
+class LaneFormerOneToOneLaneLoss(LaneFormerTopKLaneLoss):
+    """Keep the compact lane objectives with Hungarian one-to-one matching."""
+
+    def __init__(self, assigner=None, **kwargs):
+        if assigner is None:
+            assigner = dict(type='LaneFormerHungarianAssigner')
+        super().__init__(assigner=assigner, **kwargs)
+
+    def _assign(self, predictions, gt_lanes_3d, gt_visibility):
+        final_predictions = dict(predictions)
+        final_predictions.pop('anchor_points', None)
+        anchor_x = final_predictions['pred_x'].detach()
+        anchor_z = final_predictions['pred_z'].detach()
+        assignments = self.assigner.assign_batch(
+            anchor_x, anchor_z,
+            gt_lanes_3d[..., 0], gt_lanes_3d[..., 2],
+            gt_visibility)
+        return list(assignments.unbind(dim=0))
+
+    def _auxiliary_assignments(self, predictions, assignments,
+                               gt_lanes_3d, gt_visibility):
+        return self._assign(predictions, gt_lanes_3d, gt_visibility)

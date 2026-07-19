@@ -14,7 +14,10 @@ LiDAR-BEV → 10 Shape Tokens → shape clustering (K=1..10)
 模板只学习相对三维形状，监督由
 `loss_lidar_shape_cover + loss_lidar_shape_compact` 构成，不使用模板
 confidence、类别或可见区间。`loss_proposal_router` 使用当前图像证据监督模板
-的绝对横向放置。Decoder 输入仍固定为 50 条 Q0。
+的绝对横向放置；`loss_q0_geometry` 直接约束送入 Decoder 的 Top-50 Q0，
+要求至少 80% 的 GT 可见点误差小于 0.3m，比最终评测的
+0.5m/75% 标准更严格。Decoder 输入仍固定为 50 条 Q0，并通过 Hungarian
+一对一匹配保证每条 GT 只监督一个 query。
 
 每个 Shape Token 只预测 6 个无界几何量：三段横向斜率和三段纵向
 斜率。`0.1/0.03` 仅作为输出数值尺度，不使用 `tanh/clamp`，因此不限制

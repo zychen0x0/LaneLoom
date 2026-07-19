@@ -266,7 +266,8 @@ def test_router_loss_supervises_absolute_shape_seed_placement():
         num_x_seeds=4,
         proposal_budget=4,
         hidden_channels=8,
-        positive_distance_threshold=1.0,
+        q0_distance_threshold=.3,
+        q0_match_ratio=.8,
     )
     routed = router(
         prior_output, [torch.randn(1, 3, 1, 8, 8, 8)], _metas(1))
@@ -276,12 +277,135 @@ def test_router_loss_supervises_absolute_shape_seed_placement():
     visibility = torch.ones(1, 1, len(ANCHORS))
 
     losses = router.loss(routed, gt, visibility)
-    losses['loss_proposal_router'].backward()
+    sum(losses.values()).backward()
 
-    assert set(losses) == {'loss_proposal_router'}
+    assert set(losses) == {'loss_proposal_router', 'loss_q0_geometry'}
     assert torch.isfinite(losses['loss_proposal_router'])
+    assert torch.isfinite(losses['loss_q0_geometry'])
     assert router.score_head[-1].weight.grad is not None
     assert torch.isfinite(router.score_head[-1].weight.grad).all()
+    assert prior.template_head[-1].weight.grad is not None
+    assert torch.isfinite(prior.template_head[-1].weight.grad).all()
+
+
+def test_router_q0_standard_is_strictly_tighter_than_evaluation():
+    router = LaneFormerShapeProposalRouter(
+        image_in_channels=8, embed_dims=8, pc_range=PC_RANGE,
+        anchor_y_steps=ANCHORS, num_x_seeds=2, proposal_budget=2,
+        hidden_channels=8, q0_distance_threshold=.3, q0_match_ratio=.8)
+    candidates = torch.zeros(1, 2, len(ANCHORS), 3)
+    candidates[..., 1] = torch.tensor(ANCHORS)
+    candidates[0, 0, :, 0] = torch.tensor([.2, .2, .2, .2, .8])
+    candidates[0, 1, :, 0] = torch.tensor([.2, .2, .2, .31, .31])
+    gt = torch.zeros(1, 1, len(ANCHORS), 3)
+    gt[..., 1] = torch.tensor(ANCHORS)
+    visibility = torch.ones(1, 1, len(ANCHORS))
+
+    strict, _, _ = router._strict_candidate_matches(
+        candidates, torch.ones(1, 2, dtype=torch.bool), gt, visibility)
+
+    assert strict[0, 0, 0]
+    assert not strict[0, 1, 0]
+
+
+def test_q0_geometry_loss_only_requires_one_strict_candidate_per_gt():
+    router = LaneFormerShapeProposalRouter(
+        image_in_channels=8, embed_dims=8, pc_range=PC_RANGE,
+        anchor_y_steps=ANCHORS, num_x_seeds=2, proposal_budget=2,
+        hidden_channels=8, q0_distance_threshold=.3, q0_match_ratio=.8)
+    candidates = torch.zeros(1, 2, len(ANCHORS), 3)
+    candidates[..., 1] = torch.tensor(ANCHORS)
+    candidates[0, 1, :, 0] = 3.
+    gt = torch.zeros(1, 1, len(ANCHORS), 3)
+    gt[..., 1] = torch.tensor(ANCHORS)
+    visibility = torch.ones(1, 1, len(ANCHORS))
+
+    loss = router._q0_geometry_loss(
+        candidates, torch.ones(1, 2, dtype=torch.bool), gt, visibility)
+
+    assert torch.allclose(loss, torch.tensor(0.0))
+
+
+def test_router_q0_loss_checks_selected_decoder_queries():
+    router = LaneFormerShapeProposalRouter(
+        image_in_channels=8, embed_dims=8, pc_range=PC_RANGE,
+        anchor_y_steps=ANCHORS, num_x_seeds=2, proposal_budget=1,
+        hidden_channels=8, q0_distance_threshold=.3, q0_match_ratio=.8)
+    candidate_points = torch.zeros(1, 2, len(ANCHORS), 3)
+    candidate_points[..., 1] = torch.tensor(ANCHORS)
+    selected_points = candidate_points[:, :1].clone()
+    selected_points[..., 0] = 1.
+    routed = dict(
+        candidate_points=candidate_points,
+        candidate_valid_mask=torch.ones(1, 2, dtype=torch.bool),
+        candidate_routing_logits=torch.zeros(1, 2),
+        anchor_points=selected_points,
+        routing_scores=torch.full((1, 1), .5))
+    gt = torch.zeros(1, 1, len(ANCHORS), 3)
+    gt[..., 1] = torch.tensor(ANCHORS)
+    visibility = torch.ones(1, 1, len(ANCHORS))
+
+    losses = router.loss(routed, gt, visibility)
+
+    assert losses['loss_q0_geometry'] > 0
+
+
+def test_router_uses_one_positive_candidate_per_gt():
+    router = LaneFormerShapeProposalRouter(
+        image_in_channels=8, embed_dims=8, pc_range=PC_RANGE,
+        anchor_y_steps=ANCHORS, num_x_seeds=3, proposal_budget=3,
+        hidden_channels=8, q0_distance_threshold=.3, q0_match_ratio=.8)
+    candidates = torch.zeros(1, 3, len(ANCHORS), 3)
+    candidates[..., 1] = torch.tensor(ANCHORS)
+    candidates[:, 1, :, 0] = .1
+    candidates[:, 2, :, 0] = .2
+    gt = torch.zeros(1, 1, len(ANCHORS), 3)
+    gt[..., 1] = torch.tensor(ANCHORS)
+    visibility = torch.ones(1, 1, len(ANCHORS))
+
+    targets = router._routing_targets(
+        candidates, torch.ones(1, 3, dtype=torch.bool), gt, visibility)
+
+    assert targets.sum() == 1
+
+
+def test_router_assignment_globally_maximizes_strict_matches():
+    router = LaneFormerShapeProposalRouter(
+        image_in_channels=8, embed_dims=8, pc_range=PC_RANGE,
+        anchor_y_steps=ANCHORS, num_x_seeds=2, proposal_budget=2,
+        hidden_channels=8, q0_distance_threshold=.3, q0_match_ratio=.8)
+    candidates = torch.zeros(1, 2, len(ANCHORS), 3)
+    candidates[..., 1] = torch.tensor(ANCHORS)
+    candidates[0, 0, :, 0] = .1
+    candidates[0, 1, :, 0] = -.2
+    gt = torch.zeros(1, 2, len(ANCHORS), 3)
+    gt[..., 1] = torch.tensor(ANCHORS)
+    gt[0, 1, :, 0] = .2
+    visibility = torch.ones(1, 2, len(ANCHORS))
+
+    assignments = router._routing_assignments(
+        candidates, torch.ones(1, 2, dtype=torch.bool), gt, visibility)
+
+    assert assignments.tolist() == [[1, 0]]
+
+
+def test_q0_geometry_loss_requires_exclusive_gt_coverage():
+    router = LaneFormerShapeProposalRouter(
+        image_in_channels=8, embed_dims=8, pc_range=PC_RANGE,
+        anchor_y_steps=ANCHORS, num_x_seeds=2, proposal_budget=2,
+        hidden_channels=8, q0_distance_threshold=.3, q0_match_ratio=.8)
+    candidates = torch.zeros(1, 2, len(ANCHORS), 3)
+    candidates[..., 1] = torch.tensor(ANCHORS)
+    candidates[0, 1, :, 0] = 2.
+    gt = torch.zeros(1, 2, len(ANCHORS), 3)
+    gt[..., 1] = torch.tensor(ANCHORS)
+    gt[0, 1, :, 0] = .1
+    visibility = torch.ones(1, 2, len(ANCHORS))
+
+    loss = router._q0_geometry_loss(
+        candidates, torch.ones(1, 2, dtype=torch.bool), gt, visibility)
+
+    assert loss > 0
 
 
 def test_router_preserves_exact_shape_translation_outside_bev_boundaries():
@@ -309,7 +433,8 @@ def test_router_guarantees_nearest_candidate_for_every_gt_is_positive():
     router = LaneFormerShapeProposalRouter(
         image_in_channels=8, embed_dims=8, pc_range=PC_RANGE,
         anchor_y_steps=ANCHORS, num_x_seeds=4, proposal_budget=4,
-        hidden_channels=8, positive_distance_threshold=.01)
+        hidden_channels=8, q0_distance_threshold=.01,
+        q0_match_ratio=1.0)
     candidates = torch.zeros(1, 4, len(ANCHORS), 3)
     candidates[..., 1] = torch.tensor(ANCHORS)
     candidates[:, :, :, 0] = torch.arange(4).view(1, 4, 1).float()
@@ -332,7 +457,8 @@ def test_router_guarantees_distinct_candidates_when_gt_nearest_collides():
     router = LaneFormerShapeProposalRouter(
         image_in_channels=8, embed_dims=8, pc_range=PC_RANGE,
         anchor_y_steps=ANCHORS, num_x_seeds=4, proposal_budget=4,
-        hidden_channels=8, positive_distance_threshold=.01)
+        hidden_channels=8, q0_distance_threshold=.01,
+        q0_match_ratio=1.0)
     candidates = torch.zeros(1, 4, len(ANCHORS), 3)
     candidates[..., 1] = torch.tensor(ANCHORS)
     candidates[:, :, :, 0] = torch.arange(4).view(1, 4, 1).float()

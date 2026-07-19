@@ -152,7 +152,10 @@ model = dict(
             num_x_seeds=50,
             proposal_budget=50,
             hidden_channels=64,
-            positive_distance_threshold=1.0,
+            # Q0 must be stricter than the evaluator's 0.5 m / 75% rule.
+            q0_distance_threshold=0.3,
+            q0_match_ratio=0.8,
+            q0_geometry_loss_weight=1.0,
             routing_loss_weight=1.0,
             focal_alpha=0.75,
             focal_gamma=2.0),
@@ -194,14 +197,12 @@ model = dict(
             # Median visible interval from the OpenLane training anchors.
             visibility_start_prior=0.14,
             visibility_end_prior=0.58,
-            # Start with almost every anchor as background; Top2 assignment
-            # then promotes only anchors close to a GT lane.
+            # Start with almost every query as background; one-to-one matching
+            # then promotes exactly one query for each visible GT lane.
             objectness_prior_probability=0.01),
         loss_module=dict(
-            type='LaneFormerTopKLaneLoss',
-            # Each GT owns its two nearest initial Bézier anchors.  All other
-            # anchors are background because there are only 50 candidates.
-            assigner=dict(type='LaneFormerTopKAssigner', pos_k=2),
+            type='LaneFormerOneToOneLaneLoss',
+            assigner=dict(type='LaneFormerHungarianAssigner'),
             cls_loss_weight=1.0,
             x_loss_weight=1.0,
             z_loss_weight=1.0,
@@ -212,8 +213,7 @@ model = dict(
             focal_gamma=2.0),
         test_cfg=dict(
             score_threshold=0.3,
-            # Top2 supervision deliberately provides redundant candidates.
-            # Suppress only curves that agree over most of both visible spans.
+            # Keep light geometric de-duplication as an inference safeguard.
             curve_nms=dict(
                 visibility_threshold=0.5,
                 distance_threshold=0.3,
