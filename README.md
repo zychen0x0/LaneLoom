@@ -14,10 +14,27 @@
       → two-layer curve decoder
 ```
 
-模板只学习相对三维形状，监督由
-`loss_lidar_shape_cover` 构成，不使用模板 confidence、类别或可见区间。
-当前 5 个模板全部参与展开，`loss_lidar_shape_compact` 权重为0，避免模板
-在固定预算下坍缩成重复形状。`loss_q0_geometry` 直接约束送入 Decoder 的505条 Q0，
+模板只学习相对三维形状，不使用模板 confidence 或类别。训练期只把 GT
+可见性作为 loss 支撑区间，不输入 LiDAR Shape Prior，因此不会泄漏给推理。
+两条曲线先在共同 y 支撑上做最优 x/z 平移对齐；默认同时满足
+`P80 <= 0.3m`、平均 `yaw <= 1°`、平均 `pitch <= 0.5°` 才视为同一形状。
+
+Shape Prior 使用三项监督：
+
+- `loss_lidar_shape_cover`：每条 GT 至少有一条形状相近的模板，短 GT 按
+  y 支撑长度降低权重；
+- `loss_lidar_shape_mode`：先用 complete-link 将 GT 聚成形状模态，再用
+  Hungarian 将各模态一对一匹配到不同模板；只有至少含4个共同合法锚点的
+  GT 才定义可靠的全局形状模态，2～3点短片段只参与逐 lane coverage；
+- `loss_lidar_shape_diversity`：只分离已经负责不同 GT 模态的模板。5 是容量
+  上限，不会在只有一种直行形状的样本中强迫五个模板达到代数秩5。
+
+日志中的 `diag_gt_shape_metric_rank` 与
+`diag_predicted_shape_metric_rank` 是 GT 和预测模板在上述阈值下的“度量
+覆盖秩”，不是 5×6 参数矩阵的普通矩阵秩。`diag_shape_lane_cover_recall`
+和 `diag_shape_mode_cover_recall` 分别检查逐车道与逐形状模态的覆盖率。
+
+当前 5 个模板全部参与 Q0 展开。`loss_q0_geometry` 直接约束送入 Decoder 的505条 Q0，
 要求至少 80% 的 GT 可见点误差小于 0.3m，比最终评测的
 0.5m/75% 标准更严格。Decoder 输入固定为505条 Q0，并通过 Hungarian
 一对一匹配保证每条 GT 只监督一个 query。

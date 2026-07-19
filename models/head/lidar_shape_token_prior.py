@@ -1,5 +1,6 @@
 """LiDAR-conditioned translation-invariant road-shape templates."""
 
+import itertools
 import math
 
 import torch
@@ -7,6 +8,8 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 from mmdet3d.registry import MODELS
+
+from ..losses.hungarian_assigner import batched_hungarian_assignment
 
 
 @MODELS.register_module()
@@ -25,29 +28,49 @@ class LaneFormerLiDARShapeTokenPrior(nn.Module):
                  yaw_weight=1.0, pitch_weight=1.0,
                  curvature_weight=1.0, vertical_curvature_weight=1.0,
                  shape_softmin_temperature=0.25,
-                 compact_temperature=0.25,
                  shape_nms_threshold=1.0,
+                 aligned_p80_threshold=0.3,
+                 yaw_similarity_degrees=1.0,
+                 pitch_similarity_degrees=0.5,
+                 min_lane_points=2,
+                 min_mode_points=4,
+                 short_support_length=20.0,
                  shape_cover_loss_weight=1.0,
-                 compact_loss_weight=0.05,
+                 shape_mode_loss_weight=1.0,
+                 shape_diversity_loss_weight=0.05,
                  **kwargs):
         super().__init__()
-        legacy_bounds = sorted(
-            {'max_yaw_degrees', 'max_pitch_degrees'} & kwargs.keys())
-        if legacy_bounds:
-            names = ', '.join(legacy_bounds)
+        removed_options = sorted({
+            'max_yaw_degrees',
+            'max_pitch_degrees',
+            'compact_temperature',
+            'compact_loss_weight',
+        } & kwargs.keys())
+        if removed_options:
+            names = ', '.join(removed_options)
             raise TypeError(
-                f'{names} were removed because Shape Tokens now predict '
-                'unbounded slopes; use lateral_slope_scale and '
-                'vertical_slope_scale for numerical conditioning.')
+                f'{names} were removed from the Shape Token prior. Angle '
+                'bounds were replaced by unbounded slope scaling, while '
+                'compact loss was replaced by GT mode matching and '
+                'matched-template diversity.')
         self.pc_range = tuple(float(value) for value in pc_range)
         self.max_templates = int(max_templates)
         self.lateral_slope_scale = float(lateral_slope_scale)
         self.vertical_slope_scale = float(vertical_slope_scale)
         self.shape_softmin_temperature = float(shape_softmin_temperature)
-        self.compact_temperature = float(compact_temperature)
         self.shape_nms_threshold = float(shape_nms_threshold)
+        self.aligned_p80_threshold = float(aligned_p80_threshold)
+        self.yaw_similarity_threshold = math.radians(
+            float(yaw_similarity_degrees))
+        self.pitch_similarity_threshold = math.radians(
+            float(pitch_similarity_degrees))
+        self.min_lane_points = int(min_lane_points)
+        self.min_mode_points = int(min_mode_points)
+        self.short_support_length = float(short_support_length)
         self.shape_cover_loss_weight = float(shape_cover_loss_weight)
-        self.compact_loss_weight = float(compact_loss_weight)
+        self.shape_mode_loss_weight = float(shape_mode_loss_weight)
+        self.shape_diversity_loss_weight = float(
+            shape_diversity_loss_weight)
         self.shape_scales = (
             math.radians(float(yaw_scale_degrees)),
             math.radians(float(pitch_scale_degrees)),
@@ -64,8 +87,16 @@ class LaneFormerLiDARShapeTokenPrior(nn.Module):
             raise ValueError('Slope scales must be positive.')
         if min(self.shape_scales) <= 0:
             raise ValueError('All shape feature scales must be positive.')
-        if self.shape_softmin_temperature <= 0 or self.compact_temperature <= 0:
-            raise ValueError('Shape temperatures must be positive.')
+        if self.shape_softmin_temperature <= 0:
+            raise ValueError('Shape softmin temperature must be positive.')
+        if min(
+                self.aligned_p80_threshold,
+                self.yaw_similarity_threshold,
+                self.pitch_similarity_threshold,
+                self.short_support_length) <= 0:
+            raise ValueError('Shape similarity thresholds must be positive.')
+        if self.min_lane_points < 2 or self.min_mode_points < 2:
+            raise ValueError('Shape losses require at least two points.')
 
         anchor_y_steps = torch.as_tensor(anchor_y_steps, dtype=torch.float32)
         if anchor_y_steps.ndim != 1 or anchor_y_steps.numel() < 2:
@@ -83,6 +114,16 @@ class LaneFormerLiDARShapeTokenPrior(nn.Module):
                          3 * (1 - t) * t ** 2, t ** 3), dim=-1))
         self.register_buffer(
             'control_y', torch.linspace(0, float(length), 4))
+        if self.max_templates <= 7:
+            permutations = torch.tensor(
+                list(itertools.permutations(range(self.max_templates))),
+                dtype=torch.long)
+        else:
+            # Avoid factorial storage for configurations outside the intended
+            # five-template Shape Prior; these fall back to SciPy Hungarian.
+            permutations = torch.empty(0, self.max_templates, dtype=torch.long)
+        self.register_buffer(
+            'assignment_permutations', permutations, persistent=False)
 
         self.feature_encoder = nn.Sequential(
             nn.Conv2d(lidar_in_channels, hidden_channels, 3, padding=1),
@@ -184,36 +225,128 @@ class LaneFormerLiDARShapeTokenPrior(nn.Module):
         difference = target.unsqueeze(2) - template.unsqueeze(1)
         if angular:
             difference = torch.atan2(torch.sin(difference), torch.cos(difference))
-        mask = mask.unsqueeze(2)
+        difference = torch.where(mask, difference, 0)
         count = mask.sum(dim=-1)
-        distance = (
-            difference.abs() * mask.to(difference.dtype)).sum(dim=-1)
+        distance = difference.abs().sum(dim=-1)
         distance = distance / count.clamp_min(1).to(distance.dtype)
         return distance, count > 0
 
-    def shape_distance(self, templates, targets, target_visibility):
-        """Return translation-invariant target-to-template shape distance."""
+    @staticmethod
+    def _masked_p80(values, mask):
+        count = mask.sum(dim=-1)
+        ordered = values.masked_fill(~mask, torch.inf).sort(dim=-1).values
+        index = (
+            torch.ceil(count.to(values.dtype) * 0.8).to(torch.long) - 1
+        ).clamp_min(0)
+        p80 = ordered.gather(-1, index.unsqueeze(-1)).squeeze(-1)
+        return p80, count
+
+    def _aligned_geometry_distance(
+            self, templates, targets, point_mask):
+        difference = (
+            targets.unsqueeze(2)[..., (0, 2)]
+            - templates.unsqueeze(1)[..., (0, 2)])
+        count = point_mask.sum(dim=-1)
+        difference = torch.where(point_mask.unsqueeze(-1), difference, 0)
+        translation = difference.sum(dim=-2) / count.clamp_min(
+            1).unsqueeze(-1).to(difference.dtype)
+        residual = torch.linalg.vector_norm(
+            difference - translation.unsqueeze(-2), dim=-1)
+        residual = torch.where(point_mask, residual, 0)
+        p80, _ = self._masked_p80(residual, point_mask)
+        return p80, count
+
+    def shape_distance(
+            self, templates, targets, target_visibility,
+            template_visibility=None, return_components=False):
+        """Return shape-only distance after optimal x/z translation.
+
+        The hard similarity interpretation is intentionally physical:
+        aligned point-error P80 <= 0.3 m, mean yaw error <= 1 degree and mean
+        pitch error <= 0.5 degree by default. Curvature terms remain in the
+        differentiable training distance but do not redefine GT mode count.
+        """
         if templates.ndim != 4 or targets.ndim != 4:
             raise ValueError('Shape distance expects [B,N,A,3] point tensors.')
-        template_visibility = torch.ones(
-            templates.shape[:-1], dtype=torch.bool, device=templates.device)
+        if template_visibility is None:
+            template_visibility = torch.ones(
+                templates.shape[:-1], dtype=torch.bool,
+                device=templates.device)
+        else:
+            template_visibility = template_visibility > 0.5
         target_visibility = target_visibility > 0.5
+        template_visibility &= torch.isfinite(templates).all(dim=-1)
+        target_visibility &= torch.isfinite(targets).all(dim=-1)
+        point_mask = (
+            target_visibility.unsqueeze(2)
+            & template_visibility.unsqueeze(1))
+        aligned_p80, point_count = self._aligned_geometry_distance(
+            templates, targets, point_mask)
         template_features = self._shape_features(
             templates, template_visibility)
         target_features = self._shape_features(targets, target_visibility)
-        total = templates.new_zeros(
-            templates.size(0), targets.size(1), templates.size(1))
-        weight_total = torch.zeros_like(total)
+        component_values = []
+        component_available = []
         for ((template_value, _, angular),
-             (target_value, target_mask, _), scale, weight) in zip(
+             (target_value, target_mask, _), (_, template_mask, _),
+             scale, weight) in zip(
                 template_features, target_features,
+                template_features,
                 self.shape_scales, self.shape_weights):
+            pair_mask = (
+                target_mask.unsqueeze(2) & template_mask.unsqueeze(1))
             component, available = self._masked_component_distance(
-                template_value, target_value, target_mask, angular)
-            total = total + component / scale * weight
+                template_value, target_value, pair_mask, angular)
+            component_values.append(component)
+            component_available.append(available)
+
+        yaw, pitch, curvature, vertical_curvature = component_values
+        normalized = (
+            aligned_p80 / self.aligned_p80_threshold,
+            yaw / self.shape_scales[0],
+            pitch / self.shape_scales[1],
+            curvature / self.shape_scales[2],
+            vertical_curvature / self.shape_scales[3],
+        )
+        weights = (1.0,) + self.shape_weights
+        availability = (
+            point_count >= self.min_lane_points,
+            *component_available,
+        )
+        total = templates.new_zeros(aligned_p80.shape)
+        weight_total = torch.zeros_like(total)
+        for value, available, weight in zip(
+                normalized, availability, weights):
+            total = total + value.masked_fill(~available, 0) * weight
             weight_total = weight_total + available.to(total.dtype) * weight
-        valid = target_features[0][1].any(dim=-1)
-        return total / weight_total.clamp_min(1e-6), valid
+        pair_valid = point_count >= self.min_lane_points
+        total = (total / weight_total.clamp_min(1e-6)).masked_fill(
+            ~pair_valid, torch.inf)
+        valid = target_visibility.sum(dim=-1) >= self.min_lane_points
+        if not return_components:
+            return total, valid
+        similarity_distance = torch.stack((
+            aligned_p80 / self.aligned_p80_threshold,
+            yaw / self.yaw_similarity_threshold,
+            pitch / self.pitch_similarity_threshold,
+        ), dim=-1).amax(dim=-1).masked_fill(~pair_valid, torch.inf)
+        components = dict(
+            aligned_p80=aligned_p80,
+            yaw=yaw,
+            pitch=pitch,
+            curvature=curvature,
+            vertical_curvature=vertical_curvature,
+            point_count=point_count,
+            pair_valid=pair_valid,
+            similarity_distance=similarity_distance,
+        )
+        return total, valid, components
+
+    @staticmethod
+    def _shape_similar(components, threshold=1.0):
+        return (
+            components['pair_valid']
+            & (components['similarity_distance'] <= threshold))
 
     @staticmethod
     def _softmin(distance, temperature):
@@ -224,9 +357,12 @@ class LaneFormerLiDARShapeTokenPrior(nn.Module):
             - math.log(count))
 
     @staticmethod
-    def _complete_link_medoids(pairwise, threshold):
+    def _complete_link_medoids(pairwise, threshold, valid_mask=None):
         """GPU complete-link clustering followed by one medoid per cluster."""
         batch, count, _ = pairwise.shape
+        if valid_mask is None:
+            valid_mask = torch.ones(
+                batch, count, dtype=torch.bool, device=pairwise.device)
         members = torch.zeros(
             batch, count, count, dtype=torch.bool, device=pairwise.device)
         active = torch.zeros(
@@ -247,6 +383,7 @@ class LaneFormerLiDARShapeTokenPrior(nn.Module):
                     torch.full(
                         (batch,), template_idx, device=pairwise.device),
                     num_classes=count).to(torch.bool)
+                assignment &= valid_mask[:, template_idx].unsqueeze(-1)
                 members |= assignment.unsqueeze(-1) & template.unsqueeze(1)
                 active |= assignment
 
@@ -260,10 +397,139 @@ class LaneFormerLiDARShapeTokenPrior(nn.Module):
         visibility = torch.ones(
             shape_points.shape[:-1], device=shape_points.device,
             dtype=torch.bool)
-        pairwise, _ = self.shape_distance(
-            shape_points, shape_points, visibility)
+        _, _, components = self.shape_distance(
+            shape_points, shape_points, visibility,
+            template_visibility=visibility, return_components=True)
         return self._complete_link_medoids(
-            pairwise.detach(), self.shape_nms_threshold)
+            components['similarity_distance'].detach(),
+            self.shape_nms_threshold)
+
+    def _gt_shape_modes(self, lanes_3d, visibility):
+        """Approximate the GT epsilon-cover number with complete-link modes.
+
+        This metric rank is deliberately not the algebraic rank of Bézier
+        parameters: translated parallel lanes form one mode, while distinct
+        straight/turn shapes require different medoids.
+        """
+        visibility = visibility > 0.5
+        _, _, components = self.shape_distance(
+            lanes_3d.float(), lanes_3d.float(), visibility,
+            template_visibility=visibility, return_components=True)
+        mode_valid = visibility.sum(dim=-1) >= self.min_mode_points
+        pairwise = components['similarity_distance']
+        enough_overlap = (
+            components['point_count'] >= self.min_mode_points)
+        pairwise = pairwise.masked_fill(
+            ~(mode_valid.unsqueeze(1) & mode_valid.unsqueeze(2)
+              & enough_overlap), torch.inf)
+        medoids, active = self._complete_link_medoids(
+            pairwise.detach(), threshold=1.0, valid_mask=mode_valid)
+        return medoids, active, pairwise
+
+    def _support_weights(self, visibility):
+        visibility = visibility > 0.5
+        y = self.anchor_y_steps.to(visibility.device)
+        y_min = torch.where(
+            visibility, y.view(1, 1, -1), torch.inf).amin(dim=-1)
+        y_max = torch.where(
+            visibility, y.view(1, 1, -1), -torch.inf).amax(dim=-1)
+        span = (y_max - y_min).clamp_min(0)
+        return (span / self.short_support_length).clamp(max=1.0)
+
+    @staticmethod
+    def _matched_values(matrix, assignments, active):
+        safe = assignments.clamp_min(0)
+        selected = matrix.gather(-1, safe.unsqueeze(-1)).squeeze(-1)
+        matched = active & (assignments >= 0) & torch.isfinite(selected)
+        return selected, matched
+
+    def _assign_modes(self, mode_distance, active):
+        """Exact GPU injection for <=7 templates, SciPy fallback otherwise."""
+        if self.assignment_permutations.numel() == 0:
+            return batched_hungarian_assignment(mode_distance)
+        batch, mode_slots, template_count = mode_distance.shape
+        assignments = torch.full(
+            (batch, mode_slots), -1, dtype=torch.long,
+            device=mode_distance.device)
+        matched_count = active.sum(dim=-1).clamp_max(template_count)
+        permutations = self.assignment_permutations
+        for count in range(1, min(template_count, mode_slots) + 1):
+            sample_mask = matched_count == count
+            rows = mode_distance[:, :count]
+            candidate = permutations[:, :count]
+            candidate_cost = rows.unsqueeze(1).expand(
+                -1, candidate.size(0), -1, -1).gather(
+                    -1,
+                    candidate.view(
+                        1, candidate.size(0), count, 1).expand(
+                            batch, -1, -1, -1)).squeeze(-1).sum(dim=-1)
+            best = candidate[candidate_cost.argmin(dim=-1)]
+            assignments[:, :count] = torch.where(
+                sample_mask.unsqueeze(-1), best, assignments[:, :count])
+        return assignments
+
+    def _mode_losses(
+            self, distance, components, prior_points, lanes_3d, visibility):
+        medoids, active, _ = self._gt_shape_modes(lanes_3d, visibility)
+        mode_distance = distance.gather(
+            1, medoids.unsqueeze(-1).expand(-1, -1, distance.size(-1)))
+        mode_distance = mode_distance.masked_fill(~active.unsqueeze(-1), torch.inf)
+        assignments = self._assign_modes(mode_distance, active)
+        selected, matched = self._matched_values(
+            mode_distance, assignments, active)
+        mode_loss = torch.where(matched, selected, 0).sum()
+        mode_loss = mode_loss / matched.sum().clamp_min(1).to(selected.dtype)
+
+        similarity = components['similarity_distance'].gather(
+            1, medoids.unsqueeze(-1).expand(
+                -1, -1, components['similarity_distance'].size(-1)))
+        selected_similarity, similarity_matched = self._matched_values(
+            similarity, assignments, active)
+        mode_count = active.sum(dim=-1)
+        mode_cover = (
+            ((selected_similarity <= 1.0) & similarity_matched).sum(dim=-1)
+            / mode_count.clamp_min(1).to(selected_similarity.dtype))
+
+        template_visibility = torch.ones(
+            prior_points.shape[:-1], dtype=torch.bool,
+            device=prior_points.device)
+        _, _, template_components = self.shape_distance(
+            prior_points, prior_points, template_visibility,
+            template_visibility=template_visibility, return_components=True)
+        template_pairwise = template_components['similarity_distance']
+        safe_assignments = assignments.clamp_min(0)
+        matched_templates = (
+            F.one_hot(safe_assignments, num_classes=prior_points.size(1))
+            * matched.unsqueeze(-1)).any(dim=1)
+        upper = torch.triu(
+            torch.ones(
+                prior_points.size(1), prior_points.size(1),
+                dtype=torch.bool, device=prior_points.device),
+            diagonal=1)
+        pair_mask = (
+            matched_templates.unsqueeze(1)
+            & matched_templates.unsqueeze(2)
+            & upper.unsqueeze(0))
+        diversity_per_pair = F.relu(1.0 - template_pairwise).square()
+        diversity = torch.where(
+            pair_mask, diversity_per_pair, 0).sum()
+        diversity = diversity / pair_mask.sum().clamp_min(1).to(
+            diversity.dtype)
+        min_distance = template_pairwise.masked_fill(
+            ~pair_mask, torch.inf).amin(dim=(1, 2))
+        min_distance_valid = pair_mask.flatten(1).any(dim=1)
+        min_distance = torch.where(min_distance_valid, min_distance, 0)
+        overflow = (
+            mode_count > prior_points.size(1)).to(prior_points.dtype)
+        return dict(
+            mode_loss=mode_loss,
+            diversity=diversity,
+            mode_count=mode_count.to(prior_points.dtype),
+            mode_cover=mode_cover,
+            overflow=overflow,
+            min_distance=min_distance,
+            min_distance_valid=min_distance_valid,
+        )
 
     def forward(self, pts_feats, img_feats=None, img_metas=None):
         (x_controls, z_controls, lateral_slopes, vertical_slopes,
@@ -297,40 +563,54 @@ class LaneFormerLiDARShapeTokenPrior(nn.Module):
             from_lidar = torch.full(
                 (prior['shape_points'].size(0),), bool(from_lidar),
                 dtype=torch.bool, device=prior['shape_points'].device)
-        if not from_lidar.any():
-            zero = prior['shape_points'].sum() * 0
-            return dict(
-                loss_lidar_shape_cover=zero,
-                loss_lidar_shape_compact=zero,
-                diag_unique_template_count=zero)
-        distance, valid = self.shape_distance(
-            prior['shape_points'], lanes_3d.float(), visibility)
+        clean_visibility = (
+            (visibility > 0.5) & torch.isfinite(lanes_3d).all(dim=-1))
+        distance, valid, components = self.shape_distance(
+            prior['shape_points'], lanes_3d.float(), clean_visibility,
+            return_components=True)
         valid = valid & from_lidar.unsqueeze(-1)
-        if valid.any():
-            cover = self._softmin(
-                distance, self.shape_softmin_temperature)[valid].mean()
-        else:
-            cover = prior['shape_points'].sum() * 0
+        support_weight = self._support_weights(clean_visibility) * valid
+        cover_per_lane = self._softmin(
+            distance, self.shape_softmin_temperature).masked_fill(~valid, 0)
+        cover = (
+            (cover_per_lane * support_weight).sum()
+            / support_weight.sum().clamp_min(1e-6))
+        lane_covered = self._shape_similar(components).any(dim=-1)
+        lane_cover_recall = (
+            (lane_covered & valid).sum()
+            / valid.sum().clamp_min(1).to(distance.dtype))
 
-        template_visibility = torch.ones(
-            prior['shape_points'].shape[:-1], dtype=torch.bool,
-            device=prior['shape_points'].device)
-        pairwise, _ = self.shape_distance(
-            prior['shape_points'], prior['shape_points'], template_visibility)
-        similarity = torch.exp(-pairwise / self.compact_temperature)
-        effective_count = (
-            1.0 / similarity.sum(dim=-1).clamp_min(1e-6)).sum(dim=-1)
-        effective_count = effective_count[from_lidar].mean()
+        mode = self._mode_losses(
+            distance, components, prior['shape_points'],
+            lanes_3d.float(),
+            clean_visibility & from_lidar[:, None, None])
         unique_mask = prior.get('unique_template_mask')
         if unique_mask is None:
-            unique_count = prior['shape_points'].new_full(
-                (prior['shape_points'].size(0),),
-                prior['shape_points'].size(1))
-        else:
-            unique_count = unique_mask.sum(dim=-1).to(
-                prior['shape_points'].dtype)
+            _, unique_mask = self._unique_template_indices(
+                prior['shape_points'])
+        unique_count = unique_mask.sum(dim=-1).to(
+            prior['shape_points'].dtype)
+        sample_mask = from_lidar.to(prior['shape_points'].dtype)
+        sample_count = sample_mask.sum().clamp_min(1)
         return dict(
             loss_lidar_shape_cover=cover * self.shape_cover_loss_weight,
-            loss_lidar_shape_compact=effective_count * self.compact_loss_weight,
-            diag_unique_template_count=unique_count[from_lidar].mean(),
+            loss_lidar_shape_mode=(
+                mode['mode_loss'] * self.shape_mode_loss_weight),
+            loss_lidar_shape_diversity=(
+                mode['diversity'] * self.shape_diversity_loss_weight),
+            diag_unique_template_count=(
+                unique_count * sample_mask).sum() / sample_count,
+            diag_predicted_shape_metric_rank=(
+                unique_count * sample_mask).sum() / sample_count,
+            diag_gt_shape_metric_rank=(
+                mode['mode_count'] * sample_mask).sum() / sample_count,
+            diag_shape_lane_cover_recall=lane_cover_recall,
+            diag_shape_mode_cover_recall=(
+                mode['mode_cover'] * sample_mask).sum() / sample_count,
+            diag_shape_mode_overflow_rate=(
+                mode['overflow'] * sample_mask).sum() / sample_count,
+            diag_matched_template_min_distance=(
+                mode['min_distance'] * mode['min_distance_valid']).sum()
+            / mode['min_distance_valid'].sum().clamp_min(1).to(
+                mode['min_distance'].dtype),
         )

@@ -100,12 +100,21 @@ model = dict(
             curvature_scale=0.002,
             vertical_curvature_scale=0.001,
             shape_softmin_temperature=0.25,
-            compact_temperature=0.25,
+            # Curves are the same shape only after optimal x/z translation
+            # when P80 <= 0.3m, mean yaw <= 1deg and mean pitch <= 0.5deg.
+            aligned_p80_threshold=0.3,
+            yaw_similarity_degrees=1.0,
+            pitch_similarity_degrees=0.5,
+            min_lane_points=2,
+            min_mode_points=4,
+            short_support_length=20.0,
             shape_nms_threshold=1.0,
             shape_cover_loss_weight=1.0,
-            # All five templates are expanded into Decoder queries; do not
-            # explicitly collapse them into duplicate shapes.
-            compact_loss_weight=0.0),
+            # Five is a capacity ceiling. GT shape modes are matched one to
+            # one, and only templates assigned to distinct modes are forced
+            # apart; a straight-road sample is not forced to invent 5 modes.
+            shape_mode_loss_weight=1.0,
+            shape_diversity_loss_weight=0.05),
         # Include both -25m and +25m at an exact 0.5m step:
         # 5 templates x 101 seeds = 505 unfiltered Q0 queries.
         proposal_expander=dict(
