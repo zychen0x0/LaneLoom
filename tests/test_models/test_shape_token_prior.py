@@ -109,9 +109,9 @@ def test_shape_prior_does_not_learn_gt_geometry_from_empty_lidar():
     assert losses['loss_lidar_shape_cover'] == 0
     assert losses['loss_lidar_shape_mode'] == 0
     assert losses['loss_lidar_shape_diversity'] == 0
-    assert losses['diag_unique_template_count'] == 0
     assert losses['diag_predicted_shape_metric_rank'] == 0
     assert losses['diag_gt_shape_metric_rank'] == 0
+    assert losses['diag_shape_mode_cover_recall'] == 0
 
 
 def test_shape_prior_converts_three_unbounded_slopes_to_controls():
@@ -260,18 +260,14 @@ def test_shape_coverage_allows_one_template_to_cover_parallel_gt_lanes():
 
     assert set(losses) == {
         'loss_lidar_shape_cover', 'loss_lidar_shape_mode',
-        'loss_lidar_shape_diversity', 'diag_unique_template_count',
-        'diag_predicted_shape_metric_rank',
-        'diag_gt_shape_metric_rank', 'diag_shape_lane_cover_recall',
-        'diag_shape_mode_cover_recall', 'diag_shape_mode_overflow_rate',
-        'diag_matched_template_min_distance'}
+        'loss_lidar_shape_diversity', 'diag_predicted_shape_metric_rank',
+        'diag_gt_shape_metric_rank', 'diag_shape_mode_cover_recall'}
     assert losses['loss_lidar_shape_cover'].item() < 1e-4
     assert losses['loss_lidar_shape_mode'].item() < 1e-4
     assert losses['loss_lidar_shape_diversity'] == 0
     assert losses['diag_gt_shape_metric_rank'] == 1
-    assert losses['diag_shape_lane_cover_recall'] == 1
-    assert losses['diag_unique_template_count'] == 1
     assert losses['diag_predicted_shape_metric_rank'] == 1
+    assert losses['diag_shape_mode_cover_recall'] == 1
 
 
 def test_shape_similarity_requires_geometry_heading_and_grade_thresholds():

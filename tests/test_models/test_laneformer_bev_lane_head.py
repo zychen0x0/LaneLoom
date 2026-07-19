@@ -494,11 +494,8 @@ def test_lane_head_uses_51_anchors_and_backpropagates():
         'loss_lidar_shape_cover', 'loss_lidar_shape_mode',
         'loss_lidar_shape_diversity',
         'loss_proposal_router', 'loss_q0_geometry',
-        'diag_unique_template_count', 'diag_predicted_shape_metric_rank',
-        'diag_gt_shape_metric_rank',
-        'diag_shape_lane_cover_recall', 'diag_shape_mode_cover_recall',
-        'diag_shape_mode_overflow_rate',
-        'diag_matched_template_min_distance'}
+        'diag_predicted_shape_metric_rank', 'diag_gt_shape_metric_rank',
+        'diag_shape_mode_cover_recall'}
     assert set(losses) == (
         final_lane_loss_names | auxiliary_loss_names | lidar_loss_names)
     assert torch.isfinite(total_loss)

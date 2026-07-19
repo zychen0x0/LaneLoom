@@ -515,20 +515,11 @@ class LaneFormerLiDARShapeTokenPrior(nn.Module):
             pair_mask, diversity_per_pair, 0).sum()
         diversity = diversity / pair_mask.sum().clamp_min(1).to(
             diversity.dtype)
-        min_distance = template_pairwise.masked_fill(
-            ~pair_mask, torch.inf).amin(dim=(1, 2))
-        min_distance_valid = pair_mask.flatten(1).any(dim=1)
-        min_distance = torch.where(min_distance_valid, min_distance, 0)
-        overflow = (
-            mode_count > prior_points.size(1)).to(prior_points.dtype)
         return dict(
             mode_loss=mode_loss,
             diversity=diversity,
             mode_count=mode_count.to(prior_points.dtype),
             mode_cover=mode_cover,
-            overflow=overflow,
-            min_distance=min_distance,
-            min_distance_valid=min_distance_valid,
         )
 
     def forward(self, pts_feats, img_feats=None, img_metas=None):
@@ -575,10 +566,6 @@ class LaneFormerLiDARShapeTokenPrior(nn.Module):
         cover = (
             (cover_per_lane * support_weight).sum()
             / support_weight.sum().clamp_min(1e-6))
-        lane_covered = self._shape_similar(components).any(dim=-1)
-        lane_cover_recall = (
-            (lane_covered & valid).sum()
-            / valid.sum().clamp_min(1).to(distance.dtype))
 
         mode = self._mode_losses(
             distance, components, prior['shape_points'],
@@ -598,19 +585,10 @@ class LaneFormerLiDARShapeTokenPrior(nn.Module):
                 mode['mode_loss'] * self.shape_mode_loss_weight),
             loss_lidar_shape_diversity=(
                 mode['diversity'] * self.shape_diversity_loss_weight),
-            diag_unique_template_count=(
-                unique_count * sample_mask).sum() / sample_count,
             diag_predicted_shape_metric_rank=(
                 unique_count * sample_mask).sum() / sample_count,
             diag_gt_shape_metric_rank=(
                 mode['mode_count'] * sample_mask).sum() / sample_count,
-            diag_shape_lane_cover_recall=lane_cover_recall,
             diag_shape_mode_cover_recall=(
                 mode['mode_cover'] * sample_mask).sum() / sample_count,
-            diag_shape_mode_overflow_rate=(
-                mode['overflow'] * sample_mask).sum() / sample_count,
-            diag_matched_template_min_distance=(
-                mode['min_distance'] * mode['min_distance_valid']).sum()
-            / mode['min_distance_valid'].sum().clamp_min(1).to(
-                mode['min_distance'].dtype),
         )

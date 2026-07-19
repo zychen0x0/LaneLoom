@@ -31,8 +31,9 @@ Shape Prior 使用三项监督：
 
 日志中的 `diag_gt_shape_metric_rank` 与
 `diag_predicted_shape_metric_rank` 是 GT 和预测模板在上述阈值下的“度量
-覆盖秩”，不是 5×6 参数矩阵的普通矩阵秩。`diag_shape_lane_cover_recall`
-和 `diag_shape_mode_cover_recall` 分别检查逐车道与逐形状模态的覆盖率。
+覆盖秩”，不是 5×6 参数矩阵的普通矩阵秩。
+`diag_shape_mode_cover_recall` 检查不同 GT 形状模态是否都被模板覆盖。
+训练日志只保留这三个 Shape Prior 诊断量，避免与三项实际 loss 重复。
 
 当前 5 个模板全部参与 Q0 展开。`loss_q0_geometry` 直接约束送入 Decoder 的505条 Q0，
 要求至少 80% 的 GT 可见点误差小于 0.3m，比最终评测的
