@@ -206,5 +206,12 @@ model = dict(
 # ----------------------------------------------------model config end----------------------------------------------------
 
 default_hooks = dict(
-    logger=dict(type='TrainingLoggerHook', interval=50),
+    # "brief" prints only key lane/proposal losses; "detailed" additionally
+    # prints auxiliary losses and diagnostic fields. TensorBoard always keeps
+    # every returned scalar in both modes.
+    logger=dict(
+        type='TrainingLoggerHook',
+        interval=50,
+        mode='brief',
+        window_size=50),
     checkpoint=dict(save_best={{_base_.best_metric}}))

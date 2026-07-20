@@ -38,6 +38,15 @@ def test_config_enables_unused_parameter_detection_for_dynamic_bev_branches():
     assert cfg.model_wrapper_cfg.find_unused_parameters is True
 
 
+def test_config_uses_brief_console_logging_by_default():
+    config_path = Path(__file__).resolve().parents[2] / 'configs/laneloom_openlane_image_lidar.py'
+    cfg = Config.fromfile(config_path)
+
+    assert cfg.default_hooks.logger.type == 'TrainingLoggerHook'
+    assert cfg.default_hooks.logger.mode == 'brief'
+    assert cfg.default_hooks.logger.window_size == 50
+
+
 def test_config_expands_five_lidar_shapes_into_505_decoder_queries():
     config_path = Path(__file__).resolve().parents[2] / 'configs/laneloom_openlane_image_lidar.py'
     cfg = Config.fromfile(config_path)

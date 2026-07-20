@@ -1,4 +1,5 @@
 """Three-line training-progress logger compatible with LaneLoom losses."""
+from collections import deque
 from pathlib import Path
 import time
 
@@ -9,12 +10,42 @@ from mmengine.registry import HOOKS
 
 @HOOKS.register_module()
 class TrainingLoggerHook(Hook):
-    """Log epoch progress, ETA, total loss, and every returned loss field."""
+    """Log epoch progress, ETA, and configurable training-loss detail."""
 
     priority = 'VERY_LOW'
 
-    def __init__(self, interval=50):
+    DEFAULT_BRIEF_METRICS = (
+        'loss_objectness',
+        'loss_category',
+        'loss_x',
+        'loss_z',
+        'loss_visibility',
+        'loss_lidar_shape_cover',
+        'loss_lidar_shape_mode',
+        'loss_lidar_shape_diversity',
+        'loss_q0_geometry',
+    )
+
+    def __init__(self, interval=50, mode='detailed', brief_metrics=None,
+                 window_size=50):
+        if mode not in ('brief', 'detailed'):
+            raise ValueError(
+                f'Logger mode must be "brief" or "detailed", got {mode!r}.')
+        if isinstance(brief_metrics, str):
+            raise TypeError('brief_metrics must be a sequence of metric names.')
+        if (isinstance(window_size, bool)
+                or not isinstance(window_size, int)
+                or window_size <= 0):
+            raise ValueError('window_size must be a positive integer.')
         self.interval = interval
+        self.mode = mode
+        self.brief_metrics = tuple(
+            self.DEFAULT_BRIEF_METRICS
+            if brief_metrics is None else brief_metrics)
+        if not all(isinstance(name, str) for name in self.brief_metrics):
+            raise TypeError('brief_metrics must contain only metric names.')
+        self.window_size = window_size
+        self.metric_windows = {}
         self.start_time = None
         self.val_start_time = None
         self.test_start_time = None
@@ -34,11 +65,44 @@ class TrainingLoggerHook(Hook):
 
     def before_train(self, runner):
         self.start_time = time.monotonic()
+        self.metric_windows.clear()
+
+    def _update_metric_windows(self, outputs):
+        for name in ('loss', *self.brief_metrics):
+            if name not in outputs:
+                continue
+            window = self.metric_windows.setdefault(
+                name, deque(maxlen=self.window_size))
+            value = outputs[name]
+            if isinstance(value, torch.Tensor):
+                value = value.detach().mean()
+            else:
+                value = float(value)
+            window.append(value)
+
+    def _window_mean(self, name):
+        values = self.metric_windows[name]
+        if isinstance(values[0], torch.Tensor):
+            return torch.stack(tuple(values)).mean()
+        return sum(values) / len(values)
+
+    def _console_metrics(self, outputs):
+        if self.mode == 'detailed':
+            return (
+                (name, value) for name, value in outputs.items()
+                if name != 'loss')
+        return (
+            (name, self._window_mean(name))
+            for name in self.brief_metrics if self.metric_windows.get(name))
 
     def after_train_iter(self, runner, batch_idx, data_batch=None, outputs=None):
-        if runner.rank != 0 or not self.every_n_train_iters(runner, self.interval):
+        if runner.rank != 0:
             return
         outputs = outputs or {}
+        if self.mode == 'brief':
+            self._update_metric_windows(outputs)
+        if not self.every_n_train_iters(runner, self.interval):
+            return
         elapsed = time.monotonic() - self.start_time
         completed = runner.iter + 1
         total_iters = max(runner.max_iters, 1)
@@ -48,9 +112,15 @@ class TrainingLoggerHook(Hook):
         progress = 100.0 * (batch_idx + 1) / max(loader_len, 1)
         losses = [
             f'{name}:{self._as_float(value):.4f}'
-            for name, value in outputs.items() if name != 'loss'
+            for name, value in self._console_metrics(outputs)
         ]
-        total_loss = self._as_float(outputs.get('loss', 0.0))
+        if self.mode == 'brief' and self.metric_windows.get('loss'):
+            loss_window = self.metric_windows['loss']
+            total_loss = self._as_float(self._window_mean('loss'))
+            loss_label = f'Loss(avg{len(loss_window)})'
+        else:
+            total_loss = self._as_float(outputs.get('loss', 0.0))
+            loss_label = 'Loss'
         scalar_losses = {
             f'train/{name}': self._as_float(value)
             for name, value in outputs.items()
@@ -59,11 +129,11 @@ class TrainingLoggerHook(Hook):
         runner.logger.info(
             'Epoch: [{}/{}][{}/{}] {:.2f}%\n'
             'Elapsed/Expected {} / {}    ETA {}\n'
-            'Loss {:.8f} | {}'.format(
+            '{} {:.8f} | {}'.format(
                 runner.epoch + 1, runner.max_epochs, batch_idx + 1,
                 loader_len, progress, self._format_duration(elapsed),
                 self._format_duration(expected), self._format_duration(eta),
-                total_loss, ' | '.join(losses)))
+                loss_label, total_loss, ' | '.join(losses)))
 
     def _log_evaluation_progress(self, runner, batch_idx, dataloader,
                                  start_time, label):

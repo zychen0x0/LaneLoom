@@ -466,6 +466,145 @@ def test_logger_reports_validation_progress_and_final_lane_metrics(monkeypatch):
     assert 'GT / Pred / TP: 100 / 120 / 40' in summary
 
 
+def test_training_logger_brief_mode_only_prints_key_lane_losses(monkeypatch):
+    messages = []
+    scalars = []
+    runner = SimpleNamespace(
+        rank=0,
+        iter=49,
+        max_iters=100,
+        epoch=0,
+        max_epochs=24,
+        train_dataloader=[None] * 100,
+        logger=SimpleNamespace(info=messages.append),
+        visualizer=SimpleNamespace(
+            add_scalars=lambda values, step: scalars.append((values, step))),
+    )
+    hook = TrainingLoggerHook(interval=50, mode='brief')
+    clock = iter([0.0, 50.0])
+    monkeypatch.setattr(logger_module.time, 'monotonic', lambda: next(clock))
+    outputs = dict(
+        loss=3.3,
+        loss_objectness=0.1,
+        loss_category=0.2,
+        loss_x=0.3,
+        loss_z=0.4,
+        loss_visibility=0.5,
+        loss_lidar_shape_cover=0.6,
+        loss_lidar_shape_mode=0.7,
+        loss_lidar_shape_diversity=0.8,
+        loss_q0_geometry=0.9,
+        loss_aux_0_objectness=1.0,
+        diag_gt_match_recall=1.0,
+    )
+
+    hook.before_train(runner)
+    hook.after_train_iter(runner, batch_idx=49, outputs=outputs)
+
+    message = messages[0]
+    assert 'loss_objectness:0.1000' in message
+    assert 'loss_category:0.2000' in message
+    assert 'loss_x:0.3000' in message
+    assert 'loss_z:0.4000' in message
+    assert 'loss_visibility:0.5000' in message
+    assert 'loss_lidar_shape_cover:0.6000' in message
+    assert 'loss_lidar_shape_mode:0.7000' in message
+    assert 'loss_lidar_shape_diversity:0.8000' in message
+    assert 'loss_q0_geometry:0.9000' in message
+    assert 'loss_aux_0_objectness' not in message
+    assert 'diag_gt_match_recall' not in message
+    assert 'Loss(avg1) 3.30000000' in message
+    assert scalars == [({
+        f'train/{name}': value for name, value in outputs.items()
+    }, 50)]
+
+
+def test_training_logger_brief_mode_prints_window_averages(monkeypatch):
+    messages = []
+    runner = SimpleNamespace(
+        rank=0,
+        iter=0,
+        max_iters=2,
+        epoch=0,
+        max_epochs=1,
+        train_dataloader=[None] * 2,
+        logger=SimpleNamespace(info=messages.append),
+        visualizer=SimpleNamespace(add_scalars=lambda *_args, **_kwargs: None),
+    )
+    hook = TrainingLoggerHook(
+        interval=2, mode='brief', brief_metrics=['loss_x'], window_size=2)
+    clock = iter([0.0, 2.0])
+    monkeypatch.setattr(logger_module.time, 'monotonic', lambda: next(clock))
+
+    hook.before_train(runner)
+    hook.after_train_iter(
+        runner, batch_idx=0, outputs=dict(loss=4.0, loss_x=2.0))
+    runner.iter = 1
+    hook.after_train_iter(
+        runner, batch_idx=1, outputs=dict(loss=2.0, loss_x=1.0))
+
+    assert 'Loss(avg2) 3.00000000' in messages[0]
+    assert 'loss_x:1.5000' in messages[0]
+
+
+def test_training_logger_buffers_detached_tensors_without_converting_them():
+    runner = SimpleNamespace(rank=0, iter=0)
+    hook = TrainingLoggerHook(
+        interval=2, mode='brief', brief_metrics=['loss_x'], window_size=2)
+    loss = torch.tensor(4.0, requires_grad=True)
+    loss_x = torch.tensor(2.0, requires_grad=True)
+
+    hook.after_train_iter(
+        runner, batch_idx=0, outputs=dict(loss=loss, loss_x=loss_x))
+
+    buffered_loss = hook.metric_windows['loss'][0]
+    buffered_loss_x = hook.metric_windows['loss_x'][0]
+    assert isinstance(buffered_loss, torch.Tensor)
+    assert isinstance(buffered_loss_x, torch.Tensor)
+    assert buffered_loss.requires_grad is False
+    assert buffered_loss_x.requires_grad is False
+
+
+def test_training_logger_defaults_to_detailed_mode(monkeypatch):
+    messages = []
+    runner = SimpleNamespace(
+        rank=0,
+        iter=0,
+        max_iters=1,
+        epoch=0,
+        max_epochs=1,
+        train_dataloader=[None],
+        logger=SimpleNamespace(info=messages.append),
+        visualizer=SimpleNamespace(add_scalars=lambda *_args, **_kwargs: None),
+    )
+    hook = TrainingLoggerHook(interval=1)
+    clock = iter([0.0, 1.0])
+    monkeypatch.setattr(logger_module.time, 'monotonic', lambda: next(clock))
+
+    hook.before_train(runner)
+    hook.after_train_iter(
+        runner,
+        batch_idx=0,
+        outputs=dict(
+            loss=1.0,
+            loss_aux_0_objectness=0.25,
+            diag_gt_match_recall=0.75))
+
+    assert 'loss_aux_0_objectness:0.2500' in messages[0]
+    assert 'diag_gt_match_recall:0.7500' in messages[0]
+
+
+def test_training_logger_rejects_string_brief_metrics():
+    with pytest.raises(TypeError, match='sequence of metric names'):
+        TrainingLoggerHook(mode='brief', brief_metrics='loss_x')
+
+
+@pytest.mark.parametrize('window_size', [0, -1, 2.5, True])
+def test_training_logger_rejects_invalid_window_size(window_size):
+    with pytest.raises(ValueError, match='positive integer'):
+        TrainingLoggerHook(mode='brief', window_size=window_size)
+
+
 def test_logger_reports_test_case_progress_eta_and_final_batch(monkeypatch):
     messages = []
     runner = SimpleNamespace(
