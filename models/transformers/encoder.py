@@ -7,10 +7,8 @@ from mmdet3d.registry import MODELS
 class LaneLoomBEVEncoder(nn.Module):
     """Project accumulated LiDAR features onto the lane-query BEV grid."""
 
-    def __init__(self, embed_dims, bev_h, bev_w, pc_range,
-                 lidar_bev_adapter, **kwargs):
+    def __init__(self, bev_h, bev_w, lidar_bev_adapter):
         super().__init__()
-        self.embed_dims = embed_dims
         self.bev_h, self.bev_w = bev_h, bev_w
         self.lidar_bev_adapter = MODELS.build(lidar_bev_adapter)
 

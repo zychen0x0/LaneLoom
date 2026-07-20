@@ -6,14 +6,12 @@ from LaneLoom.models.head.lidar_shape_token_prior import (
 )
 
 
-PC_RANGE = [-2., 0., -2., 2., 4., 2.]
 ANCHORS = [0., 1., 2., 3., 4.]
 
 
 def _prior(max_templates=3):
     return LaneLoomLiDARShapeTokenPrior(
         lidar_in_channels=8,
-        pc_range=PC_RANGE,
         anchor_y_steps=ANCHORS,
         max_templates=max_templates,
         hidden_channels=8,
@@ -163,8 +161,15 @@ def test_removed_shape_options_fail_instead_of_silently_changing_semantics(
         legacy_option):
     with pytest.raises(TypeError, match='were removed'):
         LaneLoomLiDARShapeTokenPrior(
-            lidar_in_channels=8, pc_range=PC_RANGE,
-            anchor_y_steps=ANCHORS, **{legacy_option: 30.})
+            lidar_in_channels=8, anchor_y_steps=ANCHORS,
+            **{legacy_option: 30.})
+
+
+def test_shape_prior_rejects_unknown_options():
+    with pytest.raises(TypeError, match='Unexpected.*pc_range'):
+        LaneLoomLiDARShapeTokenPrior(
+            lidar_in_channels=8, anchor_y_steps=ANCHORS,
+            pc_range=[-2., 0., -2., 2., 4., 2.])
 
 
 def test_steep_unbounded_slopes_keep_shape_loss_and_gradients_finite():

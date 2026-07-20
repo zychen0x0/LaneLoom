@@ -36,7 +36,6 @@ class LaneLoom(BaseModel):
                  pts_neck=None,
                  lane_head=None,
                  num_levels=None,
-                 frames=(0,),
                  pts_input_dim=5,
                  freeze_img=False,
                  data_preprocessor=None,
@@ -59,7 +58,6 @@ class LaneLoom(BaseModel):
         self.fp16_enabled = False
 
         self.num_levels = num_levels
-        self.frames = tuple(frames)
         self.pts_input_dim = pts_input_dim
 
         self.freeze_img = freeze_img

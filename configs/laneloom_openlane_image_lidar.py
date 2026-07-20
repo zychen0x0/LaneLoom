@@ -44,9 +44,6 @@ model = dict(
     type='LaneLoom',
     use_grid_mask=True,
     freeze_img=False,
-    # Must match the dataset queue labels: oldest history, newest history,
-    # current. History selection itself remains distance-first.
-    frames=(-10, -5, 0),
     num_levels=_num_levels_,
 
     # ---------------------------------------------------image branch start---------------------------------------------------
@@ -66,9 +63,7 @@ model = dict(
         in_channels=[512],
         out_channels=_dim_,
         start_level=0,
-        add_extra_convs='on_output',
-        num_outs=_num_levels_,
-        relu_before_extra_convs=True),
+        num_outs=_num_levels_),
     # ----------------------------------------------------image branch end----------------------------------------------------
 
     # ---------------------------------------------------lidar branch start---------------------------------------------------
@@ -92,7 +87,6 @@ model = dict(
         anchor_prior=dict(
             type='LaneLoomLiDARShapeTokenPrior',
             lidar_in_channels=_lidar_dim_,
-            pc_range=point_cloud_range,
             anchor_y_steps=output_y_steps,
             max_templates=5,
             hidden_channels=64,
@@ -113,7 +107,6 @@ model = dict(
             min_lane_points=2,
             min_mode_points=4,
             short_support_length=20.0,
-            shape_nms_threshold=1.0,
             shape_cover_loss_weight=1.0,
             # Five is a capacity ceiling. GT shape modes are matched one to
             # one, and only templates assigned to distinct modes are forced
@@ -134,10 +127,8 @@ model = dict(
             q0_geometry_loss_weight=1.0),
         bev_encoder=dict(
             type='LaneLoomBEVEncoder',
-            embed_dims=_dim_,
             bev_h=bev_h_,
             bev_w=bev_w_,
-            pc_range=point_cloud_range,
             lidar_bev_adapter=dict(
                 type='LaneLoomLiDARBEVAdapter',
                 embed_dims=_lidar_dim_,
@@ -159,8 +150,6 @@ model = dict(
         lane_decoder=dict(
             type='LaneLoomLaneQueryDecoder',
             embed_dims=_dim_,
-            bev_h=bev_h_,
-            bev_w=bev_w_,
             pc_range=point_cloud_range,
             num_query=505,
             # OpenLane categories 0..20; category 21 is merged into 20 by dataset.

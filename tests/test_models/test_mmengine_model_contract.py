@@ -50,10 +50,11 @@ def test_config_expands_five_lidar_shapes_into_505_decoder_queries():
     assert prior.vertical_slope_scale == 0.03
     assert 'max_yaw_degrees' not in prior
     assert 'max_pitch_degrees' not in prior
+    assert 'pc_range' not in prior
+    assert 'shape_nms_threshold' not in prior
     assert expander.num_x_seeds == 101
     assert decoder.num_query == 505
     assert decoder.layer_query_budget == 64
-    assert prior.pc_range == decoder.pc_range
     assert prior.anchor_y_steps == expander.anchor_y_steps == decoder.anchor_y_steps
     assert decoder.anchor_y_steps == [2. * index for index in range(1, 51)]
     assert decoder.evidence_y_steps == [5. * index for index in range(1, 21)]
@@ -75,6 +76,14 @@ def test_config_uses_single_level_temporal_fv_and_dynamic_pillar_bev():
     assert cfg.model.lane_head.anchor_prior.lidar_in_channels == 128
     assert cfg.model.lane_head.bev_encoder.bev_h == 200
     assert cfg.model.lane_head.bev_encoder.bev_w == 100
+    assert 'embed_dims' not in cfg.model.lane_head.bev_encoder
+    assert 'pc_range' not in cfg.model.lane_head.bev_encoder
+    assert 'bev_h' not in cfg.model.lane_head.lane_decoder
+    assert 'bev_w' not in cfg.model.lane_head.lane_decoder
+    assert 'frames' not in cfg.model
+    assert 'add_extra_convs' not in cfg.model.img_neck
+    assert 'relu_before_extra_convs' not in cfg.model.img_neck
+    assert 'resume_from' not in cfg
     assert (
         cfg.model.lane_head.bev_encoder.lidar_bev_adapter.lidar_in_channels
         == 128)
@@ -125,7 +134,6 @@ def test_config_uses_strict_q0_and_one_to_one_assignment():
 def _bare_laneloom():
     model = LaneLoomModel.__new__(LaneLoomModel)
     nn.Module.__init__(model)
-    model.frames = (-1, 0)
     model.num_levels = None
     return model
 

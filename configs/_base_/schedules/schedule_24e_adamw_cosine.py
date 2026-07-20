@@ -63,5 +63,4 @@ default_hooks = dict(
 
 log_processor = dict(type='LogProcessor', window_size=50, by_epoch=True)
 load_from = None
-resume_from = None
 # ----------------------------------------------------schedule end----------------------------------------------------

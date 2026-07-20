@@ -39,7 +39,6 @@ def _head(embed_dims, bev_h, bev_w, num_query, anchors, lidar_channels,
         anchor_prior=dict(
             type='LaneLoomLiDARShapeTokenPrior',
             lidar_in_channels=lidar_channels,
-            pc_range=[-25., 0., -5., 25., 100., 5.],
             anchor_y_steps=anchors,
             max_templates=max_templates,
             hidden_channels=8),
@@ -51,8 +50,7 @@ def _head(embed_dims, bev_h, bev_w, num_query, anchors, lidar_channels,
             num_x_seeds=num_query // max_templates,
             template_feature_channels=8),
         bev_encoder=dict(
-            type='LaneLoomBEVEncoder', embed_dims=embed_dims,
-            bev_h=bev_h, bev_w=bev_w, pc_range=[-25., 0., -5., 25., 100., 5.],
+            type='LaneLoomBEVEncoder', bev_h=bev_h, bev_w=bev_w,
             lidar_bev_adapter=dict(
                 type='LaneLoomLiDARBEVAdapter', embed_dims=embed_dims,
                 lidar_in_channels=lidar_channels)),
@@ -64,7 +62,7 @@ def _head(embed_dims, bev_h, bev_w, num_query, anchors, lidar_channels,
             num_image_levels=1, temporal_kernel_size=3),
         lane_decoder=dict(
             type='LaneLoomLaneQueryDecoder', embed_dims=embed_dims,
-            bev_h=bev_h, bev_w=bev_w, pc_range=[-25., 0., -5., 25., 100., 5.],
+            pc_range=[-25., 0., -5., 25., 100., 5.],
             num_query=num_query, anchor_y_steps=anchors, num_layers=2,
             num_heads=4, feedforward_channels=embed_dims * 2, dropout=0.0,
             dn_num_groups=dn_num_groups),
@@ -77,7 +75,7 @@ def _head(embed_dims, bev_h, bev_w, num_query, anchors, lidar_channels,
 
 def test_lane_query_decoder_samples_cubic_bezier_at_anchors():
     decoder = LaneLoomLaneQueryDecoder(
-        embed_dims=8, bev_h=2, bev_w=2,
+        embed_dims=8,
         pc_range=[-25., 0., -5., 25., 100., 5.], num_query=3,
         anchor_y_steps=[0.0, 2.0, 4.0], num_layers=1, num_heads=2,
         feedforward_channels=16, dropout=0.0)
@@ -101,7 +99,7 @@ def test_lane_query_decoder_samples_cubic_bezier_at_anchors():
 
 def test_decoder_prunes_after_layer_zero_and_keeps_required_training_queries():
     decoder = LaneLoomLaneQueryDecoder(
-        embed_dims=8, bev_h=2, bev_w=2,
+        embed_dims=8,
         pc_range=[-25., 0., -5., 25., 100., 5.], num_query=8,
         layer_query_budget=4,
         anchor_y_steps=[0.0, 2.0, 4.0], num_layers=2, num_heads=2,
@@ -126,7 +124,7 @@ def test_decoder_prunes_after_layer_zero_and_keeps_required_training_queries():
 
 def test_lane_query_decoder_refines_lidar_bezier_controls():
     decoder = LaneLoomLaneQueryDecoder(
-        embed_dims=8, bev_h=2, bev_w=2,
+        embed_dims=8,
         pc_range=[-25., 0., -5., 25., 100., 5.], num_query=2,
         anchor_y_steps=[0., 2., 4.], num_layers=1, num_heads=2,
         feedforward_channels=16, dropout=0.)
@@ -146,7 +144,7 @@ def test_lane_query_decoder_refines_lidar_bezier_controls():
 
 def test_lane_query_decoder_preserves_out_of_range_q0_without_shape_clamping():
     decoder = LaneLoomLaneQueryDecoder(
-        embed_dims=8, bev_h=2, bev_w=2,
+        embed_dims=8,
         pc_range=[-2., 0., -2., 2., 4., 2.], num_query=1,
         anchor_y_steps=[0., 2., 4.], num_layers=1, num_heads=2,
         feedforward_channels=16, dropout=0.)
@@ -178,7 +176,7 @@ def test_bev_encoder_keeps_lidar_bev_without_constructing_image_bev():
 
 def test_lane_query_decoder_exposes_each_intermediate_layer_for_auxiliary_loss():
     decoder = LaneLoomLaneQueryDecoder(
-        embed_dims=8, bev_h=2, bev_w=2,
+        embed_dims=8,
         pc_range=[-25., 0., -5., 25., 100., 5.], num_query=3,
         anchor_y_steps=[0.0, 2.0, 4.0], num_layers=3, num_heads=2,
         feedforward_channels=16, dropout=0.0)
@@ -201,7 +199,7 @@ def test_lane_query_decoder_exposes_each_intermediate_layer_for_auxiliary_loss()
 
 def test_lane_query_decoder_composes_nonzero_residual_with_previous_controls():
     decoder = LaneLoomLaneQueryDecoder(
-        embed_dims=8, bev_h=2, bev_w=2,
+        embed_dims=8,
         pc_range=[-25., 0., -5., 25., 100., 5.], num_query=3,
         anchor_y_steps=[0.0, 2.0, 4.0], num_layers=2, num_heads=2,
         feedforward_channels=16, dropout=0.0)
@@ -220,7 +218,7 @@ def test_lane_query_decoder_composes_nonzero_residual_with_previous_controls():
 
 def test_lane_query_decoder_predicts_an_ordered_visibility_interval():
     decoder = LaneLoomLaneQueryDecoder(
-        embed_dims=8, bev_h=2, bev_w=2,
+        embed_dims=8,
         pc_range=[-25., 0., -5., 25., 100., 5.], num_query=3,
         anchor_y_steps=[0.0, 2.0, 4.0, 6.0], num_layers=1, num_heads=2,
         feedforward_channels=16, dropout=0.0,
@@ -243,7 +241,7 @@ def test_lane_query_decoder_predicts_an_ordered_visibility_interval():
 
 def test_lane_query_decoder_refines_visibility_bounds_between_layers():
     decoder = LaneLoomLaneQueryDecoder(
-        embed_dims=8, bev_h=2, bev_w=2,
+        embed_dims=8,
         pc_range=[-25., 0., -5., 25., 100., 5.], num_query=3,
         anchor_y_steps=[0.0, 2.0, 4.0, 6.0], num_layers=2, num_heads=2,
         feedforward_channels=16, dropout=0.0,
@@ -277,7 +275,7 @@ def test_lane_query_decoder_refines_visibility_bounds_between_layers():
 
 def test_two_layer_decoder_resamples_refined_curve_for_second_layer():
     decoder = LaneLoomLaneQueryDecoder(
-        embed_dims=8, bev_h=2, bev_w=2,
+        embed_dims=8,
         pc_range=[-25., 0., -5., 25., 100., 5.], num_query=3,
         anchor_y_steps=[0.0, 2.0, 4.0], num_layers=2, num_heads=2,
         feedforward_channels=16, dropout=0.0)
@@ -307,7 +305,7 @@ def test_two_layer_decoder_resamples_refined_curve_for_second_layer():
 
 def test_decoder_cross_attention_keeps_each_query_evidence_separate():
     decoder = LaneLoomLaneQueryDecoder(
-        embed_dims=8, bev_h=2, bev_w=2,
+        embed_dims=8,
         pc_range=[-25., 0., -5., 25., 100., 5.], num_query=2,
         anchor_y_steps=[0.0, 2.0, 4.0], num_layers=1, num_heads=2,
         feedforward_channels=16, dropout=0.0)
@@ -347,7 +345,7 @@ def test_decoder_cross_attention_keeps_each_query_evidence_separate():
 
 def test_final_layer_loss_reaches_layer_zero_geometry_through_q1():
     decoder = LaneLoomLaneQueryDecoder(
-        embed_dims=8, bev_h=2, bev_w=2,
+        embed_dims=8,
         pc_range=[-25., 0., -5., 25., 100., 5.], num_query=2,
         anchor_y_steps=[0.0, 2.0, 4.0], num_layers=2, num_heads=2,
         feedforward_channels=16, dropout=0.0)
@@ -376,7 +374,7 @@ def test_lane_head_samples_initial_and_layer_zero_refined_anchors():
 
 def test_lane_query_decoder_initializes_objectness_with_a_low_prior():
     decoder = LaneLoomLaneQueryDecoder(
-        embed_dims=8, bev_h=2, bev_w=2,
+        embed_dims=8,
         pc_range=[-25., 0., -5., 25., 100., 5.], num_query=3,
         anchor_y_steps=[0.0, 2.0, 4.0], num_layers=1, num_heads=2,
         feedforward_channels=16, dropout=0.0,
@@ -389,7 +387,7 @@ def test_lane_query_decoder_initializes_objectness_with_a_low_prior():
 def test_lane_query_decoder_rejects_disabled_denoising_branch():
     with pytest.raises(ValueError, match='denoising queries are not supported'):
         LaneLoomLaneQueryDecoder(
-            embed_dims=8, bev_h=2, bev_w=2,
+            embed_dims=8,
             pc_range=[-25., 0., -5., 25., 100., 5.], num_query=3,
             anchor_y_steps=[0.0, 2.0, 4.0], num_layers=1, num_heads=2,
             feedforward_channels=16, dropout=0.0, dn_num_groups=1)

@@ -58,7 +58,7 @@ class _PerQueryTransformerLayer(nn.Module):
 class LaneLoomLaneQueryDecoder(nn.Module):
     """Decode BEV memory into cubic-Bézier 3D lanes sampled at anchors."""
 
-    def __init__(self, embed_dims, bev_h, bev_w, pc_range, num_query,
+    def __init__(self, embed_dims, pc_range, num_query,
                  anchor_y_steps, evidence_y_steps=None,
                  num_layers=3, num_heads=8,
                  feedforward_channels=1024, dropout=0.1, num_category=21,
@@ -69,8 +69,7 @@ class LaneLoomLaneQueryDecoder(nn.Module):
                  visibility_start_prior=0.14,
                  visibility_end_prior=0.58,
                  reference_x_residual_scale=5.0,
-                 reference_z_residual_scale=1.0,
-                 **kwargs):
+                 reference_z_residual_scale=1.0):
         super().__init__()
         self.embed_dims = int(embed_dims)
         self.pc_range = pc_range

@@ -20,7 +20,7 @@ class LaneLoomLiDARShapeTokenPrior(nn.Module):
     shape; absolute lateral placement is delegated to proposal expansion.
     """
 
-    def __init__(self, lidar_in_channels, pc_range, anchor_y_steps,
+    def __init__(self, lidar_in_channels, anchor_y_steps,
                  max_templates=10, hidden_channels=64,
                  lateral_slope_scale=0.1, vertical_slope_scale=0.03,
                  yaw_scale_degrees=5.0, pitch_scale_degrees=1.0,
@@ -53,7 +53,9 @@ class LaneLoomLiDARShapeTokenPrior(nn.Module):
                 'bounds were replaced by unbounded slope scaling, while '
                 'compact loss was replaced by GT mode matching and '
                 'matched-template diversity.')
-        self.pc_range = tuple(float(value) for value in pc_range)
+        if kwargs:
+            names = ', '.join(sorted(kwargs))
+            raise TypeError(f'Unexpected Shape Token prior options: {names}.')
         self.max_templates = int(max_templates)
         self.lateral_slope_scale = float(lateral_slope_scale)
         self.vertical_slope_scale = float(vertical_slope_scale)
