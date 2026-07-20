@@ -3,6 +3,7 @@
 from . import datasets  # noqa: F401
 from . import detectors  # noqa: F401
 from . import engine  # noqa: F401
+from . import evaluation  # noqa: F401
 from . import models  # noqa: F401
 
-__all__ = ['datasets', 'detectors', 'engine', 'models']
+__all__ = ['datasets', 'detectors', 'engine', 'evaluation', 'models']

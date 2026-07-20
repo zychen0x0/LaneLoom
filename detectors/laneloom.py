@@ -4,7 +4,7 @@ from mmcv.ops import Voxelization
 from mmengine.model import BaseModel
 from mmdet3d.registry import MODELS
 
-from LaneLoom.models.augmentations import GridMask
+from LaneLoom.datasets.openlane.pipelines import GridMask
 
 
 def _build_module(cfg):

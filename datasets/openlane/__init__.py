@@ -1,11 +1,10 @@
-"""OpenLane dataset, transforms, and evaluation adapters."""
+"""OpenLane dataset and preprocessing transforms."""
 
-from . import evaluation, pipelines  # noqa: F401
+from . import pipelines  # noqa: F401
 from .dataset import OpenLaneDataset, openlane_collate
 
 __all__ = [
     'OpenLaneDataset',
-    'evaluation',
     'openlane_collate',
     'pipelines',
 ]

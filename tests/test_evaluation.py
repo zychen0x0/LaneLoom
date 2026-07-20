@@ -14,9 +14,7 @@ from LaneLoom.engine.experiment import configure_train_experiment
 from LaneLoom.engine.openlane_test_cases import build_openlane_test_configs
 from LaneLoom.engine.hooks import LaneLoomLoggerHook
 from LaneLoom.engine.runner import LaneLoomRunner
-from LaneLoom.datasets.openlane.evaluation.lane_evaluation import (
-    OpenLaneLaneEvaluator,
-)
+from LaneLoom.evaluation.lane_evaluation import OpenLaneLaneEvaluator
 
 
 def _sample(x_offset=0.0, z_offset=0.0, score=0.9, scene='rainy-turn',
