@@ -13,17 +13,13 @@ class LaneLoomBEVLaneHead(nn.Module):
 
     def __init__(self, bev_encoder, lane_decoder, loss_module,
                  anchor_prior=None, proposal_expander=None,
-                 proposal_router=None, query_sampler=None,
-                 test_cfg=None, **kwargs):
+                 query_sampler=None, test_cfg=None, **kwargs):
         super().__init__()
         self.bev_encoder = MODELS.build(bev_encoder)
         self.lane_decoder = MODELS.build(lane_decoder)
         self.loss_module = MODELS.build(loss_module)
         self.anchor_prior = (
             MODELS.build(anchor_prior) if anchor_prior is not None else None)
-        self.proposal_router = (
-            MODELS.build(proposal_router)
-            if proposal_router is not None else None)
         self.proposal_expander = (
             MODELS.build(proposal_expander)
             if proposal_expander is not None else None)
@@ -73,11 +69,10 @@ class LaneLoomBEVLaneHead(nn.Module):
         if anchor_prior is not None:
             selected = predictions.get('selected_query_indices')
             for key in (
-                    'curvature', 'grade', 'anchor_points', 'shape_templates',
-                    'shape_points', 'shape_lateral_slopes',
+                    'anchor_points', 'shape_templates', 'shape_points',
+                    'shape_lateral_slopes',
                     'shape_vertical_slopes', 'shape_control_yaw_degrees',
                     'shape_control_pitch_degrees',
-                    'routing_scores',
                     'selected_template_indices', 'selected_seed_indices'):
                 if key in anchor_prior:
                     value = anchor_prior[key]
@@ -105,8 +100,6 @@ class LaneLoomBEVLaneHead(nn.Module):
         if self.proposal_expander is not None:
             prior.update(self.proposal_expander(
                 prior, img_feats, img_metas))
-        elif self.proposal_router is not None:
-            prior.update(self.proposal_router(prior, img_feats, img_metas))
         return prior
 
     @staticmethod
@@ -165,9 +158,6 @@ class LaneLoomBEVLaneHead(nn.Module):
             if self.proposal_expander is not None:
                 losses.update(self.proposal_expander.loss(
                     anchor_prior, prior_lanes, prior_visibility))
-            elif self.proposal_router is not None:
-                losses.update(self.proposal_router.loss(
-                    anchor_prior, prior_lanes, prior_visibility))
         return losses
 
     def predict(self, img_feats, pts_feats, img_metas, prev_bev=None, **kwargs):
@@ -207,16 +197,12 @@ class LaneLoomBEVLaneHead(nn.Module):
             nms_keep_queries=nms_keep_queries,
             anchor_y_steps=self.anchor_y_steps)
         if anchor_prior is not None:
-            if 'curvature' in predictions:
-                output['road_curvature'] = predictions['curvature']
-            if 'grade' in predictions:
-                output['road_grade'] = predictions['grade']
             for key in (
                     'anchor_points', 'shape_templates', 'shape_points',
                     'shape_lateral_slopes', 'shape_vertical_slopes',
                     'shape_control_yaw_degrees',
                     'shape_control_pitch_degrees',
-                    'routing_scores', 'unique_template_counts',
+                    'unique_template_counts',
                     'selected_template_indices', 'selected_seed_indices'):
                 if key in predictions:
                     output[key] = predictions[key]
