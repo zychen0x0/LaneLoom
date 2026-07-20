@@ -387,6 +387,9 @@ class LaneLoom(BaseModel):
                 proposal_seed_indices=(
                     predictions['selected_seed_indices'][index]
                     if 'selected_seed_indices' in predictions else None),
+                raw_label=(
+                    batch['raw_label'][index]
+                    if 'raw_label' in batch else None),
             ))
         return samples
 

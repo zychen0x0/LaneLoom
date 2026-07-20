@@ -5,5 +5,7 @@ from . import detectors  # noqa: F401
 from . import engine  # noqa: F401
 from . import evaluation  # noqa: F401
 from . import models  # noqa: F401
+from . import openlane  # noqa: F401
 
-__all__ = ['datasets', 'detectors', 'engine', 'evaluation', 'models']
+__all__ = [
+    'datasets', 'detectors', 'engine', 'evaluation', 'models', 'openlane']

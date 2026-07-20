@@ -2,16 +2,19 @@ import numpy as np
 import pytest
 import torch
 from datetime import datetime
+from pathlib import Path
 from types import SimpleNamespace
 
 import LaneLoom  # noqa: F401 - register the project metric.
 import LaneLoom.engine.hooks.laneloom_logger_hook as logger_module
 from mmengine.config import Config
 from mmengine.registry import METRICS
+from LaneLoom.detectors import LaneLoom as LaneLoomModel
 from LaneLoom.engine.experiment import configure_train_experiment
 from LaneLoom.engine.openlane_test_cases import build_openlane_test_configs
 from LaneLoom.engine.hooks import LaneLoomLoggerHook
 from LaneLoom.engine.runner import LaneLoomRunner
+from LaneLoom.openlane.eval.lane_evaluation import OpenLaneLaneEvaluator
 
 
 def _sample(x_offset=0.0, z_offset=0.0, score=0.9, scene='rainy-turn',
@@ -36,6 +39,119 @@ def _sample(x_offset=0.0, z_offset=0.0, score=0.9, scene='rainy-turn',
         scene_name=scene,
         scenario_name=scenario,
     )
+
+
+def _official_ground_lane(x_offset=0.0):
+    y = np.array([3.0, 20.0, 40.0, 60.0, 80.0, 102.0])
+    return np.column_stack((
+        np.full_like(y, x_offset),
+        y,
+        np.zeros_like(y),
+    ))
+
+
+def _official_raw_label(ground_lane, category=2):
+    vehicle_to_ground = np.array([
+        [0., 1., 0.],
+        [-1., 0., 0.],
+        [0., 0., 1.],
+    ])
+    ground_to_camera = np.array([
+        [1., 0., 0.],
+        [0., 0., 1.],
+        [0., -1., 0.],
+    ])
+    rotation = (
+        vehicle_to_ground
+        @ np.linalg.inv(ground_to_camera)
+        @ np.linalg.inv(vehicle_to_ground))
+    camera_representation = np.array([
+        [0., 0., 1., 0.],
+        [-1., 0., 0., 0.],
+        [0., -1., 0., 0.],
+        [0., 0., 0., 1.],
+    ])
+    ground_h = np.column_stack(
+        (ground_lane, np.ones(len(ground_lane))))
+    camera_lane = (camera_representation @ ground_h.T)[:3]
+    extrinsic = np.eye(4)
+    extrinsic[:3, :3] = rotation
+    return dict(
+        file_path='validation/segment/frame.jpg',
+        extrinsic=extrinsic.tolist(),
+        intrinsic=np.eye(3).tolist(),
+        lane_lines=[dict(
+            xyz=camera_lane.tolist(),
+            visibility=np.ones(len(ground_lane)).tolist(),
+            category=category)],
+    )
+
+
+def test_official_evaluator_uses_openlane_1p5m_matching_threshold():
+    evaluator = OpenLaneLaneEvaluator()
+    gt_lane = _official_ground_lane()
+    prediction = _official_ground_lane(x_offset=1.0)
+
+    summary = evaluator.evaluate_ground_lanes(
+        [prediction], [2], [gt_lane], [np.ones(len(gt_lane))], [2])
+
+    assert summary['recall_matches'] == 1
+    assert summary['precision_matches'] == 1
+    assert summary['match_count'] == 1
+
+
+def test_official_metric_uses_current_raw_label_and_ignores_enhanced_gt():
+    evaluator = OpenLaneLaneEvaluator()
+    ground_lane = _official_ground_lane()
+    raw_label = _official_raw_label(ground_lane)
+    sample = _sample()
+    sample.update(
+        pred_x=torch.from_numpy(ground_lane[:, 0]).unsqueeze(0),
+        pred_z=torch.from_numpy(ground_lane[:, 2]).unsqueeze(0),
+        pred_visibility=torch.ones(1, len(ground_lane)),
+        pred_scores=torch.tensor([0.9]),
+        pred_category=torch.tensor([2]),
+        anchor_y_steps=torch.from_numpy(ground_lane[:, 1]),
+        raw_label=raw_label,
+        gt_lanes_3d_enhanced=torch.full((1, len(ground_lane), 3), 999.0),
+        gt_lanes_visibility_enhanced=torch.ones(1, len(ground_lane)),
+    )
+    metric = METRICS.build(dict(
+        type='OpenLaneOfficialMetric', prefix=None, score_threshold=0.5,
+        use_temporal_gt_supplement=False))
+
+    metric.process(None, [sample])
+    values = metric.compute_metrics(metric.results)
+
+    assert values['F1'] == 1.0
+    assert values['Recall'] == 1.0
+    assert values['Precision'] == 1.0
+
+
+def test_evaluation_samples_expose_current_raw_label_to_official_metric():
+    ground_lane = _official_ground_lane()
+    raw_label = _official_raw_label(ground_lane)
+    predictions = dict(
+        x=torch.zeros(1, 1, 2),
+        z=torch.zeros(1, 1, 2),
+        visibility=torch.ones(1, 1, 2),
+        scores=torch.ones(1, 1),
+        category=torch.full((1, 1), 2),
+        valid_queries=torch.ones(1, 1, dtype=torch.bool),
+        nms_keep_queries=torch.ones(1, 1, dtype=torch.bool),
+        anchor_y_steps=torch.tensor([3., 4.]),
+    )
+    batch = dict(
+        gt_lanes_3d=torch.zeros(1, 1, 2, 3),
+        gt_lanes_visibility=torch.ones(1, 1, 2),
+        gt_lanes_category=torch.full((1, 1), 2),
+        raw_label=[raw_label],
+        img_metas=[{}],
+    )
+
+    samples = LaneLoomModel._build_evaluation_samples(predictions, batch)
+
+    assert samples[0]['raw_label'] is raw_label
 
 
 def test_anchor_metric_matches_a_good_lane_and_reports_axis_errors():
@@ -66,9 +182,28 @@ def test_anchor_metric_rejects_a_lane_with_insufficient_visible_overlap():
 
     assert values['num_gt'] == 1.0
     assert values['num_pred'] == 1.0
-    assert values['num_tp'] == 0.0
+    assert values['num_matches'] == 1.0
+    assert values['num_recall_matches'] == 0.0
+    assert values['num_precision_matches'] == 1.0
     assert values['F1'] == 0.0
-    assert values['Category Accuracy'] == 0.0
+    assert values['Category Accuracy'] == 1.0
+
+
+def test_anchor_metric_counts_official_recall_and_precision_matches_separately():
+    metric = METRICS.build(dict(
+        type='OpenLaneAnchorMetric', prefix=None, score_threshold=0.3,
+        distance_threshold=0.5, match_ratio_threshold=0.75))
+    sample = _sample()
+    sample['gt_lanes_visibility'][0, :2] = 0.0
+    metric.process(None, [sample])
+    values = metric.compute_metrics(metric.results)
+
+    assert values['num_matches'] == 1.0
+    assert values['num_recall_matches'] == 1.0
+    assert values['num_precision_matches'] == 0.0
+    assert values['Recall'] == 1.0
+    assert values['Precision'] == 0.0
+    assert values['F1'] == 0.0
 
 
 def test_anchor_metric_reports_category_accuracy_for_geometric_matches():
@@ -128,7 +263,7 @@ def test_anchor_metric_excludes_queries_suppressed_by_curve_nms():
     assert values['F1'] == 1.0
 
 
-def test_anchor_metric_uses_temporal_supplement_by_default_and_can_disable_it():
+def test_anchor_metric_can_use_temporal_supplement_but_defaults_to_official_gt():
     sample = _sample()
     enhanced = sample['gt_lanes_3d'].clone()
     enhanced[0, :, 0] += 8.0
@@ -136,13 +271,13 @@ def test_anchor_metric_uses_temporal_supplement_by_default_and_can_disable_it():
     sample['gt_lanes_visibility_enhanced'] = sample['gt_lanes_visibility'].clone()
 
     temporal_metric = METRICS.build(dict(
-        type='OpenLaneAnchorMetric', prefix=None, distance_threshold=0.5))
+        type='OpenLaneAnchorMetric', prefix=None, distance_threshold=0.5,
+        use_temporal_gt_supplement=True))
     temporal_metric.process(None, [sample])
     assert temporal_metric.compute_metrics(temporal_metric.results)['F1'] == 0.0
 
     current_metric = METRICS.build(dict(
-        type='OpenLaneAnchorMetric', prefix=None, distance_threshold=0.5,
-        use_temporal_gt_supplement=False))
+        type='OpenLaneAnchorMetric', prefix=None, distance_threshold=0.5))
     current_metric.process(None, [sample])
     assert current_metric.compute_metrics(current_metric.results)['F1'] == 1.0
 
@@ -152,7 +287,9 @@ def test_anchor_metric_uses_temporal_supplement_category():
     sample['gt_lanes_3d_enhanced'] = sample['gt_lanes_3d'].clone()
     sample['gt_lanes_visibility_enhanced'] = sample['gt_lanes_visibility'].clone()
     sample['gt_lanes_category_enhanced'] = torch.tensor([7, 0])
-    metric = METRICS.build(dict(type='OpenLaneAnchorMetric', prefix=None))
+    metric = METRICS.build(dict(
+        type='OpenLaneAnchorMetric', prefix=None,
+        use_temporal_gt_supplement=True))
 
     metric.process(None, [sample])
     values = metric.compute_metrics(metric.results)
@@ -168,13 +305,40 @@ def test_config_enables_mmengine_validation_and_test_evaluators():
     assert cfg.test_cfg.type == 'TestLoop'
     assert cfg.val_dataloader is not None
     assert cfg.test_dataloader is not None
-    assert cfg.val_evaluator.type == 'OpenLaneAnchorMetric'
-    assert cfg.test_evaluator.type == 'OpenLaneAnchorMetric'
-    assert cfg.val_evaluator.use_temporal_gt_supplement is True
+    assert cfg.evaluation_protocol in ('dv3dlane', 'official')
+    assert cfg.val_evaluator.type == 'OpenLaneOfficialMetric'
+    assert cfg.val_evaluator.prefix == 'OpenLaneOfficial'
+    assert cfg.test_evaluator.type == 'OpenLaneOfficialMetric'
+    assert cfg.test_evaluator.prefix == 'OpenLaneOfficial'
+    assert cfg.val_evaluator.use_temporal_gt_supplement is False
     assert cfg.test_dataloader.dataset.split == 'test'
     assert cfg.test_dataloader.dataset.dataset_cfg.load_interval == 1
-    assert cfg.default_hooks.checkpoint.save_best == 'OpenLane/F1'
+    assert cfg.default_hooks.checkpoint.save_best == 'OpenLaneOfficial/F1'
     assert cfg.default_hooks.checkpoint.rule == 'greater'
+
+
+def test_config_can_select_dv3dlane_validation_but_keeps_official_test():
+    config_path = Path(
+        '/workspace/LaneLoom/configs/laneloom_openlane_image_lidar.py')
+    source = config_path.read_text()
+    source = source.replace(
+        "'./_base_/datasets/openlane_datasets_D5.py'",
+        repr(str(config_path.parent / '_base_/datasets/openlane_datasets_D5.py')))
+    source = source.replace(
+        "'./_base_/schedules/schedule_24e_adamw_cosine.py'",
+        repr(str(
+            config_path.parent
+            / '_base_/schedules/schedule_24e_adamw_cosine.py')))
+    source = source.replace(
+        "evaluation_protocol = 'official'",
+        "evaluation_protocol = 'dv3dlane'")
+
+    cfg = Config.fromstring(source, '.py')
+
+    assert cfg.val_evaluator.type == 'OpenLaneAnchorMetric'
+    assert cfg.val_evaluator.prefix == 'DV3DLane'
+    assert cfg.test_evaluator.type == 'OpenLaneOfficialMetric'
+    assert cfg.default_hooks.checkpoint.save_best == 'DV3DLane/F1'
 
 
 def test_openlane_test_configs_select_validation_and_each_official_case():
@@ -197,7 +361,7 @@ def test_openlane_test_configs_select_validation_and_each_official_case():
         dataset_cfg = case_cfg.test_dataloader.dataset.dataset_cfg
         assert case_cfg.test_dataloader.dataset.split == 'val'
         assert dataset_cfg.val_split == expected_split
-        assert case_cfg.test_evaluator.prefix == f'OpenLane/{name}'
+        assert case_cfg.test_evaluator.prefix == f'OpenLaneOfficial/{name}'
 
     assert cfg.test_dataloader.dataset.split == 'test'
     assert cfg.dataset_cfg.val_split == 'validation'
@@ -242,9 +406,9 @@ def test_openlane_test_configs_build_one_pass_score_threshold_scan():
     assert [metric.score_threshold for metric in scan_cfg.test_evaluator] == [
         0.3, 0.5, 0.8]
     assert [metric.prefix for metric in scan_cfg.test_evaluator] == [
-        'OpenLane/validation@0.3',
-        'OpenLane/validation@0.5',
-        'OpenLane/validation@0.8',
+        'OpenLaneOfficial/validation@0.3',
+        'OpenLaneOfficial/validation@0.5',
+        'OpenLaneOfficial/validation@0.8',
     ]
 
 

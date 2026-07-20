@@ -29,8 +29,9 @@ def normalise_score_thresholds(score_thresholds):
     return thresholds
 
 
-def score_threshold_metric_prefix(case_name, threshold):
-    return f'OpenLane/{case_name}@{threshold:g}'
+def score_threshold_metric_prefix(
+        case_name, threshold, metric_prefix='OpenLaneOfficial'):
+    return f'{metric_prefix}/{case_name}@{threshold:g}'
 
 
 def build_openlane_test_configs(cfg, case='all', score_thresholds=None):
@@ -54,7 +55,8 @@ def build_openlane_test_configs(cfg, case='all', score_thresholds=None):
         case_cfg = deepcopy(cfg)
         case_cfg.test_dataloader.dataset.split = 'val'
         case_cfg.test_dataloader.dataset.dataset_cfg.val_split = split
-        case_cfg.test_evaluator.prefix = f'OpenLane/{name}'
+        metric_prefix = case_cfg.test_evaluator.prefix
+        case_cfg.test_evaluator.prefix = f'{metric_prefix}/{name}'
         if score_thresholds is not None:
             base_evaluator = case_cfg.test_evaluator
             case_cfg.model.lane_head.test_cfg.score_threshold = min(
@@ -64,7 +66,7 @@ def build_openlane_test_configs(cfg, case='all', score_thresholds=None):
                 evaluator = deepcopy(base_evaluator)
                 evaluator.score_threshold = threshold
                 evaluator.prefix = score_threshold_metric_prefix(
-                    name, threshold)
+                    name, threshold, metric_prefix)
                 case_cfg.test_evaluator.append(evaluator)
         case_configs.append((name, case_cfg))
     return case_configs

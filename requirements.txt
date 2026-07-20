@@ -1,4 +1,4 @@
-# Published Python packages; no external project source tree is imported.
+# Runtime dependencies.
 torch
 torchvision
 mmengine
@@ -7,6 +7,7 @@ mmdet
 mmdet3d
 numpy
 scipy
+ortools==9.3.10497
 Pillow
 albumentations
 spconv-cu118

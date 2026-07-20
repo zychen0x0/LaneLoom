@@ -205,17 +205,42 @@ model = dict(
 # ----------------------------------------------------model config end----------------------------------------------------
 
 # MMEngine owns DDP, optimizer, scheduler, checkpointing, validation and test.
-# The metric uses the pose-aligned temporal GT supplement, matching training.
-# Official OpenLane case selection is performed by ``tools/test.py``.
-default_hooks = dict(logger=dict(type='LaneLoomLoggerHook', interval=50))
-val_evaluator = dict(
+# Training may use temporal GT enhancement, but benchmark metrics always use
+# the current-frame OpenLane annotation.
+evaluation_protocol = 'official'
+
+dv3dlane_evaluator = dict(
     type='OpenLaneAnchorMetric',
-    prefix='OpenLane',
+    prefix='DV3DLane',
     score_threshold=score_threshold,
     visibility_threshold=0.5,
     distance_threshold=0.5,
     match_ratio_threshold=0.75,
     near_distance=40.0,
-    use_temporal_gt_supplement=True,
+    # Official OpenLane metrics use the current-frame annotation. Temporal
+    # supplementation remains a training target, not an evaluation target.
+    use_temporal_gt_supplement=False,
     collect_device='cpu')
-test_evaluator = val_evaluator
+
+official_evaluator = dict(
+    type='OpenLaneOfficialMetric',
+    prefix='OpenLaneOfficial',
+    score_threshold=score_threshold,
+    visibility_threshold=0.5,
+    use_temporal_gt_supplement=False,
+    collect_device='cpu')
+
+if evaluation_protocol == 'dv3dlane':
+    val_evaluator = dv3dlane_evaluator
+elif evaluation_protocol == 'official':
+    val_evaluator = official_evaluator
+else:
+    raise ValueError(
+        f'Unknown evaluation_protocol {evaluation_protocol!r}; expected '
+        "'dv3dlane' or 'official'.")
+
+# Final benchmark testing always reports the official OpenLane score.
+test_evaluator = official_evaluator
+default_hooks = dict(
+    logger=dict(type='LaneLoomLoggerHook', interval=50),
+    checkpoint=dict(save_best=f'{val_evaluator["prefix"]}/F1'))

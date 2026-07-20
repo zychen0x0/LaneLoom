@@ -55,8 +55,8 @@ default_hooks = dict(
         type='LaneLoomCheckpointHook',
         interval=1,
         max_keep_ckpts=keep_n_ckpts,
-        # Emitted by OpenLaneAnchorMetric after each validation epoch.  The
-        # best checkpoint is retained separately from the rolling two files.
+        # Emitted by the selected validation evaluator after each epoch. The
+        # main config selects the concrete metric used for best checkpoints.
         save_best='OpenLane/F1',
         rule='greater'),
     sampler_seed=dict(type='DistSamplerSeedHook'))

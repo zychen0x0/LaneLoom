@@ -5,7 +5,9 @@ The metric evaluates the model-native vehicle/ground-coordinate representation:
 import an evaluator from another repository or convert the annotations a second
 time.  A predicted and a labelled lane are one true positive only when a
 Hungarian-assigned pair agrees within ``distance_threshold`` on at least
-``match_ratio_threshold`` of *both* lanes' visible anchors.
+``match_ratio_threshold`` of each lane's visible anchors.  OpenLane counts
+recall and precision matches separately for the same min-cost assignment; it
+does not require both ratios to pass before either side receives credit.
 """
 from __future__ import annotations
 
@@ -26,11 +28,13 @@ class OpenLaneAnchorMetric(BaseMetric):
         score_threshold: Queries below this confidence are not predictions.
         visibility_threshold: Per-anchor probability threshold.
         distance_threshold: Maximum 3D ``(x, z)`` distance for an anchor match.
-        match_ratio_threshold: Required matched-anchor ratio on both lanes.
+        match_ratio_threshold: Required matched-anchor ratio, applied
+            independently to the GT support for recall and prediction support
+            for precision, matching the official OpenLane evaluator.
         near_distance: Boundary between near and far geometry errors in metres.
-        use_temporal_gt_supplement: When available, evaluate against the
-            dataloader's pose-aligned temporal GT supplement rather than the
-            current-frame-only GT.  This should match temporal-GT training.
+        use_temporal_gt_supplement: Evaluate against the dataloader's
+            pose-aligned temporal GT supplement.  Disabled by default because
+            the official OpenLane benchmark uses current-frame annotations.
     """
 
     default_prefix = 'OpenLane'
@@ -41,7 +45,7 @@ class OpenLaneAnchorMetric(BaseMetric):
                  distance_threshold: float = 0.5,
                  match_ratio_threshold: float = 0.75,
                  near_distance: float = 40.0,
-                 use_temporal_gt_supplement: bool = True,
+                 use_temporal_gt_supplement: bool = False,
                  collect_device: str = 'cpu',
                  prefix: str | None = None,
                  collect_dir: str | None = None) -> None:
@@ -89,11 +93,14 @@ class OpenLaneAnchorMetric(BaseMetric):
 
         prediction_mask = pred_scores >= self.score_threshold
         prediction_mask &= (pred_vis >= self.visibility_threshold).any(axis=1)
+        prediction_mask &= (
+            (pred_vis >= self.visibility_threshold).sum(axis=1) > 1)
         raw_prediction_count = int(prediction_mask.sum())
         if sample.get('pred_nms_keep_queries') is not None:
             prediction_mask &= self._numpy(
                 sample['pred_nms_keep_queries']).astype(bool)
-        gt_mask = (gt_vis >= self.visibility_threshold).any(axis=1)
+        gt_mask = (
+            (gt_vis >= self.visibility_threshold).sum(axis=1) > 1)
         pred_indices = np.flatnonzero(prediction_mask)
         gt_indices = np.flatnonzero(gt_mask)
 
@@ -116,13 +123,18 @@ class OpenLaneAnchorMetric(BaseMetric):
             rows, cols = linear_sum_assignment(cost)
             for row, col in zip(rows.tolist(), cols.tolist()):
                 pair = pair_data[row, col]
-                if pair['is_tp']:
+                if pair['is_match']:
                     gt_idx = gt_indices[row]
                     pred_idx = pred_indices[col]
-                    summary['tp'] += 1
+                    summary['matches'] += 1
+                    summary['recall_matches'] += int(pair['recall_match'])
+                    summary['precision_matches'] += int(
+                        pair['precision_match'])
                     summary['category_count'] += 1
                     summary['category_correct'] += int(
-                        pred_category[pred_idx] == gt_category[gt_idx])
+                        pred_category[pred_idx] == gt_category[gt_idx]
+                        or (pred_category[pred_idx] == 20
+                            and gt_category[gt_idx] == 21))
                     for name in ('x_near_sum', 'z_near_sum', 'near_count',
                                  'x_far_sum', 'z_far_sum', 'far_count'):
                         summary[name] += pair[name]
@@ -134,9 +146,11 @@ class OpenLaneAnchorMetric(BaseMetric):
                          pred_vis: np.ndarray, anchor_y: np.ndarray) -> dict[str, Any]:
         gt_valid = gt_vis >= self.visibility_threshold
         pred_valid = pred_vis >= self.visibility_threshold
-        union = gt_valid | pred_valid
         shared = gt_valid & pred_valid
-        distances = np.full(anchor_y.shape, self.distance_threshold, dtype=np.float64)
+        both_invisible = ~gt_valid & ~pred_valid
+        distances = np.full(
+            anchor_y.shape, self.distance_threshold, dtype=np.float64)
+        distances[both_invisible] = 0.0
         distances[shared] = np.hypot(
             gt_lane[shared, 0] - pred_x[shared],
             gt_lane[shared, 2] - pred_z[shared])
@@ -145,15 +159,23 @@ class OpenLaneAnchorMetric(BaseMetric):
         pred_count = int(pred_valid.sum())
         gt_ratio = float(matched.sum() / max(gt_count, 1))
         pred_ratio = float(matched.sum() / max(pred_count, 1))
-        is_tp = (gt_ratio >= self.match_ratio_threshold and
-                 pred_ratio >= self.match_ratio_threshold)
+        raw_cost = float(distances.sum())
+        assignment_cost = (
+            1.0 if 0.0 < raw_cost < 1.0 else float(int(raw_cost)))
+        is_match = (
+            assignment_cost
+            < self.distance_threshold * anchor_y.size)
         x_error = np.abs(gt_lane[:, 0] - pred_x)
         z_error = np.abs(gt_lane[:, 2] - pred_z)
-        near = matched & (anchor_y <= self.near_distance)
-        far = matched & (anchor_y > self.near_distance)
+        # Official errors cover the complete shared-visible support of every
+        # accepted min-cost pair, not only points below the match threshold.
+        near = shared & (anchor_y <= self.near_distance)
+        far = shared & (anchor_y > self.near_distance)
         return dict(
-            cost=float(distances[union].mean()) if union.any() else self.distance_threshold,
-            is_tp=is_tp,
+            cost=assignment_cost,
+            is_match=is_match,
+            recall_match=(gt_ratio >= self.match_ratio_threshold),
+            precision_match=(pred_ratio >= self.match_ratio_threshold),
             x_near_sum=float(x_error[near].sum()),
             z_near_sum=float(z_error[near].sum()),
             near_count=int(near.sum()),
@@ -163,7 +185,9 @@ class OpenLaneAnchorMetric(BaseMetric):
 
     @staticmethod
     def _empty_summary() -> dict[str, float | int]:
-        return dict(gt=0, pred=0, tp=0, category_count=0, category_correct=0,
+        return dict(gt=0, pred=0, matches=0, recall_matches=0,
+                    precision_matches=0,
+                    category_count=0, category_correct=0,
                     raw_pred=0, nms_suppressed=0,
                     x_near_sum=0.0, z_near_sum=0.0,
                     near_count=0, x_far_sum=0.0, z_far_sum=0.0, far_count=0)
@@ -174,9 +198,12 @@ class OpenLaneAnchorMetric(BaseMetric):
             for name, value in result.items():
                 summary[name] += value
 
-        gt, pred, tp = int(summary['gt']), int(summary['pred']), int(summary['tp'])
-        recall = tp / gt if gt else 0.0
-        precision = tp / pred if pred else 0.0
+        gt, pred = int(summary['gt']), int(summary['pred'])
+        matches = int(summary['matches'])
+        recall_matches = int(summary['recall_matches'])
+        precision_matches = int(summary['precision_matches'])
+        recall = recall_matches / gt if gt else 0.0
+        precision = precision_matches / pred if pred else 0.0
         f1 = 2.0 * precision * recall / (precision + recall) if precision + recall else 0.0
         near_count, far_count = int(summary['near_count']), int(summary['far_count'])
         category_count = int(summary['category_count'])
@@ -193,7 +220,13 @@ class OpenLaneAnchorMetric(BaseMetric):
             z_error_far=(float(summary['z_far_sum']) / far_count if far_count else 0.0),
             num_gt=float(gt),
             num_pred=float(pred),
-            num_tp=float(tp),
+            # Keep num_tp as a compatibility alias for existing logging and
+            # threshold-scan output.  Official OpenLane calls this match_num;
+            # recall and precision numerators are reported separately below.
+            num_tp=float(matches),
+            num_matches=float(matches),
+            num_recall_matches=float(recall_matches),
+            num_precision_matches=float(precision_matches),
             num_pred_before_nms=float(summary['raw_pred']),
             num_nms_suppressed=float(summary['nms_suppressed']),
             nms_suppression_ratio=(
