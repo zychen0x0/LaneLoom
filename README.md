@@ -1,4 +1,4 @@
-# LaneFormer
+# LaneLoom
 
 
 ## LiDAR Shape-Token Q0
@@ -71,12 +71,12 @@ Hungarian选中的相邻候选视为模糊负样本，再降权到0.1。这样�
 ## 多卡训练
 
 ```bash
-cd /workspace/LaneFormer
+cd /workspace/LaneLoom
 
 PYTHONPATH=/workspace CUDA_VISIBLE_DEVICES=0,1 \
 torchrun --nproc_per_node=2 --master_port=29501 \
 tools/train.py \
-configs/laneformer_openlane_image_lidar.py \
+configs/laneloom_openlane_image_lidar.py \
 --launcher pytorch
 ```
 
@@ -84,14 +84,14 @@ configs/laneformer_openlane_image_lidar.py \
 ## 评估 checkpoint
 
 ```bash
-cd /workspace/LaneFormer
+cd /workspace/LaneLoom
 
 PYTHONPATH=/workspace CUDA_VISIBLE_DEVICES=0,1 \
 torchrun --nproc_per_node=2 --master_port=29502 \
 tools/test.py \
-configs/laneformer_openlane_image_lidar.py \
-work_dirs/laneformer_openlane_image_lidar/exp_date_20260715_191319/checkpoints/best_OpenLane_F1_epoch_22.pth \
---work-dir work_dirs/laneformer_openlane_image_lidar/nms_evaluation \
+configs/laneloom_openlane_image_lidar.py \
+work_dirs/laneloom_openlane_image_lidar/exp_date_20260715_191319/checkpoints/best_OpenLane_F1_epoch_22.pth \
+--work-dir work_dirs/laneloom_openlane_image_lidar/nms_evaluation \
 --case validation \
 --launcher pytorch
 ```
@@ -102,9 +102,9 @@ work_dirs/laneformer_openlane_image_lidar/exp_date_20260715_191319/checkpoints/b
 PYTHONPATH=/workspace CUDA_VISIBLE_DEVICES=0,1 \
 torchrun --nproc_per_node=2 --master_port=29503 \
 tools/test.py \
-configs/laneformer_openlane_image_lidar.py \
+configs/laneloom_openlane_image_lidar.py \
 path/to/checkpoint.pth \
---work-dir work_dirs/laneformer_openlane_image_lidar/threshold_scan \
+--work-dir work_dirs/laneloom_openlane_image_lidar/threshold_scan \
 --case validation \
 --score-thresholds 0.3 0.5 0.6 0.7 0.8 \
 --launcher pytorch
@@ -116,10 +116,10 @@ path/to/checkpoint.pth \
 PYTHONPATH=/workspace CUDA_VISIBLE_DEVICES=0,1 \
 torchrun --nproc_per_node=2 --master_port=29504 \
 tools/train.py \
-configs/laneformer_openlane_image_lidar.py \
+configs/laneloom_openlane_image_lidar.py \
 --load-from path/to/checkpoint.pth \
 --max-epochs 1 \
---work-dir work_dirs/laneformer_openlane_image_lidar/objectness_warmstart \
+--work-dir work_dirs/laneloom_openlane_image_lidar/objectness_warmstart \
 --launcher pytorch
 ```
 
@@ -149,9 +149,9 @@ configs/laneformer_openlane_image_lidar.py \
 
 ## TensorBoard 可视化
 
-cd /workspace/LaneFormer
+cd /workspace/LaneLoom
 
 tensorboard \
-  --logdir work_dirs/laneformer_openlane_image_lidar/exp_date_20260715_191319/Tensorboard \
+  --logdir work_dirs/laneloom_openlane_image_lidar/exp_date_20260715_191319/Tensorboard \
   --host 0.0.0.0 \
   --port 6006

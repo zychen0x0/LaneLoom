@@ -8,7 +8,7 @@ _base_ = [
 default_scope = 'mmdet3d'
 launcher = 'none'
 # tools/train.py creates a unique exp_date_YYYYMMDD_HHMMSS subdirectory here.
-work_dir = './work_dirs/laneformer_openlane_image_lidar'
+work_dir = './work_dirs/laneloom_openlane_image_lidar'
 # Temporal history and LiDAR availability are data-dependent.  A rank can
 # legitimately bypass a temporal or LiDAR projection on an individual step,
 # so DDP must detect unused parameters instead of assuming a static graph.
@@ -41,7 +41,7 @@ backbone_init = 'torchvision://resnet50'
 
 # ---------------------------------------------------model config start---------------------------------------------------
 model = dict(
-    type='LaneFormer',
+    type='LaneLoom',
     use_grid_mask=True,
     freeze_img=False,
     # Must match the dataset queue labels: oldest history, newest history,
@@ -75,7 +75,7 @@ model = dict(
     # Statistics-enhanced dynamic PFE followed by a PillarNeXt-style sparse
     # ResNet and single-scale dilated lane neck.
     pts_bev_encoder=dict(
-        type='LaneFormerDynamicPillarBEVEncoder',
+        type='LaneLoomDynamicPillarBEVEncoder',
         point_cloud_range=point_cloud_range,
         pillar_size=[0.25, 0.25],
         out_channels=_lidar_dim_,
@@ -87,10 +87,10 @@ model = dict(
     # ---------------------------------------------------lane head start---------------------------------------------------
     # LiDAR geometry prior plus curve-aligned temporal FV/LiDAR sampling.
     lane_head=dict(
-        type='LaneFormerBEVLaneHead',
+        type='LaneLoomBEVLaneHead',
         # LiDAR predicts five translation-invariant road-shape tokens.
         anchor_prior=dict(
-            type='LaneFormerLiDARShapeTokenPrior',
+            type='LaneLoomLiDARShapeTokenPrior',
             lidar_in_channels=_lidar_dim_,
             pc_range=point_cloud_range,
             anchor_y_steps=output_y_steps,
@@ -123,7 +123,7 @@ model = dict(
         # Include both -25m and +25m at an exact 0.5m step:
         # 5 templates x 101 seeds = 505 unfiltered Q0 queries.
         proposal_expander=dict(
-            type='LaneFormerShapeProposalExpander',
+            type='LaneLoomShapeProposalExpander',
             embed_dims=_dim_,
             pc_range=point_cloud_range,
             anchor_y_steps=output_y_steps,
@@ -133,17 +133,17 @@ model = dict(
             q0_match_ratio=0.8,
             q0_geometry_loss_weight=1.0),
         bev_encoder=dict(
-            type='LaneFormerBEVEncoder',
+            type='LaneLoomBEVEncoder',
             embed_dims=_dim_,
             bev_h=bev_h_,
             bev_w=bev_w_,
             pc_range=point_cloud_range,
             lidar_bev_adapter=dict(
-                type='LaneFormerLiDARBEVAdapter',
+                type='LaneLoomLiDARBEVAdapter',
                 embed_dims=_lidar_dim_,
                 lidar_in_channels=_lidar_dim_)),
         query_sampler=dict(
-            type='LaneFormerDualPlaneTemporalSampler',
+            type='LaneLoomDualPlaneTemporalSampler',
             image_in_channels=_dim_,
             # Project sampled 128-D lane evidence to decoder width only after
             # curve-aligned sampling, instead of widening the complete map.
@@ -157,7 +157,7 @@ model = dict(
             max_image_offset_pixels=2.0,
             max_lidar_offset_residual=0.5),
         lane_decoder=dict(
-            type='LaneFormerLaneQueryDecoder',
+            type='LaneLoomLaneQueryDecoder',
             embed_dims=_dim_,
             bev_h=bev_h_,
             bev_w=bev_w_,
@@ -184,8 +184,8 @@ model = dict(
             # then promotes exactly one query for each visible GT lane.
             objectness_prior_probability=0.01),
         loss_module=dict(
-            type='LaneFormerOneToOneLaneLoss',
-            assigner=dict(type='LaneFormerHungarianAssigner'),
+            type='LaneLoomOneToOneLaneLoss',
+            assigner=dict(type='LaneLoomHungarianAssigner'),
             objectness_loss_weight=1.0,
             category_loss_weight=0.25,
             # Positive/negative objectness are normalized separately, so an
@@ -218,7 +218,7 @@ model = dict(
 # MMEngine owns DDP, optimizer, scheduler, checkpointing, validation and test.
 # The metric uses the pose-aligned temporal GT supplement, matching training.
 # Official OpenLane case selection is performed by ``tools/test.py``.
-default_hooks = dict(logger=dict(type='LaneFormerLoggerHook', interval=50))
+default_hooks = dict(logger=dict(type='LaneLoomLoggerHook', interval=50))
 val_evaluator = dict(
     type='OpenLaneAnchorMetric',
     prefix='OpenLane',

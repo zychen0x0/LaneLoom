@@ -1,4 +1,4 @@
-"""Independent MMEngine evaluation for LaneFormer's OpenLane anchors.
+"""Independent MMEngine evaluation for LaneLoom's OpenLane anchors.
 
 The metric evaluates the model-native vehicle/ground-coordinate representation:
 ``x, z`` sampled at fixed forward ``y`` anchors.  It deliberately does not

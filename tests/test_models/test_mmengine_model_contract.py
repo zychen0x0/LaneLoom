@@ -8,21 +8,21 @@ from mmengine.config import Config
 from mmengine.model import BaseModel
 from mmdet3d.registry import MODELS
 
-import LaneFormer  # noqa: F401 - register the project model.
-from LaneFormer.detectors import LaneFormer as LaneFormerModel
+import LaneLoom  # noqa: F401 - register the project model.
+from LaneLoom.detectors import LaneLoom as LaneLoomModel
 
 
-def test_laneformer_is_the_single_mmengine_model_entrypoint():
-    assert issubclass(LaneFormerModel, BaseModel)
-    assert MODELS.get('LaneFormer') is LaneFormerModel
+def test_laneloom_is_the_single_mmengine_model_entrypoint():
+    assert issubclass(LaneLoomModel, BaseModel)
+    assert MODELS.get('LaneLoom') is LaneLoomModel
 
-    parameters = inspect.signature(LaneFormerModel.forward).parameters
+    parameters = inspect.signature(LaneLoomModel.forward).parameters
     assert 'mode' in parameters
     assert parameters.get('return' + '_loss') is None
 
 
-def test_laneformer_forward_accepts_ddp_keyword_batches():
-    signature = inspect.signature(LaneFormerModel.forward)
+def test_laneloom_forward_accepts_ddp_keyword_batches():
+    signature = inspect.signature(LaneLoomModel.forward)
     signature.bind(
         None,
         mode='loss',
@@ -32,14 +32,14 @@ def test_laneformer_forward_accepts_ddp_keyword_batches():
 
 
 def test_config_enables_unused_parameter_detection_for_dynamic_bev_branches():
-    config_path = Path(__file__).resolve().parents[2] / 'configs/laneformer_openlane_image_lidar.py'
+    config_path = Path(__file__).resolve().parents[2] / 'configs/laneloom_openlane_image_lidar.py'
     cfg = Config.fromfile(config_path)
     assert cfg.model_wrapper_cfg.type == 'MMDistributedDataParallel'
     assert cfg.model_wrapper_cfg.find_unused_parameters is True
 
 
 def test_config_expands_five_lidar_shapes_into_505_decoder_queries():
-    config_path = Path(__file__).resolve().parents[2] / 'configs/laneformer_openlane_image_lidar.py'
+    config_path = Path(__file__).resolve().parents[2] / 'configs/laneloom_openlane_image_lidar.py'
     cfg = Config.fromfile(config_path)
     prior = cfg.model.lane_head.anchor_prior
     expander = cfg.model.lane_head.proposal_expander
@@ -61,13 +61,13 @@ def test_config_expands_five_lidar_shapes_into_505_decoder_queries():
 
 
 def test_config_uses_single_level_temporal_fv_and_dynamic_pillar_bev():
-    config_path = Path(__file__).resolve().parents[2] / 'configs/laneformer_openlane_image_lidar.py'
+    config_path = Path(__file__).resolve().parents[2] / 'configs/laneloom_openlane_image_lidar.py'
     cfg = Config.fromfile(config_path)
 
     assert cfg.model.num_levels == 1
     assert cfg.model.img_backbone.out_indices == (1,)
     assert cfg.model.pts_bev_encoder.type == (
-        'LaneFormerDynamicPillarBEVEncoder')
+        'LaneLoomDynamicPillarBEVEncoder')
     assert cfg.model.pts_bev_encoder.pillar_size == [0.25, 0.25]
     assert cfg.model.pts_bev_encoder.out_channels == 128
     assert cfg.model.pts_bev_encoder.base_channels == 32
@@ -82,7 +82,7 @@ def test_config_uses_single_level_temporal_fv_and_dynamic_pillar_bev():
         cfg.model.lane_head.bev_encoder.lidar_bev_adapter.embed_dims
         == 128)
     assert cfg.model.lane_head.query_sampler.type == (
-        'LaneFormerDualPlaneTemporalSampler')
+        'LaneLoomDualPlaneTemporalSampler')
     assert cfg.model.lane_head.query_sampler.lidar_in_channels == 128
     assert 'spatial_cross_attn' not in cfg.model.lane_head.bev_encoder
     assert 'lidar_fusion' not in cfg.model.lane_head.bev_encoder
@@ -90,11 +90,11 @@ def test_config_uses_single_level_temporal_fv_and_dynamic_pillar_bev():
 
 
 def test_config_uses_strict_q0_and_one_to_one_assignment():
-    config_path = Path(__file__).resolve().parents[2] / 'configs/laneformer_openlane_image_lidar.py'
+    config_path = Path(__file__).resolve().parents[2] / 'configs/laneloom_openlane_image_lidar.py'
     cfg = Config.fromfile(config_path)
     loss = cfg.model.lane_head.loss_module
 
-    assert loss.type == 'LaneFormerOneToOneLaneLoss'
+    assert loss.type == 'LaneLoomOneToOneLaneLoss'
     assert loss.objectness_loss_weight == 1.0
     assert loss.category_loss_weight == 0.25
     assert loss.negative_objectness_weight == 1.0
@@ -102,7 +102,7 @@ def test_config_uses_strict_q0_and_one_to_one_assignment():
     assert loss.diagnostic_geometry_distance_threshold == 0.3
     assert loss.diagnostic_geometry_match_ratio == 0.8
     assert loss.diagnostic_score_threshold == 0.5
-    assert loss.assigner.type == 'LaneFormerHungarianAssigner'
+    assert loss.assigner.type == 'LaneLoomHungarianAssigner'
     assert loss.visibility_loss_weight == 1.0
     assert loss.focal_alpha == 0.25
     assert loss.focal_gamma == 2.0
@@ -122,8 +122,8 @@ def test_config_uses_strict_q0_and_one_to_one_assignment():
     assert cfg.val_evaluator.score_threshold == 0.5
 
 
-def _bare_laneformer():
-    model = LaneFormerModel.__new__(LaneFormerModel)
+def _bare_laneloom():
+    model = LaneLoomModel.__new__(LaneLoomModel)
     nn.Module.__init__(model)
     model.frames = (-1, 0)
     model.num_levels = None
@@ -131,7 +131,7 @@ def _bare_laneformer():
 
 
 def test_temporal_image_features_keep_every_frame_for_curve_sampling():
-    model = _bare_laneformer()
+    model = _bare_laneloom()
     model.extract_img_feat = Mock(
         return_value=[torch.randn(6, 1, 4, 2, 2)])
     image_queue = torch.randn(2, 3, 1, 3, 4, 4)
@@ -143,7 +143,7 @@ def test_temporal_image_features_keep_every_frame_for_curve_sampling():
 
 
 def test_current_lidar_backbone_receives_the_complete_aligned_point_queue():
-    model = _bare_laneformer()
+    model = _bare_laneloom()
     model.extract_temporal_img_feat = Mock(
         return_value=[torch.randn(1, 3, 1, 4, 2, 2)])
     model.extract_pts_feat = Mock(return_value=[torch.randn(1, 4, 2, 2)])

@@ -30,7 +30,7 @@ class _BEVModalityEncoderLayer(nn.Module):
 
 
 @MODELS.register_module()
-class LaneFormerImageLiDARFusion(nn.Module):
+class LaneLoomImageLiDARFusion(nn.Module):
     """Cross-attend BEV queries to image and LiDAR tokens at each BEV cell."""
 
     def __init__(self, embed_dims, num_layers=2,

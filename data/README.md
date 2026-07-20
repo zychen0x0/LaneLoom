@@ -1,6 +1,6 @@
-# LaneFormer data layout
+# LaneLoom data layout
 
-LaneFormer owns its dataset location. Place the prepared OpenLane labels,
+LaneLoom owns its dataset location. Place the prepared OpenLane labels,
 camera images, and Waymo LiDAR metadata under this directory:
 
 ```text
@@ -12,7 +12,7 @@ data/
     └── waymo_processed_data/
 ```
 
-For a different storage location, set `LANEFORMER_DATA_ROOT` to that directory
+For a different storage location, set `LANELOOM_DATA_ROOT` to that directory
 before launching a command. In the current container, the configuration also
 uses `/workspace/lanedet3d/data` when that mounted data directory exists. It is
-treated strictly as data storage; LaneFormer imports no source code from it.
+treated strictly as data storage; LaneLoom imports no source code from it.

@@ -2,8 +2,8 @@ import inspect
 
 import torch
 
-from LaneFormer.models.head.dual_plane_temporal_sampler import (
-    LaneFormerDualPlaneTemporalSampler,
+from LaneLoom.models.head.dual_plane_temporal_sampler import (
+    LaneLoomDualPlaneTemporalSampler,
 )
 
 
@@ -26,7 +26,7 @@ def _temporal_metas(batch_size, time_steps, image_size):
 
 
 def test_sampler_builds_temporal_image_and_lidar_tokens_per_query():
-    sampler = LaneFormerDualPlaneTemporalSampler(
+    sampler = LaneLoomDualPlaneTemporalSampler(
         image_in_channels=8, lidar_in_channels=8, embed_dims=8,
         pc_range=[-2., 0., -2., 2., 4., 2.], num_image_levels=2,
         temporal_kernel_size=3)
@@ -60,7 +60,7 @@ def test_sampler_builds_temporal_image_and_lidar_tokens_per_query():
 
 
 def test_sampler_masks_lidar_offsets_without_pillar_occupancy():
-    sampler = LaneFormerDualPlaneTemporalSampler(
+    sampler = LaneLoomDualPlaneTemporalSampler(
         image_in_channels=4, lidar_in_channels=4, embed_dims=4,
         pc_range=[-2., 0., -2., 2., 4., 2.], num_image_levels=1,
         temporal_kernel_size=3)
@@ -77,7 +77,7 @@ def test_sampler_masks_lidar_offsets_without_pillar_occupancy():
 
 
 def test_sampler_uses_history_pose_before_projecting_curves():
-    sampler = LaneFormerDualPlaneTemporalSampler(
+    sampler = LaneLoomDualPlaneTemporalSampler(
         image_in_channels=4, lidar_in_channels=4, embed_dims=4,
         pc_range=[-2., 0., -2., 2., 4., 2.], num_image_levels=1,
         temporal_kernel_size=3)
@@ -97,7 +97,7 @@ def test_sampler_uses_history_pose_before_projecting_curves():
 
 
 def test_invalid_temporal_samples_are_zeroed_after_image_projection():
-    sampler = LaneFormerDualPlaneTemporalSampler(
+    sampler = LaneLoomDualPlaneTemporalSampler(
         image_in_channels=4, lidar_in_channels=4, embed_dims=4,
         pc_range=[-2., 0., -2., 2., 6., 2.], num_image_levels=1,
         temporal_kernel_size=3)
@@ -113,7 +113,7 @@ def test_invalid_temporal_samples_are_zeroed_after_image_projection():
 
 
 def test_visibility_does_not_hand_gate_sampled_modality_evidence():
-    sampler = LaneFormerDualPlaneTemporalSampler(
+    sampler = LaneLoomDualPlaneTemporalSampler(
         image_in_channels=4, lidar_in_channels=4, embed_dims=4,
         pc_range=[-2., 0., -2., 2., 6., 2.], num_image_levels=1,
         temporal_kernel_size=3)

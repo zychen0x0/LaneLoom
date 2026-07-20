@@ -1,4 +1,4 @@
-"""MMEngine extensions used by LaneFormer training."""
+"""MMEngine extensions used by LaneLoom training."""
 
 from . import hooks  # noqa: F401
 from .experiment import (
@@ -7,7 +7,7 @@ from .experiment import (
     remove_runtime_config_artifacts,
 )
 from .openlane_test_cases import build_openlane_test_configs
-from .runner import LaneFormerRunner
+from .runner import LaneLoomRunner
 
 __all__ = [
     'hooks',
@@ -15,5 +15,5 @@ __all__ = [
     'configure_train_experiment',
     'remove_runtime_config_artifacts',
     'build_openlane_test_configs',
-    'LaneFormerRunner',
+    'LaneLoomRunner',
 ]

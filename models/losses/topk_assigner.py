@@ -5,7 +5,7 @@ from mmdet3d.registry import TASK_UTILS
 
 
 @TASK_UTILS.register_module()
-class LaneFormerTopKAssigner:
+class LaneLoomTopKAssigner:
     """Assign each GT to its nearest anchors without sharing an anchor."""
 
     def __init__(self, pos_k=2):

@@ -1,4 +1,4 @@
-"""Evaluation components implemented and owned by LaneFormer."""
+"""Evaluation components implemented and owned by LaneLoom."""
 
 from . import metrics  # noqa: F401
 

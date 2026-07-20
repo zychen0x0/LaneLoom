@@ -6,7 +6,7 @@ import pytest
 from mmengine.config import Config
 
 TRAIN_PATH = Path(__file__).resolve().parents[2] / 'tools/train.py'
-SPEC = spec_from_file_location('laneformer_train_cli', TRAIN_PATH)
+SPEC = spec_from_file_location('laneloom_train_cli', TRAIN_PATH)
 TRAIN_MODULE = module_from_spec(SPEC)
 SPEC.loader.exec_module(TRAIN_MODULE)
 apply_runtime_overrides = TRAIN_MODULE.apply_runtime_overrides

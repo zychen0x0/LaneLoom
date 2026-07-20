@@ -8,7 +8,7 @@ from .bev_grid import bev_cell_centers
 
 
 @MODELS.register_module()
-class LaneFormerSpatialCrossAttention(nn.Module):
+class LaneLoomSpatialCrossAttention(nn.Module):
     """Project 3D BEV reference points and sample image features at each view."""
 
     def __init__(self, embed_dims, bev_h, bev_w, pc_range,
@@ -16,7 +16,7 @@ class LaneFormerSpatialCrossAttention(nn.Module):
                  **kwargs):
         super().__init__()
         if num_levels != 1:
-            raise ValueError('LaneFormer currently receives one image feature level.')
+            raise ValueError('LaneLoom currently receives one image feature level.')
         self.embed_dims = embed_dims
         self.bev_h, self.bev_w = bev_h, bev_w
         self.pc_range = pc_range

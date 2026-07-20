@@ -6,8 +6,8 @@ from mmdet3d.registry import MODELS
 
 
 @MODELS.register_module()
-class LaneFormerLiDARBEVAdapter(nn.Module):
-    """Project the LiDAR backbone output onto LaneFormer's BEV grid."""
+class LaneLoomLiDARBEVAdapter(nn.Module):
+    """Project the LiDAR backbone output onto LaneLoom's BEV grid."""
 
     def __init__(self, embed_dims, lidar_in_channels, **kwargs):
         super().__init__()

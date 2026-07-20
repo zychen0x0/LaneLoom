@@ -4,7 +4,7 @@ from pathlib import Path
 import torch
 from mmengine.config import Config
 
-from LaneFormer.augmentations import GridMask
+from LaneLoom.augmentations import GridMask
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -40,8 +40,8 @@ def test_source_and_configs_do_not_reference_other_project_code():
 
 
 def test_config_owns_its_default_data_root(monkeypatch):
-    monkeypatch.delenv('LANEFORMER_DATA_ROOT', raising=False)
-    cfg = Config.fromfile(PROJECT_ROOT / 'configs/laneformer_openlane_image_lidar.py')
+    monkeypatch.delenv('LANELOOM_DATA_ROOT', raising=False)
+    cfg = Config.fromfile(PROJECT_ROOT / 'configs/laneloom_openlane_image_lidar.py')
     mounted_root = Path('/workspace/lanedet3d/data')
     expected_root = mounted_root if mounted_root.is_dir() else PROJECT_ROOT / 'data'
     assert Path(cfg.data_root) == expected_root
@@ -52,6 +52,6 @@ def test_grid_mask_is_a_local_module_and_preserves_image_shape():
     image = torch.ones(2, 3, 12, 16)
     masked = augmentation(image)
 
-    assert GridMask.__module__ == 'LaneFormer.augmentations.grid_mask'
+    assert GridMask.__module__ == 'LaneLoom.augmentations.grid_mask'
     assert masked.shape == image.shape
     assert torch.any(masked == 0)

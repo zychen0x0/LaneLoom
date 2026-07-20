@@ -11,7 +11,7 @@ except ImportError:  # pragma: no cover
 
 
 @MODELS.register_module()
-class LaneFormerHungarianLaneLoss(nn.Module):
+class LaneLoomHungarianLaneLoss(nn.Module):
     """Cascade lane supervision after Hungarian one-to-one matching.
 
     Objectness distinguishes every query from background.  The remaining

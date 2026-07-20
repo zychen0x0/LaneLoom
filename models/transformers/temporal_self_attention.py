@@ -10,7 +10,7 @@ from .bev_grid import bev_cell_centers
 
 
 @MODELS.register_module()
-class LaneFormerTemporalSelfAttention(nn.Module):
+class LaneLoomTemporalSelfAttention(nn.Module):
     """Shift global-pose-aligned history BEVs then attend over history time."""
 
     def __init__(self, embed_dims, bev_h, bev_w, pc_range, **kwargs):

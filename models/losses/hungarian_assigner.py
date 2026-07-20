@@ -45,7 +45,7 @@ def batched_hungarian_assignment(cost):
 
 
 @TASK_UTILS.register_module()
-class LaneFormerHungarianAssigner:
+class LaneLoomHungarianAssigner:
     """Assign every visible GT to one exclusive query by 3D geometry."""
 
     def assign_batch(self, anchor_x, anchor_z, gt_x, gt_z, gt_visibility):

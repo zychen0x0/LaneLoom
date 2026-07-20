@@ -243,7 +243,7 @@ Temporal fusion + query self/cross update
 推理：score threshold + 轻量Curve NMS
 ```
 
-这个方案比直接复制 LiLaDet 更符合当前 LaneFormer，但建议先做三个逐步消融：
+这个方案比直接复制 LiLaDet 更符合当前 LaneLoom，但建议先做三个逐步消融：
 
 1. 纯 LiDAR 2D scatter + 5 templates；
 2. 增加505 Q0 双视图局部采样；

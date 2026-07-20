@@ -1,8 +1,8 @@
-"""LaneFormer runner customizations."""
+"""LaneLoom runner customizations."""
 from mmengine.runner import Runner
 
 
-class LaneFormerRunner(Runner):
+class LaneLoomRunner(Runner):
     """Write runtime logs directly into ``work_dir``."""
 
     @property

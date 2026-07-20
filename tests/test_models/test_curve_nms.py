@@ -1,6 +1,6 @@
 import torch
 
-from LaneFormer.models.head.curve_nms import curve_nms
+from LaneLoom.models.head.curve_nms import curve_nms
 
 
 def _nms(x, visibility, scores, z=None):

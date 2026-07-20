@@ -4,14 +4,14 @@ import torch
 from datetime import datetime
 from types import SimpleNamespace
 
-import LaneFormer  # noqa: F401 - register the project metric.
-import LaneFormer.engine.hooks.laneformer_logger_hook as logger_module
+import LaneLoom  # noqa: F401 - register the project metric.
+import LaneLoom.engine.hooks.laneloom_logger_hook as logger_module
 from mmengine.config import Config
 from mmengine.registry import METRICS
-from LaneFormer.engine.experiment import configure_train_experiment
-from LaneFormer.engine.openlane_test_cases import build_openlane_test_configs
-from LaneFormer.engine.hooks import LaneFormerLoggerHook
-from LaneFormer.engine.runner import LaneFormerRunner
+from LaneLoom.engine.experiment import configure_train_experiment
+from LaneLoom.engine.openlane_test_cases import build_openlane_test_configs
+from LaneLoom.engine.hooks import LaneLoomLoggerHook
+from LaneLoom.engine.runner import LaneLoomRunner
 
 
 def _sample(x_offset=0.0, z_offset=0.0, score=0.9, scene='rainy-turn',
@@ -163,7 +163,7 @@ def test_anchor_metric_uses_temporal_supplement_category():
 
 def test_config_enables_mmengine_validation_and_test_evaluators():
     cfg = Config.fromfile(
-        '/workspace/LaneFormer/configs/laneformer_openlane_image_lidar.py')
+        '/workspace/LaneLoom/configs/laneloom_openlane_image_lidar.py')
     assert cfg.val_cfg.type == 'ValLoop'
     assert cfg.test_cfg.type == 'TestLoop'
     assert cfg.val_dataloader is not None
@@ -179,7 +179,7 @@ def test_config_enables_mmengine_validation_and_test_evaluators():
 
 def test_openlane_test_configs_select_validation_and_each_official_case():
     cfg = Config.fromfile(
-        '/workspace/LaneFormer/configs/laneformer_openlane_image_lidar.py')
+        '/workspace/LaneLoom/configs/laneloom_openlane_image_lidar.py')
 
     case_configs = build_openlane_test_configs(cfg)
 
@@ -214,7 +214,7 @@ def test_openlane_test_configs_select_validation_and_each_official_case():
     ])
 def test_openlane_test_configs_filter_requested_cases(selection, expected):
     cfg = Config.fromfile(
-        '/workspace/LaneFormer/configs/laneformer_openlane_image_lidar.py')
+        '/workspace/LaneLoom/configs/laneloom_openlane_image_lidar.py')
 
     case_configs = build_openlane_test_configs(cfg, selection)
 
@@ -223,7 +223,7 @@ def test_openlane_test_configs_filter_requested_cases(selection, expected):
 
 def test_openlane_test_configs_reject_unknown_case():
     cfg = Config.fromfile(
-        '/workspace/LaneFormer/configs/laneformer_openlane_image_lidar.py')
+        '/workspace/LaneLoom/configs/laneloom_openlane_image_lidar.py')
 
     with pytest.raises(ValueError, match='Unknown OpenLane test case'):
         build_openlane_test_configs(cfg, 'unknown')
@@ -231,7 +231,7 @@ def test_openlane_test_configs_reject_unknown_case():
 
 def test_openlane_test_configs_build_one_pass_score_threshold_scan():
     cfg = Config.fromfile(
-        '/workspace/LaneFormer/configs/laneformer_openlane_image_lidar.py')
+        '/workspace/LaneLoom/configs/laneloom_openlane_image_lidar.py')
 
     cases = build_openlane_test_configs(
         cfg, 'validation', score_thresholds=[0.8, 0.3, 0.5, 0.5])
@@ -251,7 +251,7 @@ def test_openlane_test_configs_build_one_pass_score_threshold_scan():
 @pytest.mark.parametrize('thresholds', [[], [0.0], [1.0], [-0.1], [1.1]])
 def test_openlane_test_configs_reject_invalid_score_threshold_scan(thresholds):
     cfg = Config.fromfile(
-        '/workspace/LaneFormer/configs/laneformer_openlane_image_lidar.py')
+        '/workspace/LaneLoom/configs/laneloom_openlane_image_lidar.py')
 
     with pytest.raises(ValueError, match='score thresholds'):
         build_openlane_test_configs(
@@ -267,7 +267,7 @@ def test_logger_reports_validation_progress_and_final_lane_metrics(monkeypatch):
         logger=SimpleNamespace(info=messages.append),
         visualizer=SimpleNamespace(add_scalars=lambda *_args, **_kwargs: None),
     )
-    hook = LaneFormerLoggerHook(interval=50)
+    hook = LaneLoomLoggerHook(interval=50)
     clock = iter([0.0, 98.0])
     monkeypatch.setattr(logger_module.time, 'monotonic', lambda: next(clock))
 
@@ -302,7 +302,7 @@ def test_logger_reports_test_case_progress_eta_and_final_batch(monkeypatch):
         test_dataloader=[None] * 320,
         logger=SimpleNamespace(info=messages.append),
     )
-    hook = LaneFormerLoggerHook(interval=50)
+    hook = LaneLoomLoggerHook(interval=50)
     clock = iter([0.0, 88.0, 640.0])
     monkeypatch.setattr(logger_module.time, 'monotonic', lambda: next(clock))
 
@@ -317,9 +317,9 @@ def test_logger_reports_test_case_progress_eta_and_final_batch(monkeypatch):
     assert 'ETA 00:00:00' in messages[1]
 
 
-def test_train_experiment_layout_uses_a_dated_laneformer_directory(tmp_path):
+def test_train_experiment_layout_uses_a_dated_laneloom_directory(tmp_path):
     cfg = Config(dict(
-        work_dir=str(tmp_path / 'work_dirs' / 'laneformer'),
+        work_dir=str(tmp_path / 'work_dirs' / 'laneloom'),
         default_hooks=dict(checkpoint=dict(type='CheckpointHook', interval=1))))
     experiment_dir = configure_train_experiment(
         cfg, now=datetime(2026, 7, 12, 18, 30, 45))
@@ -329,15 +329,15 @@ def test_train_experiment_layout_uses_a_dated_laneformer_directory(tmp_path):
     assert (experiment_dir / 'Tensorboard').is_dir()
     assert (experiment_dir / 'checkpoints').is_dir()
     assert cfg.work_dir == str(experiment_dir / 'logs')
-    assert cfg.default_hooks.checkpoint.type == 'LaneFormerCheckpointHook'
+    assert cfg.default_hooks.checkpoint.type == 'LaneLoomCheckpointHook'
     assert cfg.default_hooks.checkpoint.out_dir == str(experiment_dir / 'checkpoints')
     assert [backend.type for backend in cfg.visualizer.vis_backends] == [
         'TensorboardVisBackend']
 
 
-def test_laneformer_runner_writes_log_directly_in_work_dir(tmp_path):
+def test_laneloom_runner_writes_log_directly_in_work_dir(tmp_path):
     logs_dir = tmp_path / 'logs'
-    runner = LaneFormerRunner(
+    runner = LaneLoomRunner(
         model=torch.nn.Linear(1, 1),
         work_dir=str(logs_dir),
         default_scope=None,
@@ -349,12 +349,12 @@ def test_laneformer_runner_writes_log_directly_in_work_dir(tmp_path):
     assert not [path for path in logs_dir.iterdir() if path.is_dir()]
 
 
-def test_laneformer_runner_does_not_create_log_subdir_when_init_fails(tmp_path):
+def test_laneloom_runner_does_not_create_log_subdir_when_init_fails(tmp_path):
     logs_dir = tmp_path / 'logs'
 
     with pytest.raises(KeyError):
-        LaneFormerRunner(
-            model=dict(type='MissingLaneFormerModel'),
+        LaneLoomRunner(
+            model=dict(type='MissingLaneLoomModel'),
             work_dir=str(logs_dir),
             default_scope=None,
             experiment_name='direct_log_failure',

@@ -1,4 +1,4 @@
-"""LaneFormer package and registry side-effect imports."""
+"""LaneLoom package and registry side-effect imports."""
 
 from . import datasets  # noqa: F401
 from . import detectors  # noqa: F401

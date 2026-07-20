@@ -61,7 +61,7 @@ t_5^\top
 
 稀疏字典学习中的 rank 和字典原子有明确含义：信号通过多个字典原子的稀疏线性组合重构。K-SVD 的原始定义就是使用过完备字典，并以稀疏线性组合表达信号。[Aharon、Elad、Bruckstein，K-SVD](https://doi.org/10.1109/TSP.2006.881199)
 
-如果 LaneFormer 使用：
+如果 LaneLoom 使用：
 
 \[
 g_j \approx \sum_k \alpha_{jk}t_k
@@ -261,7 +261,7 @@ r_i=
 - 离散 Fréchet 距离保留曲线点序关系，适合不同采样序列之间的曲线比较。[Eiter、Mannila，Discrete Fréchet Distance](https://www.kr.tuwien.ac.at/staff/eiter/et-archive/cdtr9464.pdf)
 - Soft-DTW 是可微的序列对齐损失，适合采样速度或序列长度不同的时间序列。[Cuturi、Blondel，Soft-DTW](https://proceedings.mlr.press/v70/cuturi17a.html)
 
-但 LaneFormer 的 \(y\) 是车辆坐标中的真实前向距离，`y=20m` 不应该通过动态时间规整匹配到 `y=40m`。当前已经有固定且物理对齐的 \(y\) anchors，因此 pointwise + tangent/curvature distance 更合适。
+但 LaneLoom 的 \(y\) 是车辆坐标中的真实前向距离，`y=20m` 不应该通过动态时间规整匹配到 `y=40m`。当前已经有固定且物理对齐的 \(y\) anchors，因此 pointwise + tangent/curvature distance 更合适。
 
 ---
 

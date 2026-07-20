@@ -6,14 +6,14 @@ dataset_type = 'OpenLaneDataset'
 dataset = '1000'
 dataset_name = 'openlane'
 
-laneformer_root = os.path.abspath(os.path.join('{{ fileDirname }}', '..', '..', '..'))
+laneloom_root = os.path.abspath(os.path.join('{{ fileDirname }}', '..', '..', '..'))
 # Priority: explicit environment override, container-mounted dataset, then the
 # project-local data directory. The mounted path is data-only; no source code
 # is imported from it.
 mounted_data_root = '/workspace/lanedet3d/data'
-local_data_root = os.path.join(laneformer_root, 'data')
+local_data_root = os.path.join(laneloom_root, 'data')
 data_root = os.environ.get(
-    'LANEFORMER_DATA_ROOT',
+    'LANELOOM_DATA_ROOT',
     mounted_data_root if os.path.isdir(mounted_data_root) else local_data_root)
 
 # OpenLane lane category ids. Category 21 is merged into category 20.
@@ -309,7 +309,7 @@ train_pipeline = [
     dict(type='PointsRangeFilter', point_cloud_range=point_cloud_range),
     dict(type='PointShuffle'),
     dict(type='LoadOpenLaneAnnotations'),
-    dict(type='PackLaneFormerInputs', keys=packed_keys),
+    dict(type='PackLaneLoomInputs', keys=packed_keys),
 ]
 
 test_pipeline = [
@@ -326,7 +326,7 @@ test_pipeline = [
         use_dim=use_dim),
     dict(type='PointsRangeFilter', point_cloud_range=point_cloud_range),
     dict(type='LoadOpenLaneAnnotations'),
-    dict(type='PackLaneFormerInputs', keys=packed_keys),
+    dict(type='PackLaneLoomInputs', keys=packed_keys),
 ]
 eval_pipeline = test_pipeline
 # ----------------------------------------------------augmentation end----------------------------------------------------

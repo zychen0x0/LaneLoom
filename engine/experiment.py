@@ -10,7 +10,7 @@ import time
 
 def configure_train_experiment(cfg, work_root: str | None = None,
                                now: datetime | None = None) -> Path:
-    """Create one dated LaneFormer experiment and point MMEngine at it.
+    """Create one dated LaneLoom experiment and point MMEngine at it.
 
     The caller invokes this before building ``Runner``.  MMEngine still owns
     checkpointing, TensorBoard writing, logging, and distributed execution;
@@ -33,7 +33,7 @@ def _shared_timestamp(root: Path, now: datetime | None) -> tuple[str, bool]:
     if world_size <= 1:
         return (now or datetime.now()).strftime('%Y%m%d_%H%M%S'), True
 
-    marker_dir = Path(tempfile.gettempdir()) / 'laneformer_torchrun'
+    marker_dir = Path(tempfile.gettempdir()) / 'laneloom_torchrun'
     marker_dir.mkdir(parents=True, exist_ok=True)
     marker = marker_dir / f"timestamp_{os.environ.get('MASTER_PORT', 'default')}"
     if rank == 0:
@@ -78,7 +78,7 @@ def _configure_layout(cfg, experiment_dir: Path, create: bool) -> Path:
     cfg.experiment_dir = str(experiment_dir)
     cfg.default_hooks = dict(cfg.default_hooks)
     checkpoint_cfg = dict(cfg.default_hooks['checkpoint'])
-    checkpoint_cfg['type'] = 'LaneFormerCheckpointHook'
+    checkpoint_cfg['type'] = 'LaneLoomCheckpointHook'
     checkpoint_cfg['out_dir'] = str(checkpoints_dir)
     cfg.default_hooks['checkpoint'] = checkpoint_cfg
     cfg.visualizer = dict(

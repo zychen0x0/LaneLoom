@@ -1,17 +1,17 @@
-"""Evaluate a LaneFormer checkpoint with MMEngine's standard TestLoop."""
+"""Evaluate a LaneLoom checkpoint with MMEngine's standard TestLoop."""
 import argparse
 from pathlib import Path
 
 from mmengine.config import Config
 
-import LaneFormer  # noqa: F401 - register project components.
-from LaneFormer.engine import (
-    LaneFormerRunner,
+import LaneLoom  # noqa: F401 - register project components.
+from LaneLoom.engine import (
+    LaneLoomRunner,
     build_openlane_test_configs,
     configure_test_experiment,
     remove_runtime_config_artifacts,
 )
-from LaneFormer.engine.openlane_test_cases import (
+from LaneLoom.engine.openlane_test_cases import (
     OPENLANE_TEST_CASE_CHOICES,
     normalise_score_thresholds,
     score_threshold_metric_prefix,
@@ -19,7 +19,7 @@ from LaneFormer.engine.openlane_test_cases import (
 
 
 def parse_args():
-    parser = argparse.ArgumentParser(description='Evaluate LaneFormer.')
+    parser = argparse.ArgumentParser(description='Evaluate LaneLoom.')
     parser.add_argument('config', help='Path to the MMEngine config.')
     parser.add_argument('checkpoint', help='Checkpoint to evaluate.')
     parser.add_argument(
@@ -56,7 +56,7 @@ def main():
         cfg.load_from = checkpoint
         experiment_dir = configure_test_experiment(
             cfg, checkpoint, base_work_dir / case_name)
-        runner = LaneFormerRunner.from_cfg(cfg)
+        runner = LaneLoomRunner.from_cfg(cfg)
         remove_runtime_config_artifacts(experiment_dir, config_path)
         metrics = runner.test()
         if runner.rank == 0 and score_thresholds is not None:

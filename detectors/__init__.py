@@ -1,3 +1,3 @@
-from .laneformer import LaneFormer
+from .laneloom import LaneLoom
 
-__all__ = ['LaneFormer']
+__all__ = ['LaneLoom']

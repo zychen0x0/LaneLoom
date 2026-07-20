@@ -6,11 +6,11 @@ import torch.nn.functional as F
 
 from mmdet3d.registry import MODELS, TASK_UTILS
 
-from .topk_assigner import LaneFormerTopKAssigner
+from .topk_assigner import LaneLoomTopKAssigner
 
 
 @MODELS.register_module()
-class LaneFormerTopKLaneLoss(nn.Module):
+class LaneLoomTopKLaneLoss(nn.Module):
     """Supervise two nearest anchors per GT and classify all others as background."""
 
     def __init__(self, assigner=None, pos_k=2, cls_loss_weight=1.0,
@@ -22,7 +22,7 @@ class LaneFormerTopKLaneLoss(nn.Module):
         super().__init__()
         self.assigner = (
             TASK_UTILS.build(assigner) if assigner is not None
-            else LaneFormerTopKAssigner(pos_k=pos_k))
+            else LaneLoomTopKAssigner(pos_k=pos_k))
         self.cls_loss_weight = float(cls_loss_weight)
         self.x_loss_weight = float(x_loss_weight)
         self.z_loss_weight = float(z_loss_weight)
@@ -246,7 +246,7 @@ class LaneFormerTopKLaneLoss(nn.Module):
 
 
 @MODELS.register_module()
-class LaneFormerOneToOneLaneLoss(LaneFormerTopKLaneLoss):
+class LaneLoomOneToOneLaneLoss(LaneLoomTopKLaneLoss):
     """Keep the compact lane objectives with Hungarian one-to-one matching."""
 
     def __init__(self, assigner=None, objectness_loss_weight=1.0,
@@ -259,7 +259,7 @@ class LaneFormerOneToOneLaneLoss(LaneFormerTopKLaneLoss):
                  diagnostic_geometry_match_ratio=.8,
                  **kwargs):
         if assigner is None:
-            assigner = dict(type='LaneFormerHungarianAssigner')
+            assigner = dict(type='LaneLoomHungarianAssigner')
         self.objectness_loss_weight = float(objectness_loss_weight)
         self.category_loss_weight = float(category_loss_weight)
         self.negative_objectness_weight = float(negative_objectness_weight)

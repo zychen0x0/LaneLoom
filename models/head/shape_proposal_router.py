@@ -10,7 +10,7 @@ from ..losses.hungarian_assigner import batched_hungarian_assignment
 
 
 @MODELS.register_module()
-class LaneFormerShapeProposalRouter(nn.Module):
+class LaneLoomShapeProposalRouter(nn.Module):
     """Expand unique shapes over x seeds and route a fixed proposal budget."""
 
     def __init__(self, image_in_channels, embed_dims, pc_range,

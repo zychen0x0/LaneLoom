@@ -9,20 +9,20 @@ from mmengine.config import Config
 from mmdet3d.registry import DATASETS
 from PIL import Image, ImageDraw
 
-from LaneFormer.datasets.pipelines import (
+from LaneLoom.datasets.pipelines import (
     Albu,
     Compose,
     PointShuffle,
     PointsRangeFilter,
 )
-from LaneFormer.datasets.pipelines.transforms import A
+from LaneLoom.datasets.pipelines.transforms import A
 
 
 def _load_cfg():
     config_path = (
         Path(__file__).resolve().parents[3]
         / 'configs'
-        / 'laneformer_openlane_image_lidar.py'
+        / 'laneloom_openlane_image_lidar.py'
     )
     return Config.fromfile(str(config_path))
 
@@ -74,7 +74,7 @@ def test_openlane_pipelines_declare_the_complete_data_flow_in_order():
         'PointsRangeFilter',
         'PointShuffle',
         'LoadOpenLaneAnnotations',
-        'PackLaneFormerInputs',
+        'PackLaneLoomInputs',
     ]
     assert [stage['type'] for stage in cfg.test_pipeline] == [
         'LoadTemporalOpenLaneImages',
@@ -83,7 +83,7 @@ def test_openlane_pipelines_declare_the_complete_data_flow_in_order():
         'LoadPoseAlignedOpenLanePoints',
         'PointsRangeFilter',
         'LoadOpenLaneAnnotations',
-        'PackLaneFormerInputs',
+        'PackLaneLoomInputs',
     ]
 
 
@@ -664,7 +664,7 @@ def _draw_bev_gt_q0(raw_lanes, packed_lanes, packed_visibility, q0,
 
 
 def _gt_audit_image_paths(cfg):
-    configured = os.getenv('LANEFORMER_GT_AUDIT_IMAGES')
+    configured = os.getenv('LANELOOM_GT_AUDIT_IMAGES')
     if configured:
         return [
             Path(path).expanduser().resolve()
@@ -800,15 +800,15 @@ def _audit_one_gt_sample(dataset, cfg, image_path):
 
 
 @pytest.mark.skipif(
-    os.getenv('LANEFORMER_VIS_INPUT') != '1',
-    reason='Set LANEFORMER_VIS_INPUT=1 to save one OpenLane network-input preview.')
+    os.getenv('LANELOOM_VIS_INPUT') != '1',
+    reason='Set LANELOOM_VIS_INPUT=1 to save one OpenLane network-input preview.')
 def test_visualize_one_openlane_network_input_sample():
     np.random.seed(0)
     cfg = _load_cfg()
     _require_openlane_data(cfg)
 
     dataset_cfg = dict(cfg.train_dataloader['dataset'])
-    image_path = os.getenv('LANEFORMER_VIS_IMAGE_PATH')
+    image_path = os.getenv('LANELOOM_VIS_IMAGE_PATH')
     if image_path is None:
         dataset_cfg['max_samples'] = 128
     dataset = DATASETS.build(dataset_cfg)
@@ -816,13 +816,13 @@ def test_visualize_one_openlane_network_input_sample():
     sample, sample_index = _select_visualization_sample(dataset, image_path=image_path)
 
     output_path = Path(os.getenv(
-        'LANEFORMER_VIS_OUTPUT',
-        'LaneFormer/tests/test_data/test_pipelines/openlane_network_input_sample.jpg'))
+        'LANELOOM_VIS_OUTPUT',
+        'LaneLoom/tests/test_data/test_pipelines/openlane_network_input_sample.jpg'))
     canvas = show_tensor_img(
         sample['img'],
         denorm=True,
         save_path=output_path,
-        show=os.getenv('LANEFORMER_SHOW_INPUT') == '1')
+        show=os.getenv('LANELOOM_SHOW_INPUT') == '1')
 
     assert output_path.is_file()
     assert sample_index >= 0
@@ -830,15 +830,15 @@ def test_visualize_one_openlane_network_input_sample():
 
 
 @pytest.mark.skipif(
-    os.getenv('LANEFORMER_VIS_GT') != '1',
-    reason='Set LANEFORMER_VIS_GT=1 to save per-frame dataloader GT overlays.')
+    os.getenv('LANELOOM_VIS_GT') != '1',
+    reason='Set LANELOOM_VIS_GT=1 to save per-frame dataloader GT overlays.')
 def test_visualize_openlane_network_input_with_gt():
     """Save the temporal input queue with each frame's own 2D lane GT."""
     np.random.seed(0)
     cfg = _load_cfg()
     _require_openlane_data(cfg)
     dataset_cfg = dict(cfg.train_dataloader['dataset'])
-    image_path = os.getenv('LANEFORMER_VIS_IMAGE_PATH') or _default_openlane_image(
+    image_path = os.getenv('LANELOOM_VIS_IMAGE_PATH') or _default_openlane_image(
         cfg, '155250133677391100.jpg')
     dataset = DATASETS.build(dataset_cfg)
     sample, sample_index = _select_visualization_sample(dataset, image_path)
@@ -863,8 +863,8 @@ def test_visualize_openlane_network_input_with_gt():
     for frame_idx, panel in enumerate(panels):
         canvas.paste(panel, (0, frame_idx * height))
     output_path = Path(os.getenv(
-        'LANEFORMER_VIS_GT_OUTPUT',
-        'LaneFormer/tests/test_data/test_pipelines/'
+        'LANELOOM_VIS_GT_OUTPUT',
+        'LaneLoom/tests/test_data/test_pipelines/'
         'openlane_network_input_gt_sample.jpg'))
     output_path.parent.mkdir(parents=True, exist_ok=True)
     canvas.save(output_path)
@@ -874,15 +874,15 @@ def test_visualize_openlane_network_input_with_gt():
 
 
 @pytest.mark.skipif(
-    os.getenv('LANEFORMER_VIS_3D_GT') != '1',
-    reason='Set LANEFORMER_VIS_3D_GT=1 to save per-frame 3D-GT projections.')
+    os.getenv('LANELOOM_VIS_3D_GT') != '1',
+    reason='Set LANELOOM_VIS_3D_GT=1 to save per-frame 3D-GT projections.')
 def test_visualize_openlane_network_input_with_3d_gt():
     """Save each queue image overlaid with its own 3D anchor GT projection."""
     np.random.seed(0)
     cfg = _load_cfg()
     _require_openlane_data(cfg)
     dataset_cfg = dict(cfg.train_dataloader['dataset'])
-    image_path = os.getenv('LANEFORMER_VIS_IMAGE_PATH') or _default_openlane_image(
+    image_path = os.getenv('LANELOOM_VIS_IMAGE_PATH') or _default_openlane_image(
         cfg, '155250133617394700.jpg')
     dataset = DATASETS.build(dataset_cfg)
     sample, sample_index = _select_visualization_sample(dataset, image_path)
@@ -909,8 +909,8 @@ def test_visualize_openlane_network_input_with_3d_gt():
     for frame_idx, panel in enumerate(panels):
         canvas.paste(panel, (0, frame_idx * height))
     output_path = Path(os.getenv(
-        'LANEFORMER_VIS_3D_GT_OUTPUT',
-        'LaneFormer/tests/test_data/test_pipelines/'
+        'LANELOOM_VIS_3D_GT_OUTPUT',
+        'LaneLoom/tests/test_data/test_pipelines/'
         'openlane_network_input_3d_gt_bezier.jpg'))
     output_path.parent.mkdir(parents=True, exist_ok=True)
     canvas.save(output_path)
@@ -920,8 +920,8 @@ def test_visualize_openlane_network_input_with_3d_gt():
 
 
 @pytest.mark.skipif(
-    os.getenv('LANEFORMER_VIS_TEMPORAL_GT') != '1',
-    reason='Set LANEFORMER_VIS_TEMPORAL_GT=1 to save a temporal-GT comparison.')
+    os.getenv('LANELOOM_VIS_TEMPORAL_GT') != '1',
+    reason='Set LANELOOM_VIS_TEMPORAL_GT=1 to save a temporal-GT comparison.')
 def test_visualize_temporal_gt_enhancement_comparison():
     """Save current-GT versus pose-aligned temporal-GT on one current image."""
     np.random.seed(0)
@@ -929,7 +929,7 @@ def test_visualize_temporal_gt_enhancement_comparison():
     _require_openlane_data(cfg)
     dataset_cfg = dict(cfg.train_dataloader['dataset'])
     dataset_cfg['temporal_gt_augmentation'] = True
-    image_path = os.getenv('LANEFORMER_TEMPORAL_GT_IMAGE_PATH') or _default_openlane_image(
+    image_path = os.getenv('LANELOOM_TEMPORAL_GT_IMAGE_PATH') or _default_openlane_image(
         cfg, '155250133677391100.jpg')
     dataset = DATASETS.build(dataset_cfg)
     sample, sample_index = _select_visualization_sample(dataset, image_path)
@@ -951,8 +951,8 @@ def test_visualize_temporal_gt_enhancement_comparison():
     canvas.paste(enhanced_panel, (0, height))
 
     output_path = Path(os.getenv(
-        'LANEFORMER_TEMPORAL_GT_OUTPUT',
-        'LaneFormer/tests/test_data/test_pipelines/'
+        'LANELOOM_TEMPORAL_GT_OUTPUT',
+        'LaneLoom/tests/test_data/test_pipelines/'
         'openlane_temporal_gt_bezier.jpg'))
     output_path.parent.mkdir(parents=True, exist_ok=True)
     canvas.save(output_path)
@@ -963,8 +963,8 @@ def test_visualize_temporal_gt_enhancement_comparison():
 
 
 @pytest.mark.skipif(
-    os.getenv('LANEFORMER_AUDIT_GT') != '1',
-    reason='Set LANEFORMER_AUDIT_GT=1 to audit raw GT, fixed-y GT and Q0.')
+    os.getenv('LANELOOM_AUDIT_GT') != '1',
+    reason='Set LANELOOM_AUDIT_GT=1 to audit raw GT, fixed-y GT and Q0.')
 def test_audit_openlane_gt_representation_and_q0_coverage():
     """Save a multi-sample GT/Q0 report for long-tail OpenLane scenes.
 
@@ -1006,11 +1006,11 @@ def test_audit_openlane_gt_representation_and_q0_coverage():
         y_offset += row.height
 
     output_path = Path(os.getenv(
-        'LANEFORMER_GT_AUDIT_OUTPUT',
+        'LANELOOM_GT_AUDIT_OUTPUT',
         'tests/test_data/test_pipelines/show_load_img/'
         'openlane_gt_q0_audit.jpg'))
     report_path = Path(os.getenv(
-        'LANEFORMER_GT_AUDIT_REPORT', str(output_path.with_suffix('.json'))))
+        'LANELOOM_GT_AUDIT_REPORT', str(output_path.with_suffix('.json'))))
     output_path.parent.mkdir(parents=True, exist_ok=True)
     report_path.parent.mkdir(parents=True, exist_ok=True)
     canvas.save(output_path, quality=92)
@@ -1020,7 +1020,7 @@ def test_audit_openlane_gt_representation_and_q0_coverage():
     assert output_path.is_file()
     assert report_path.is_file()
 
-    max_q0_distance = os.getenv('LANEFORMER_GT_AUDIT_MAX_Q0_DISTANCE')
+    max_q0_distance = os.getenv('LANELOOM_GT_AUDIT_MAX_Q0_DISTANCE')
     if max_q0_distance is not None:
         threshold = float(max_q0_distance)
         violations = [
@@ -1035,8 +1035,8 @@ def test_audit_openlane_gt_representation_and_q0_coverage():
 
 
 @pytest.mark.skipif(
-    os.getenv('LANEFORMER_VIS_PATHOLOGICAL_GT') != '1',
-    reason='Set LANEFORMER_VIS_PATHOLOGICAL_GT=1 to visualize a pathological fit.')
+    os.getenv('LANELOOM_VIS_PATHOLOGICAL_GT') != '1',
+    reason='Set LANELOOM_VIS_PATHOLOGICAL_GT=1 to visualize a pathological fit.')
 def test_visualize_pathological_openlane_bezier_refit():
     """Visualize a rejected hard-inlier refit and the guarded GT output."""
     import matplotlib
@@ -1052,13 +1052,13 @@ def test_visualize_pathological_openlane_bezier_refit():
 
     scene = 'segment-4058410353286511411_3980_000_4000_000_with_camera_labels'
     image_path = Path(os.getenv(
-        'LANEFORMER_PATHOLOGICAL_GT_IMAGE',
+        'LANELOOM_PATHOLOGICAL_GT_IMAGE',
         str(Path(cfg.dataset_cfg.data_image_dir) / 'training' / scene
             / '155077875506292500.jpg')))
     assert image_path.is_file(), image_path
     label_path = _label_path_for_image(cfg, image_path)
     label_info = dataset._read_json(label_path)
-    lane_index = int(os.getenv('LANEFORMER_PATHOLOGICAL_GT_LANE_INDEX', '0'))
+    lane_index = int(os.getenv('LANELOOM_PATHOLOGICAL_GT_LANE_INDEX', '0'))
     records = dataset._parse_lane_records(label_info)
     assert 0 <= lane_index < len(records)
 
@@ -1227,7 +1227,7 @@ def test_visualize_pathological_openlane_bezier_refit():
         'Guard rejects the second fit when inliers collapse to the lane end',
         fontsize=16)
     output_path = Path(os.getenv(
-        'LANEFORMER_PATHOLOGICAL_GT_OUTPUT',
+        'LANELOOM_PATHOLOGICAL_GT_OUTPUT',
         'tests/test_data/test_pipelines/show_load_img/'
         'openlane_pathological_bezier_refit.jpg'))
     output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -1240,8 +1240,8 @@ def test_visualize_pathological_openlane_bezier_refit():
 
 
 @pytest.mark.skipif(
-    os.getenv('LANEFORMER_VIS_BENEFICIAL_REFIT') != '1',
-    reason='Set LANEFORMER_VIS_BENEFICIAL_REFIT=1 to compare a useful refit.')
+    os.getenv('LANELOOM_VIS_BENEFICIAL_REFIT') != '1',
+    reason='Set LANELOOM_VIS_BENEFICIAL_REFIT=1 to compare a useful refit.')
 def test_visualize_beneficial_openlane_bezier_refit():
     """Visualize a real lane where stable inlier refitting reduces residual."""
     import matplotlib
@@ -1367,7 +1367,7 @@ def test_visualize_beneficial_openlane_bezier_refit():
         'Beneficial robust refit: reject isolated points while preserving support',
         fontsize=15)
     output_path = Path(os.getenv(
-        'LANEFORMER_BENEFICIAL_REFIT_OUTPUT',
+        'LANELOOM_BENEFICIAL_REFIT_OUTPUT',
         'tests/test_data/test_pipelines/show_load_img/'
         'openlane_beneficial_bezier_refit.jpg'))
     output_path.parent.mkdir(parents=True, exist_ok=True)

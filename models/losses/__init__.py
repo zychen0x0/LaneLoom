@@ -1,20 +1,20 @@
-"""Losses for LaneFormer."""
+"""Losses for LaneLoom."""
 from .hungarian_assigner import (
-    LaneFormerHungarianAssigner,
+    LaneLoomHungarianAssigner,
     batched_hungarian_assignment,
 )
-from .laneformer_hungarian_loss import LaneFormerHungarianLaneLoss
-from .laneformer_topk_loss import (
-    LaneFormerOneToOneLaneLoss,
-    LaneFormerTopKLaneLoss,
+from .laneloom_hungarian_loss import LaneLoomHungarianLaneLoss
+from .laneloom_topk_loss import (
+    LaneLoomOneToOneLaneLoss,
+    LaneLoomTopKLaneLoss,
 )
-from .topk_assigner import LaneFormerTopKAssigner
+from .topk_assigner import LaneLoomTopKAssigner
 
 __all__ = [
-    'LaneFormerHungarianAssigner',
+    'LaneLoomHungarianAssigner',
     'batched_hungarian_assignment',
-    'LaneFormerHungarianLaneLoss',
-    'LaneFormerOneToOneLaneLoss',
-    'LaneFormerTopKAssigner',
-    'LaneFormerTopKLaneLoss',
+    'LaneLoomHungarianLaneLoss',
+    'LaneLoomOneToOneLaneLoss',
+    'LaneLoomTopKAssigner',
+    'LaneLoomTopKLaneLoss',
 ]

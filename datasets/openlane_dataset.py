@@ -161,7 +161,7 @@ class ColorTint:
 
 @DATASETS.register_module()
 class OpenLaneDataset(Dataset):
-    """OpenLane image + Waymo LiDAR queue loader for LaneFormer.
+    """OpenLane image + Waymo LiDAR queue loader for LaneLoom.
 
     Returned tensor shapes:
         img:   [T, 1, 3, H, W], T = history frames + current frame, num_cams = 1
@@ -181,7 +181,7 @@ class OpenLaneDataset(Dataset):
         'PointsRangeFilter',
         'PointShuffle',
         'LoadOpenLaneAnnotations',
-        'PackLaneFormerInputs',
+        'PackLaneLoomInputs',
     )
     GT_REFIT_MIN_INLIERS = 6
     GT_REFIT_MIN_SPAN_RATIO = 0.6
@@ -223,7 +223,7 @@ class OpenLaneDataset(Dataset):
         image_normalize_cfg = self._pipeline_stage('NormalizeOpenLaneImages')
         points_load_cfg = self._pipeline_stage('LoadPoseAlignedOpenLanePoints')
         self._pipeline_stage('LoadOpenLaneAnnotations')
-        pack_cfg = self._pipeline_stage('PackLaneFormerInputs')
+        pack_cfg = self._pipeline_stage('PackLaneLoomInputs')
         self.label_root = _as_path(dataset_cfg['data_label_dir'])
         self.image_root = _as_path(dataset_cfg['data_image_dir'])
         self.lidar_root = _as_path(dataset_cfg['lidar_processed_dir'])

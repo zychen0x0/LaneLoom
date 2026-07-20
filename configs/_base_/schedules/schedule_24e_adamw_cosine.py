@@ -1,5 +1,5 @@
 # ---------------------------------------------------optimizer wrapper start---------------------------------------------------
-# LaneFormer uses an OpenLane-friendly AdamW setup with an MMEngine optimizer
+# LaneLoom uses an OpenLane-friendly AdamW setup with an MMEngine optimizer
 # wrapper and cosine schedule.
 learning_rate = 2e-4
 
@@ -52,7 +52,7 @@ default_hooks = dict(
     logger=dict(type='LoggerHook', interval=50),
     param_scheduler=dict(type='ParamSchedulerHook'),
     checkpoint=dict(
-        type='LaneFormerCheckpointHook',
+        type='LaneLoomCheckpointHook',
         interval=1,
         max_keep_ckpts=keep_n_ckpts,
         # Emitted by OpenLaneAnchorMetric after each validation epoch.  The

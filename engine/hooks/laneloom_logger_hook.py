@@ -1,4 +1,4 @@
-"""Three-line training-progress logger compatible with LaneFormer losses."""
+"""Three-line training-progress logger compatible with LaneLoom losses."""
 from pathlib import Path
 import time
 
@@ -8,7 +8,7 @@ from mmengine.registry import HOOKS
 
 
 @HOOKS.register_module()
-class LaneFormerLoggerHook(Hook):
+class LaneLoomLoggerHook(Hook):
     """Log epoch progress, ETA, total loss, and every returned loss field."""
 
     priority = 'VERY_LOW'

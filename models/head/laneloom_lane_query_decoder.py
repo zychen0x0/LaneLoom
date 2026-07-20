@@ -55,7 +55,7 @@ class _PerQueryTransformerLayer(nn.Module):
 
 
 @MODELS.register_module()
-class LaneFormerLaneQueryDecoder(nn.Module):
+class LaneLoomLaneQueryDecoder(nn.Module):
     """Decode BEV memory into cubic-Bézier 3D lanes sampled at anchors."""
 
     def __init__(self, embed_dims, bev_h, bev_w, pc_range, num_query,

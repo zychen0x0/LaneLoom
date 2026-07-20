@@ -2,12 +2,12 @@ import torch
 from mmengine.registry import FUNCTIONS
 from mmdet3d.registry import DATASETS as MMDET3D_DATASETS
 
-import LaneFormer.datasets  # noqa: F401 - trigger registry side effects
-from LaneFormer.models.transformers.spatial_cross_attention import (
-    LaneFormerSpatialCrossAttention,
+import LaneLoom.datasets  # noqa: F401 - trigger registry side effects
+from LaneLoom.models.transformers.spatial_cross_attention import (
+    LaneLoomSpatialCrossAttention,
 )
-from LaneFormer.models.transformers.temporal_self_attention import (
-    LaneFormerTemporalSelfAttention,
+from LaneLoom.models.transformers.temporal_self_attention import (
+    LaneLoomTemporalSelfAttention,
 )
 
 
@@ -17,7 +17,7 @@ def test_openlane_dataset_and_collate_are_registered_for_mmengine_scope():
 
 
 def test_spatial_reference_points_accept_explicit_integer_heights():
-    attention = LaneFormerSpatialCrossAttention(
+    attention = LaneLoomSpatialCrossAttention(
         embed_dims=8, bev_h=2, bev_w=2, pc_range=[-25., 0., -5., 25., 100., 5.],
         num_points_in_pillar=5, reference_zs=[-5., -2., 0., 2., 5.])
     references = attention._reference_points(device='cpu', dtype=torch.float32)
@@ -25,7 +25,7 @@ def test_spatial_reference_points_accept_explicit_integer_heights():
 
 
 def test_bev_reference_points_use_one_meter_cell_centers():
-    attention = LaneFormerSpatialCrossAttention(
+    attention = LaneLoomSpatialCrossAttention(
         embed_dims=8, bev_h=100, bev_w=50,
         pc_range=[-25., 0., -5., 25., 100., 5.],
         num_points_in_pillar=5, reference_zs=[-5., -2., 0., 2., 5.])
@@ -38,7 +38,7 @@ def test_bev_reference_points_use_one_meter_cell_centers():
 
 
 def test_identity_pose_preserves_center_aligned_history_bev():
-    attention = LaneFormerTemporalSelfAttention(
+    attention = LaneLoomTemporalSelfAttention(
         embed_dims=1, bev_h=2, bev_w=2,
         pc_range=[-2., 0., -1., 2., 2., 1.])
     history_bev = torch.tensor([[[[1., 2.], [3., 4.]]]])

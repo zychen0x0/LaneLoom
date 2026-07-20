@@ -4,7 +4,7 @@ from mmcv.ops import Voxelization
 from mmengine.model import BaseModel
 from mmdet3d.registry import MODELS
 
-from LaneFormer.augmentations import GridMask
+from LaneLoom.augmentations import GridMask
 
 
 def _build_module(cfg):
@@ -20,8 +20,8 @@ def _build_voxel_layer(cfg):
 
 
 @MODELS.register_module()
-class LaneFormer(BaseModel):
-    """LaneFormer image/LiDAR detector with a temporal BEV queue."""
+class LaneLoom(BaseModel):
+    """LaneLoom image/LiDAR detector with a temporal BEV queue."""
 
     # ---------------------------------------------------init start---------------------------------------------------
     def __init__(self,
@@ -303,7 +303,7 @@ class LaneFormer(BaseModel):
     def forward(self, mode='tensor', **batch):
         """Run one OpenLane batch using MMEngine's keyword-batch convention."""
         if not batch:
-            raise ValueError('LaneFormer expects an OpenLane batch dictionary.')
+            raise ValueError('LaneLoom expects an OpenLane batch dictionary.')
         if mode == 'loss':
             return self.loss(batch)
         if mode in ('predict', 'tensor'):
@@ -408,7 +408,7 @@ class LaneFormer(BaseModel):
         if isinstance(img_metas, dict):
             return [img_metas]
         if isinstance(img_metas, (list, tuple)):
-            # LaneFormer dataloader returns one meta dict per batch sample.
+            # LaneLoom dataloader returns one meta dict per batch sample.
             if img_metas and isinstance(img_metas[0], dict):
                 selected = []
                 for meta in img_metas:

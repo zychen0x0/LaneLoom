@@ -1,11 +1,11 @@
 import pytest
 import torch
 
-from LaneFormer.models.head.lidar_shape_token_prior import (
-    LaneFormerLiDARShapeTokenPrior,
+from LaneLoom.models.head.lidar_shape_token_prior import (
+    LaneLoomLiDARShapeTokenPrior,
 )
-from LaneFormer.models.head.shape_proposal_router import (
-    LaneFormerShapeProposalRouter,
+from LaneLoom.models.head.shape_proposal_router import (
+    LaneLoomShapeProposalRouter,
 )
 
 
@@ -14,7 +14,7 @@ ANCHORS = [0., 1., 2., 3., 4.]
 
 
 def _prior(max_templates=3):
-    return LaneFormerLiDARShapeTokenPrior(
+    return LaneLoomLiDARShapeTokenPrior(
         lidar_in_channels=8,
         pc_range=PC_RANGE,
         anchor_y_steps=ANCHORS,
@@ -177,7 +177,7 @@ def test_unbounded_slopes_reconstruct_arbitrary_relative_cubic_controls():
 def test_removed_shape_options_fail_instead_of_silently_changing_semantics(
         legacy_option):
     with pytest.raises(TypeError, match='were removed'):
-        LaneFormerLiDARShapeTokenPrior(
+        LaneLoomLiDARShapeTokenPrior(
             lidar_in_channels=8, pc_range=PC_RANGE,
             anchor_y_steps=ANCHORS, **{legacy_option: 30.})
 
@@ -399,7 +399,7 @@ def test_proposal_router_expands_unique_shapes_and_returns_fixed_budget():
         [0, 0, 0], [0, 1, 0]])
     prior_output['unique_template_mask'] = torch.tensor([
         [True, False, False], [True, True, False]])
-    router = LaneFormerShapeProposalRouter(
+    router = LaneLoomShapeProposalRouter(
         image_in_channels=8,
         embed_dims=8,
         pc_range=PC_RANGE,
@@ -427,7 +427,7 @@ def test_router_loss_supervises_absolute_shape_seed_placement():
     prior_output = prior([torch.randn(1, 8, 3, 3)])
     prior_output['unique_template_indices'] = torch.tensor([[0, 0]])
     prior_output['unique_template_mask'] = torch.tensor([[True, False]])
-    router = LaneFormerShapeProposalRouter(
+    router = LaneLoomShapeProposalRouter(
         image_in_channels=8,
         embed_dims=8,
         pc_range=PC_RANGE,
@@ -458,7 +458,7 @@ def test_router_loss_supervises_absolute_shape_seed_placement():
 
 
 def test_router_q0_standard_is_strictly_tighter_than_evaluation():
-    router = LaneFormerShapeProposalRouter(
+    router = LaneLoomShapeProposalRouter(
         image_in_channels=8, embed_dims=8, pc_range=PC_RANGE,
         anchor_y_steps=ANCHORS, num_x_seeds=2, proposal_budget=2,
         hidden_channels=8, q0_distance_threshold=.3, q0_match_ratio=.8)
@@ -478,7 +478,7 @@ def test_router_q0_standard_is_strictly_tighter_than_evaluation():
 
 
 def test_q0_geometry_loss_only_requires_one_strict_candidate_per_gt():
-    router = LaneFormerShapeProposalRouter(
+    router = LaneLoomShapeProposalRouter(
         image_in_channels=8, embed_dims=8, pc_range=PC_RANGE,
         anchor_y_steps=ANCHORS, num_x_seeds=2, proposal_budget=2,
         hidden_channels=8, q0_distance_threshold=.3, q0_match_ratio=.8)
@@ -496,7 +496,7 @@ def test_q0_geometry_loss_only_requires_one_strict_candidate_per_gt():
 
 
 def test_router_q0_loss_checks_selected_decoder_queries():
-    router = LaneFormerShapeProposalRouter(
+    router = LaneLoomShapeProposalRouter(
         image_in_channels=8, embed_dims=8, pc_range=PC_RANGE,
         anchor_y_steps=ANCHORS, num_x_seeds=2, proposal_budget=1,
         hidden_channels=8, q0_distance_threshold=.3, q0_match_ratio=.8)
@@ -520,7 +520,7 @@ def test_router_q0_loss_checks_selected_decoder_queries():
 
 
 def test_router_uses_one_positive_candidate_per_gt():
-    router = LaneFormerShapeProposalRouter(
+    router = LaneLoomShapeProposalRouter(
         image_in_channels=8, embed_dims=8, pc_range=PC_RANGE,
         anchor_y_steps=ANCHORS, num_x_seeds=3, proposal_budget=3,
         hidden_channels=8, q0_distance_threshold=.3, q0_match_ratio=.8)
@@ -539,7 +539,7 @@ def test_router_uses_one_positive_candidate_per_gt():
 
 
 def test_router_assignment_globally_maximizes_strict_matches():
-    router = LaneFormerShapeProposalRouter(
+    router = LaneLoomShapeProposalRouter(
         image_in_channels=8, embed_dims=8, pc_range=PC_RANGE,
         anchor_y_steps=ANCHORS, num_x_seeds=2, proposal_budget=2,
         hidden_channels=8, q0_distance_threshold=.3, q0_match_ratio=.8)
@@ -559,7 +559,7 @@ def test_router_assignment_globally_maximizes_strict_matches():
 
 
 def test_q0_geometry_loss_requires_exclusive_gt_coverage():
-    router = LaneFormerShapeProposalRouter(
+    router = LaneLoomShapeProposalRouter(
         image_in_channels=8, embed_dims=8, pc_range=PC_RANGE,
         anchor_y_steps=ANCHORS, num_x_seeds=2, proposal_budget=2,
         hidden_channels=8, q0_distance_threshold=.3, q0_match_ratio=.8)
@@ -578,7 +578,7 @@ def test_q0_geometry_loss_requires_exclusive_gt_coverage():
 
 
 def test_router_preserves_exact_shape_translation_outside_bev_boundaries():
-    router = LaneFormerShapeProposalRouter(
+    router = LaneLoomShapeProposalRouter(
         image_in_channels=8, embed_dims=8, pc_range=PC_RANGE,
         anchor_y_steps=ANCHORS, num_x_seeds=4, proposal_budget=4,
         hidden_channels=8)
@@ -599,7 +599,7 @@ def test_router_preserves_exact_shape_translation_outside_bev_boundaries():
 
 
 def test_router_guarantees_nearest_candidate_for_every_gt_is_positive():
-    router = LaneFormerShapeProposalRouter(
+    router = LaneLoomShapeProposalRouter(
         image_in_channels=8, embed_dims=8, pc_range=PC_RANGE,
         anchor_y_steps=ANCHORS, num_x_seeds=4, proposal_budget=4,
         hidden_channels=8, q0_distance_threshold=.01,
@@ -623,7 +623,7 @@ def test_router_guarantees_nearest_candidate_for_every_gt_is_positive():
 
 
 def test_router_guarantees_distinct_candidates_when_gt_nearest_collides():
-    router = LaneFormerShapeProposalRouter(
+    router = LaneLoomShapeProposalRouter(
         image_in_channels=8, embed_dims=8, pc_range=PC_RANGE,
         anchor_y_steps=ANCHORS, num_x_seeds=4, proposal_budget=4,
         hidden_channels=8, q0_distance_threshold=.01,

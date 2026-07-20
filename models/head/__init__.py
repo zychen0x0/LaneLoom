@@ -1,19 +1,19 @@
-"""Lane prediction heads for LaneFormer."""
+"""Lane prediction heads for LaneLoom."""
 
-from .dual_plane_temporal_sampler import LaneFormerDualPlaneTemporalSampler
-from .laneformer_bev_lane_head import LaneFormerBEVLaneHead
-from .laneformer_lane_query_decoder import LaneFormerLaneQueryDecoder
-from .lidar_bezier_anchor_prior import LaneFormerLiDARBezierAnchorPrior
-from .lidar_shape_token_prior import LaneFormerLiDARShapeTokenPrior
-from .shape_proposal_router import LaneFormerShapeProposalRouter
-from .shape_proposal_expander import LaneFormerShapeProposalExpander
+from .dual_plane_temporal_sampler import LaneLoomDualPlaneTemporalSampler
+from .laneloom_bev_lane_head import LaneLoomBEVLaneHead
+from .laneloom_lane_query_decoder import LaneLoomLaneQueryDecoder
+from .lidar_bezier_anchor_prior import LaneLoomLiDARBezierAnchorPrior
+from .lidar_shape_token_prior import LaneLoomLiDARShapeTokenPrior
+from .shape_proposal_router import LaneLoomShapeProposalRouter
+from .shape_proposal_expander import LaneLoomShapeProposalExpander
 
 __all__ = [
-    'LaneFormerDualPlaneTemporalSampler',
-    'LaneFormerBEVLaneHead',
-    'LaneFormerLaneQueryDecoder',
-    'LaneFormerLiDARBezierAnchorPrior',
-    'LaneFormerLiDARShapeTokenPrior',
-    'LaneFormerShapeProposalRouter',
-    'LaneFormerShapeProposalExpander',
+    'LaneLoomDualPlaneTemporalSampler',
+    'LaneLoomBEVLaneHead',
+    'LaneLoomLaneQueryDecoder',
+    'LaneLoomLiDARBezierAnchorPrior',
+    'LaneLoomLiDARShapeTokenPrior',
+    'LaneLoomShapeProposalRouter',
+    'LaneLoomShapeProposalExpander',
 ]

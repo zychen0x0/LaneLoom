@@ -7,8 +7,8 @@ from mmengine.config import Config
 from mmdet3d.registry import DATASETS
 from torch.utils.data import DataLoader
 
-from LaneFormer.datasets import OpenLaneDataset, openlane_collate
-from LaneFormer.datasets.openlane_dataset import (
+from LaneLoom.datasets import OpenLaneDataset, openlane_collate
+from LaneLoom.datasets.openlane_dataset import (
     _build_cam_to_ground_lane,
     _vehicle_transform_to_ground,
 )
@@ -18,7 +18,7 @@ def _load_cfg():
     config_path = (
         Path(__file__).resolve().parents[3]
         / 'configs'
-        / 'laneformer_openlane_image_lidar.py'
+        / 'laneloom_openlane_image_lidar.py'
     )
     return Config.fromfile(str(config_path))
 

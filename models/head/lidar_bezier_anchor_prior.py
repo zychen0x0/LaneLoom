@@ -8,7 +8,7 @@ from mmdet3d.registry import MODELS
 
 
 @MODELS.register_module()
-class LaneFormerLiDARBezierAnchorPrior(nn.Module):
+class LaneLoomLiDARBezierAnchorPrior(nn.Module):
     """Predict road shape and turn it into initial 3D lane queries.
 
     LiDAR predicts one signed horizontal curvature and one longitudinal grade

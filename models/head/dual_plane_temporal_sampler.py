@@ -8,7 +8,7 @@ from mmdet3d.registry import MODELS
 
 
 @MODELS.register_module()
-class LaneFormerDualPlaneTemporalSampler(nn.Module):
+class LaneLoomDualPlaneTemporalSampler(nn.Module):
     """Build local deformable evidence around every 3D curve sample."""
 
     def __init__(self, image_in_channels, lidar_in_channels, embed_dims,
