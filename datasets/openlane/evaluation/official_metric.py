@@ -9,7 +9,7 @@ import torch
 from mmengine.evaluator import BaseMetric
 from mmengine.registry import METRICS
 
-from LaneLoom.openlane.eval.lane_evaluation import OpenLaneLaneEvaluator
+from .lane_evaluation import OpenLaneLaneEvaluator
 
 
 @METRICS.register_module()

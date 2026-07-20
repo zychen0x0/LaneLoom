@@ -1,4 +1,4 @@
-from .openlane_dataset import OpenLaneDataset, openlane_collate
+from .openlane import OpenLaneDataset, openlane_collate
 
 __all__ = [
     'OpenLaneDataset',

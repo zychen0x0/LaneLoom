@@ -4,7 +4,7 @@ from pathlib import Path
 import torch
 from mmengine.config import Config
 
-from LaneLoom.augmentations import GridMask
+from LaneLoom.models.augmentations import GridMask
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -52,6 +52,6 @@ def test_grid_mask_is_a_local_module_and_preserves_image_shape():
     image = torch.ones(2, 3, 12, 16)
     masked = augmentation(image)
 
-    assert GridMask.__module__ == 'LaneLoom.augmentations.grid_mask'
+    assert GridMask.__module__ == 'LaneLoom.models.augmentations.grid_mask'
     assert masked.shape == image.shape
     assert torch.any(masked == 0)

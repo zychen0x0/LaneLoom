@@ -8,7 +8,7 @@ from mmdet3d.registry import DATASETS
 from torch.utils.data import DataLoader
 
 from LaneLoom.datasets import OpenLaneDataset, openlane_collate
-from LaneLoom.datasets.openlane_dataset import (
+from LaneLoom.datasets.openlane.dataset import (
     _build_cam_to_ground_lane,
     _vehicle_transform_to_ground,
 )

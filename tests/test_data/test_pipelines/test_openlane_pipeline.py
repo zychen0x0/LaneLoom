@@ -9,13 +9,13 @@ from mmengine.config import Config
 from mmdet3d.registry import DATASETS
 from PIL import Image, ImageDraw
 
-from LaneLoom.datasets.pipelines import (
+from LaneLoom.datasets.openlane.pipelines import (
     Albu,
     Compose,
     PointShuffle,
     PointsRangeFilter,
 )
-from LaneLoom.datasets.pipelines.transforms import A
+from LaneLoom.datasets.openlane.pipelines.transforms import A
 
 
 def _load_cfg():
