@@ -309,7 +309,7 @@ train_pipeline = [
     dict(type='PointsRangeFilter', point_cloud_range=point_cloud_range),
     dict(type='PointShuffle'),
     dict(type='LoadOpenLaneAnnotations'),
-    dict(type='PackLaneLoomInputs', keys=packed_keys),
+    dict(type='PackInputs', keys=packed_keys),
 ]
 
 test_pipeline = [
@@ -326,7 +326,7 @@ test_pipeline = [
         use_dim=use_dim),
     dict(type='PointsRangeFilter', point_cloud_range=point_cloud_range),
     dict(type='LoadOpenLaneAnnotations'),
-    dict(type='PackLaneLoomInputs', keys=packed_keys),
+    dict(type='PackInputs', keys=packed_keys),
 ]
 eval_pipeline = test_pipeline
 # ----------------------------------------------------augmentation end----------------------------------------------------

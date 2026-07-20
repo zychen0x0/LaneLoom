@@ -68,7 +68,7 @@ def test_config_uses_single_level_temporal_fv_and_dynamic_pillar_bev():
     assert cfg.model.num_levels == 1
     assert cfg.model.img_backbone.out_indices == (1,)
     assert cfg.model.pts_bev_encoder.type == (
-        'LaneLoomDynamicPillarBEVEncoder')
+        'DynamicPillarBEVEncoder')
     assert cfg.model.pts_bev_encoder.pillar_size == [0.25, 0.25]
     assert cfg.model.pts_bev_encoder.out_channels == 128
     assert cfg.model.pts_bev_encoder.base_channels == 32
@@ -91,7 +91,7 @@ def test_config_uses_single_level_temporal_fv_and_dynamic_pillar_bev():
         cfg.model.lane_head.bev_encoder.lidar_bev_adapter.embed_dims
         == 128)
     assert cfg.model.lane_head.query_sampler.type == (
-        'LaneLoomDualPlaneTemporalSampler')
+        'DualPlaneTemporalSampler')
     assert cfg.model.lane_head.query_sampler.lidar_in_channels == 128
     assert 'spatial_cross_attn' not in cfg.model.lane_head.bev_encoder
     assert 'lidar_fusion' not in cfg.model.lane_head.bev_encoder
@@ -103,7 +103,7 @@ def test_config_uses_strict_q0_and_one_to_one_assignment():
     cfg = Config.fromfile(config_path)
     loss = cfg.model.lane_head.loss_module
 
-    assert loss.type == 'LaneLoomOneToOneLaneLoss'
+    assert loss.type == 'LaneLoss'
     assert loss.objectness_loss_weight == 1.0
     assert loss.category_loss_weight == 0.25
     assert loss.negative_objectness_weight == 1.0
@@ -111,7 +111,7 @@ def test_config_uses_strict_q0_and_one_to_one_assignment():
     assert loss.diagnostic_geometry_distance_threshold == 0.3
     assert loss.diagnostic_geometry_match_ratio == 0.8
     assert loss.diagnostic_score_threshold == 0.5
-    assert loss.assigner.type == 'LaneLoomHungarianAssigner'
+    assert loss.assigner.type == 'HungarianAssigner'
     assert loss.visibility_loss_weight == 1.0
     assert loss.focal_alpha == 0.25
     assert loss.focal_gamma == 2.0

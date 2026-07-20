@@ -1,6 +1,6 @@
 """LaneLoom MMEngine hooks."""
 
-from .laneloom_checkpoint_hook import LaneLoomCheckpointHook
-from .laneloom_logger_hook import LaneLoomLoggerHook
+from .laneloom_checkpoint_hook import ExperimentCheckpointHook
+from .laneloom_logger_hook import TrainingLoggerHook
 
-__all__ = ['LaneLoomCheckpointHook', 'LaneLoomLoggerHook']
+__all__ = ['ExperimentCheckpointHook', 'TrainingLoggerHook']

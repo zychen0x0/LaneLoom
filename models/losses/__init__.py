@@ -1,18 +1,18 @@
 """Losses for LaneLoom."""
 from .hungarian_assigner import (
-    LaneLoomHungarianAssigner,
+    HungarianAssigner,
     batched_hungarian_assignment,
 )
 from .laneloom_topk_loss import (
-    LaneLoomOneToOneLaneLoss,
-    LaneLoomTopKLaneLoss,
+    LaneLoss,
+    TopkLaneLoss,
 )
-from .topk_assigner import LaneLoomTopKAssigner
+from .topk_assigner import TopkAssigner
 
 __all__ = [
-    'LaneLoomHungarianAssigner',
+    'HungarianAssigner',
     'batched_hungarian_assignment',
-    'LaneLoomOneToOneLaneLoss',
-    'LaneLoomTopKAssigner',
-    'LaneLoomTopKLaneLoss',
+    'LaneLoss',
+    'TopkAssigner',
+    'TopkLaneLoss',
 ]

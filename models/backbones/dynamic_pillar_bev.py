@@ -145,7 +145,7 @@ class _ASPPNeck(nn.Module):
 
 
 @MODELS.register_module()
-class LaneLoomDynamicPillarBEVEncoder(nn.Module):
+class DynamicPillarBEVEncoder(nn.Module):
     """Encode accumulated points with dynamic PFE and a sparse lane network.
 
     Point features are learned before aggregation. The max/mean learned

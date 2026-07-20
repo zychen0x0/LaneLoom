@@ -1,4 +1,4 @@
 """Fusion layers for LaneLoom."""
-from .lidar_bev_adapter import LaneLoomLiDARBEVAdapter
+from .lidar_bev_adapter import LiDARBEVAdapter
 
-__all__ = ['LaneLoomLiDARBEVAdapter']
+__all__ = ['LiDARBEVAdapter']

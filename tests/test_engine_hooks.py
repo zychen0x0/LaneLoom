@@ -4,7 +4,7 @@ from unittest.mock import Mock, patch
 from mmengine.fileio import LocalBackend
 
 from LaneLoom.engine.hooks.laneloom_checkpoint_hook import (
-    LaneLoomCheckpointHook,
+    ExperimentCheckpointHook,
 )
 
 
@@ -14,7 +14,7 @@ def test_checkpoint_hook_uses_current_file_backend_api(tmp_path):
         logger=Mock(),
         message_hub=SimpleNamespace(runtime_info={}),
     )
-    hook = LaneLoomCheckpointHook(out_dir=str(tmp_path / 'checkpoints'))
+    hook = ExperimentCheckpointHook(out_dir=str(tmp_path / 'checkpoints'))
 
     with patch(
             'mmengine.hooks.checkpoint_hook.FileClient.infer_client',

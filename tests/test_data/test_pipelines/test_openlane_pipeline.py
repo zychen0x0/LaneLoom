@@ -74,7 +74,7 @@ def test_openlane_pipelines_declare_the_complete_data_flow_in_order():
         'PointsRangeFilter',
         'PointShuffle',
         'LoadOpenLaneAnnotations',
-        'PackLaneLoomInputs',
+        'PackInputs',
     ]
     assert [stage['type'] for stage in cfg.test_pipeline] == [
         'LoadTemporalOpenLaneImages',
@@ -83,7 +83,7 @@ def test_openlane_pipelines_declare_the_complete_data_flow_in_order():
         'LoadPoseAlignedOpenLanePoints',
         'PointsRangeFilter',
         'LoadOpenLaneAnnotations',
-        'PackLaneLoomInputs',
+        'PackInputs',
     ]
 
 

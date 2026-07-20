@@ -13,7 +13,7 @@ from ..losses.hungarian_assigner import batched_hungarian_assignment
 
 
 @MODELS.register_module()
-class LaneLoomLiDARShapeTokenPrior(nn.Module):
+class LiDARShapeTokenPrior(nn.Module):
     """Predict a compact dictionary of relative cubic-Bézier road shapes.
 
     Templates start at ``(x=0, y=0, z=0)``. Consequently they describe only

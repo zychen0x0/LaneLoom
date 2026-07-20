@@ -8,7 +8,7 @@ from mmengine.registry import HOOKS
 
 
 @HOOKS.register_module()
-class LaneLoomLoggerHook(Hook):
+class TrainingLoggerHook(Hook):
     """Log epoch progress, ETA, total loss, and every returned loss field."""
 
     priority = 'VERY_LOW'

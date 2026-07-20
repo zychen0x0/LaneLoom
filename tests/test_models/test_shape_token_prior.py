@@ -2,7 +2,7 @@ import pytest
 import torch
 
 from LaneLoom.models.head.lidar_shape_token_prior import (
-    LaneLoomLiDARShapeTokenPrior,
+    LiDARShapeTokenPrior,
 )
 
 
@@ -10,7 +10,7 @@ ANCHORS = [0., 1., 2., 3., 4.]
 
 
 def _prior(max_templates=3):
-    return LaneLoomLiDARShapeTokenPrior(
+    return LiDARShapeTokenPrior(
         lidar_in_channels=8,
         anchor_y_steps=ANCHORS,
         max_templates=max_templates,
@@ -160,14 +160,14 @@ def test_unbounded_slopes_reconstruct_arbitrary_relative_cubic_controls():
 def test_removed_shape_options_fail_instead_of_silently_changing_semantics(
         legacy_option):
     with pytest.raises(TypeError, match='were removed'):
-        LaneLoomLiDARShapeTokenPrior(
+        LiDARShapeTokenPrior(
             lidar_in_channels=8, anchor_y_steps=ANCHORS,
             **{legacy_option: 30.})
 
 
 def test_shape_prior_rejects_unknown_options():
     with pytest.raises(TypeError, match='Unexpected.*pc_range'):
-        LaneLoomLiDARShapeTokenPrior(
+        LiDARShapeTokenPrior(
             lidar_in_channels=8, anchor_y_steps=ANCHORS,
             pc_range=[-2., 0., -2., 2., 4., 2.])
 

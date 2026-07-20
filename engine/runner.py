@@ -2,7 +2,7 @@
 from mmengine.runner import Runner
 
 
-class LaneLoomRunner(Runner):
+class ExperimentRunner(Runner):
     """Write runtime logs directly into ``work_dir``."""
 
     @property

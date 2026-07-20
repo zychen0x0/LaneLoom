@@ -8,7 +8,7 @@ from .curve_nms import curve_nms
 
 
 @MODELS.register_module()
-class LaneLoomBEVLaneHead(nn.Module):
+class BEVLaneHead(nn.Module):
     """Small interface over configurable BEV encoder, decoder, and loss modules."""
 
     def __init__(self, bev_encoder, lane_decoder, loss_module,

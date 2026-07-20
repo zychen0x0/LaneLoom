@@ -181,7 +181,7 @@ class OpenLaneDataset(Dataset):
         'PointsRangeFilter',
         'PointShuffle',
         'LoadOpenLaneAnnotations',
-        'PackLaneLoomInputs',
+        'PackInputs',
     )
     GT_REFIT_MIN_INLIERS = 6
     GT_REFIT_MIN_SPAN_RATIO = 0.6
@@ -223,7 +223,7 @@ class OpenLaneDataset(Dataset):
         image_normalize_cfg = self._pipeline_stage('NormalizeOpenLaneImages')
         points_load_cfg = self._pipeline_stage('LoadPoseAlignedOpenLanePoints')
         self._pipeline_stage('LoadOpenLaneAnnotations')
-        pack_cfg = self._pipeline_stage('PackLaneLoomInputs')
+        pack_cfg = self._pipeline_stage('PackInputs')
         self.label_root = _as_path(dataset_cfg['data_label_dir'])
         self.image_root = _as_path(dataset_cfg['data_image_dir'])
         self.lidar_root = _as_path(dataset_cfg['lidar_processed_dir'])

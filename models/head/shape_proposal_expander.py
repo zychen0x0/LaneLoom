@@ -10,7 +10,7 @@ from ..losses.hungarian_assigner import batched_hungarian_assignment
 
 
 @MODELS.register_module()
-class LaneLoomShapeProposalExpander(nn.Module):
+class ShapeProposalExpander(nn.Module):
     """Translate every relative template over inclusive lateral seeds."""
 
     def __init__(self, pc_range, anchor_y_steps, num_x_seeds,

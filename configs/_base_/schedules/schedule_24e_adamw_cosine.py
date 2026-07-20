@@ -52,7 +52,7 @@ default_hooks = dict(
     logger=dict(type='LoggerHook', interval=50),
     param_scheduler=dict(type='ParamSchedulerHook'),
     checkpoint=dict(
-        type='LaneLoomCheckpointHook',
+        type='ExperimentCheckpointHook',
         interval=1,
         max_keep_ckpts=keep_n_ckpts,
         # Emitted by the selected validation evaluator after each epoch. The

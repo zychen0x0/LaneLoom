@@ -12,8 +12,8 @@ from mmengine.registry import METRICS
 from LaneLoom.detectors import LaneLoom as LaneLoomModel
 from LaneLoom.engine.experiment import configure_train_experiment
 from LaneLoom.engine.openlane_test_cases import build_openlane_test_configs
-from LaneLoom.engine.hooks import LaneLoomLoggerHook
-from LaneLoom.engine.runner import LaneLoomRunner
+from LaneLoom.engine.hooks import TrainingLoggerHook
+from LaneLoom.engine.runner import ExperimentRunner
 from LaneLoom.evaluation.lane_evaluation import OpenLaneLaneEvaluator
 
 
@@ -431,7 +431,7 @@ def test_logger_reports_validation_progress_and_final_lane_metrics(monkeypatch):
         logger=SimpleNamespace(info=messages.append),
         visualizer=SimpleNamespace(add_scalars=lambda *_args, **_kwargs: None),
     )
-    hook = LaneLoomLoggerHook(interval=50)
+    hook = TrainingLoggerHook(interval=50)
     clock = iter([0.0, 98.0])
     monkeypatch.setattr(logger_module.time, 'monotonic', lambda: next(clock))
 
@@ -466,7 +466,7 @@ def test_logger_reports_test_case_progress_eta_and_final_batch(monkeypatch):
         test_dataloader=[None] * 320,
         logger=SimpleNamespace(info=messages.append),
     )
-    hook = LaneLoomLoggerHook(interval=50)
+    hook = TrainingLoggerHook(interval=50)
     clock = iter([0.0, 88.0, 640.0])
     monkeypatch.setattr(logger_module.time, 'monotonic', lambda: next(clock))
 
@@ -493,7 +493,7 @@ def test_train_experiment_layout_uses_a_dated_laneloom_directory(tmp_path):
     assert (experiment_dir / 'Tensorboard').is_dir()
     assert (experiment_dir / 'checkpoints').is_dir()
     assert cfg.work_dir == str(experiment_dir / 'logs')
-    assert cfg.default_hooks.checkpoint.type == 'LaneLoomCheckpointHook'
+    assert cfg.default_hooks.checkpoint.type == 'ExperimentCheckpointHook'
     assert cfg.default_hooks.checkpoint.out_dir == str(experiment_dir / 'checkpoints')
     assert [backend.type for backend in cfg.visualizer.vis_backends] == [
         'TensorboardVisBackend']
@@ -501,7 +501,7 @@ def test_train_experiment_layout_uses_a_dated_laneloom_directory(tmp_path):
 
 def test_laneloom_runner_writes_log_directly_in_work_dir(tmp_path):
     logs_dir = tmp_path / 'logs'
-    runner = LaneLoomRunner(
+    runner = ExperimentRunner(
         model=torch.nn.Linear(1, 1),
         work_dir=str(logs_dir),
         default_scope=None,
@@ -517,7 +517,7 @@ def test_laneloom_runner_does_not_create_log_subdir_when_init_fails(tmp_path):
     logs_dir = tmp_path / 'logs'
 
     with pytest.raises(KeyError):
-        LaneLoomRunner(
+        ExperimentRunner(
             model=dict(type='MissingLaneLoomModel'),
             work_dir=str(logs_dir),
             default_scope=None,

@@ -6,7 +6,7 @@ from mmengine.config import Config
 
 import LaneLoom  # noqa: F401 - register models, datasets, and hooks.
 from LaneLoom.engine import (
-    LaneLoomRunner,
+    ExperimentRunner,
     configure_train_experiment,
     remove_runtime_config_artifacts,
 )
@@ -52,7 +52,7 @@ def main():
     cfg.launcher = args.launcher
     apply_runtime_overrides(cfg, args)
     experiment_dir = configure_train_experiment(cfg, args.work_dir)
-    runner = LaneLoomRunner.from_cfg(cfg)
+    runner = ExperimentRunner.from_cfg(cfg)
     remove_runtime_config_artifacts(experiment_dir, config_path)
     runner.logger.info('LaneLoom experiment directory: %s', experiment_dir)
     runner.train()

@@ -1,12 +1,12 @@
 import torch
 
 from LaneLoom.models.head.shape_proposal_expander import (
-    LaneLoomShapeProposalExpander,
+    ShapeProposalExpander,
 )
 
 
 def test_five_templates_expand_to_505_queries_with_exact_endpoint_seeds():
-    expander = LaneLoomShapeProposalExpander(
+    expander = ShapeProposalExpander(
         pc_range=[-25., 0., -5., 25., 100., 5.],
         anchor_y_steps=[2. * index for index in range(1, 51)],
         num_x_seeds=101,
@@ -35,7 +35,7 @@ def test_five_templates_expand_to_505_queries_with_exact_endpoint_seeds():
 
 
 def test_q0_geometry_does_not_use_gt_when_lidar_sample_is_empty():
-    expander = LaneLoomShapeProposalExpander(
+    expander = ShapeProposalExpander(
         pc_range=[-25., 0., -5., 25., 100., 5.],
         anchor_y_steps=[2. * index for index in range(1, 51)],
         num_x_seeds=101,

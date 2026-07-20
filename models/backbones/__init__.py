@@ -1,3 +1,3 @@
-from .dynamic_pillar_bev import LaneLoomDynamicPillarBEVEncoder
+from .dynamic_pillar_bev import DynamicPillarBEVEncoder
 
-__all__ = ['LaneLoomDynamicPillarBEVEncoder']
+__all__ = ['DynamicPillarBEVEncoder']

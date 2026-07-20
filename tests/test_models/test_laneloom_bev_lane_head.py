@@ -3,18 +3,18 @@ from unittest.mock import Mock, patch
 import pytest
 import torch
 
-from LaneLoom.models.head.laneloom_bev_lane_head import LaneLoomBEVLaneHead
+from LaneLoom.models.head.laneloom_bev_lane_head import BEVLaneHead
 from LaneLoom.models.head.laneloom_lane_query_decoder import (
-    LaneLoomLaneQueryDecoder,
+    LaneQueryDecoder,
 )
 from LaneLoom.models.losses.laneloom_topk_loss import (
-    LaneLoomOneToOneLaneLoss,
-    LaneLoomTopKLaneLoss,
+    LaneLoss,
+    TopkLaneLoss,
 )
 from LaneLoom.models.losses.hungarian_assigner import (
-    LaneLoomHungarianAssigner,
+    HungarianAssigner,
 )
-from LaneLoom.models.losses.topk_assigner import LaneLoomTopKAssigner
+from LaneLoom.models.losses.topk_assigner import TopkAssigner
 
 
 def _metas(batch_size, image_size=16):
@@ -35,46 +35,46 @@ def _head(embed_dims, bev_h, bev_w, num_query, anchors, lidar_channels,
           dn_num_groups=0, max_templates=1):
     if num_query % max_templates:
         raise ValueError('num_query must be divisible by max_templates.')
-    return LaneLoomBEVLaneHead(
+    return BEVLaneHead(
         anchor_prior=dict(
-            type='LaneLoomLiDARShapeTokenPrior',
+            type='LiDARShapeTokenPrior',
             lidar_in_channels=lidar_channels,
             anchor_y_steps=anchors,
             max_templates=max_templates,
             hidden_channels=8),
         proposal_expander=dict(
-            type='LaneLoomShapeProposalExpander',
+            type='ShapeProposalExpander',
             embed_dims=embed_dims,
             pc_range=[-25., 0., -5., 25., 100., 5.],
             anchor_y_steps=anchors,
             num_x_seeds=num_query // max_templates,
             template_feature_channels=8),
         bev_encoder=dict(
-            type='LaneLoomBEVEncoder', bev_h=bev_h, bev_w=bev_w,
+            type='BEVEncoder', bev_h=bev_h, bev_w=bev_w,
             lidar_bev_adapter=dict(
-                type='LaneLoomLiDARBEVAdapter', embed_dims=embed_dims,
+                type='LiDARBEVAdapter', embed_dims=embed_dims,
                 lidar_in_channels=lidar_channels)),
         query_sampler=dict(
-            type='LaneLoomDualPlaneTemporalSampler',
+            type='DualPlaneTemporalSampler',
             image_in_channels=embed_dims, lidar_in_channels=embed_dims,
             embed_dims=embed_dims,
             pc_range=[-25., 0., -5., 25., 100., 5.],
             num_image_levels=1, temporal_kernel_size=3),
         lane_decoder=dict(
-            type='LaneLoomLaneQueryDecoder', embed_dims=embed_dims,
+            type='LaneQueryDecoder', embed_dims=embed_dims,
             pc_range=[-25., 0., -5., 25., 100., 5.],
             num_query=num_query, anchor_y_steps=anchors, num_layers=2,
             num_heads=4, feedforward_channels=embed_dims * 2, dropout=0.0,
             dn_num_groups=dn_num_groups),
         loss_module=dict(
-            type='LaneLoomTopKLaneLoss', pos_k=2,
+            type='TopkLaneLoss', pos_k=2,
             cls_loss_weight=1.0, x_loss_weight=1.0,
             z_loss_weight=1.0, visibility_loss_weight=1.0,
             aux_loss_weight=0.5, smooth_l1_beta=0.5))
 
 
 def test_lane_query_decoder_samples_cubic_bezier_at_anchors():
-    decoder = LaneLoomLaneQueryDecoder(
+    decoder = LaneQueryDecoder(
         embed_dims=8,
         pc_range=[-25., 0., -5., 25., 100., 5.], num_query=3,
         anchor_y_steps=[0.0, 2.0, 4.0], num_layers=1, num_heads=2,
@@ -98,7 +98,7 @@ def test_lane_query_decoder_samples_cubic_bezier_at_anchors():
 
 
 def test_decoder_prunes_after_layer_zero_and_keeps_required_training_queries():
-    decoder = LaneLoomLaneQueryDecoder(
+    decoder = LaneQueryDecoder(
         embed_dims=8,
         pc_range=[-25., 0., -5., 25., 100., 5.], num_query=8,
         layer_query_budget=4,
@@ -123,7 +123,7 @@ def test_decoder_prunes_after_layer_zero_and_keeps_required_training_queries():
 
 
 def test_lane_query_decoder_refines_lidar_bezier_controls():
-    decoder = LaneLoomLaneQueryDecoder(
+    decoder = LaneQueryDecoder(
         embed_dims=8,
         pc_range=[-25., 0., -5., 25., 100., 5.], num_query=2,
         anchor_y_steps=[0., 2., 4.], num_layers=1, num_heads=2,
@@ -143,7 +143,7 @@ def test_lane_query_decoder_refines_lidar_bezier_controls():
 
 
 def test_lane_query_decoder_preserves_out_of_range_q0_without_shape_clamping():
-    decoder = LaneLoomLaneQueryDecoder(
+    decoder = LaneQueryDecoder(
         embed_dims=8,
         pc_range=[-2., 0., -2., 2., 4., 2.], num_query=1,
         anchor_y_steps=[0., 2., 4.], num_layers=1, num_heads=2,
@@ -175,7 +175,7 @@ def test_bev_encoder_keeps_lidar_bev_without_constructing_image_bev():
 
 
 def test_lane_query_decoder_exposes_each_intermediate_layer_for_auxiliary_loss():
-    decoder = LaneLoomLaneQueryDecoder(
+    decoder = LaneQueryDecoder(
         embed_dims=8,
         pc_range=[-25., 0., -5., 25., 100., 5.], num_query=3,
         anchor_y_steps=[0.0, 2.0, 4.0], num_layers=3, num_heads=2,
@@ -198,7 +198,7 @@ def test_lane_query_decoder_exposes_each_intermediate_layer_for_auxiliary_loss()
 
 
 def test_lane_query_decoder_composes_nonzero_residual_with_previous_controls():
-    decoder = LaneLoomLaneQueryDecoder(
+    decoder = LaneQueryDecoder(
         embed_dims=8,
         pc_range=[-25., 0., -5., 25., 100., 5.], num_query=3,
         anchor_y_steps=[0.0, 2.0, 4.0], num_layers=2, num_heads=2,
@@ -217,7 +217,7 @@ def test_lane_query_decoder_composes_nonzero_residual_with_previous_controls():
 
 
 def test_lane_query_decoder_predicts_an_ordered_visibility_interval():
-    decoder = LaneLoomLaneQueryDecoder(
+    decoder = LaneQueryDecoder(
         embed_dims=8,
         pc_range=[-25., 0., -5., 25., 100., 5.], num_query=3,
         anchor_y_steps=[0.0, 2.0, 4.0, 6.0], num_layers=1, num_heads=2,
@@ -240,7 +240,7 @@ def test_lane_query_decoder_predicts_an_ordered_visibility_interval():
 
 
 def test_lane_query_decoder_refines_visibility_bounds_between_layers():
-    decoder = LaneLoomLaneQueryDecoder(
+    decoder = LaneQueryDecoder(
         embed_dims=8,
         pc_range=[-25., 0., -5., 25., 100., 5.], num_query=3,
         anchor_y_steps=[0.0, 2.0, 4.0, 6.0], num_layers=2, num_heads=2,
@@ -274,7 +274,7 @@ def test_lane_query_decoder_refines_visibility_bounds_between_layers():
 
 
 def test_two_layer_decoder_resamples_refined_curve_for_second_layer():
-    decoder = LaneLoomLaneQueryDecoder(
+    decoder = LaneQueryDecoder(
         embed_dims=8,
         pc_range=[-25., 0., -5., 25., 100., 5.], num_query=3,
         anchor_y_steps=[0.0, 2.0, 4.0], num_layers=2, num_heads=2,
@@ -304,7 +304,7 @@ def test_two_layer_decoder_resamples_refined_curve_for_second_layer():
 
 
 def test_decoder_cross_attention_keeps_each_query_evidence_separate():
-    decoder = LaneLoomLaneQueryDecoder(
+    decoder = LaneQueryDecoder(
         embed_dims=8,
         pc_range=[-25., 0., -5., 25., 100., 5.], num_query=2,
         anchor_y_steps=[0.0, 2.0, 4.0], num_layers=1, num_heads=2,
@@ -344,7 +344,7 @@ def test_decoder_cross_attention_keeps_each_query_evidence_separate():
 
 
 def test_final_layer_loss_reaches_layer_zero_geometry_through_q1():
-    decoder = LaneLoomLaneQueryDecoder(
+    decoder = LaneQueryDecoder(
         embed_dims=8,
         pc_range=[-25., 0., -5., 25., 100., 5.], num_query=2,
         anchor_y_steps=[0.0, 2.0, 4.0], num_layers=2, num_heads=2,
@@ -373,7 +373,7 @@ def test_lane_head_samples_initial_and_layer_zero_refined_anchors():
 
 
 def test_lane_query_decoder_initializes_objectness_with_a_low_prior():
-    decoder = LaneLoomLaneQueryDecoder(
+    decoder = LaneQueryDecoder(
         embed_dims=8,
         pc_range=[-25., 0., -5., 25., 100., 5.], num_query=3,
         anchor_y_steps=[0.0, 2.0, 4.0], num_layers=1, num_heads=2,
@@ -386,7 +386,7 @@ def test_lane_query_decoder_initializes_objectness_with_a_low_prior():
 
 def test_lane_query_decoder_rejects_disabled_denoising_branch():
     with pytest.raises(ValueError, match='denoising queries are not supported'):
-        LaneLoomLaneQueryDecoder(
+        LaneQueryDecoder(
             embed_dims=8,
             pc_range=[-25., 0., -5., 25., 100., 5.], num_query=3,
             anchor_y_steps=[0.0, 2.0, 4.0], num_layers=1, num_heads=2,
@@ -485,7 +485,7 @@ def test_lane_head_uses_51_anchors_and_backpropagates():
 
 
 def test_topk_assigner_selects_two_exclusive_anchors_per_gt():
-    assigner = LaneLoomTopKAssigner(pos_k=2)
+    assigner = TopkAssigner(pos_k=2)
     anchor_x = torch.tensor([
         [-2.2, -2.2], [-1.8, -1.8], [-1.4, -1.4],
         [1.4, 1.4], [1.8, 1.8], [2.2, 2.2]])
@@ -503,7 +503,7 @@ def test_topk_assigner_selects_two_exclusive_anchors_per_gt():
 
 
 def test_hungarian_assigner_gives_every_gt_one_exclusive_query():
-    assigner = LaneLoomHungarianAssigner()
+    assigner = HungarianAssigner()
     anchor_x = torch.tensor([[0., 0.], [.1, .1], [20., 20.]])
     anchor_z = torch.zeros_like(anchor_x)
     gt_x = torch.tensor([[0., 0.], [10., 10.]])
@@ -519,14 +519,14 @@ def test_hungarian_assigner_gives_every_gt_one_exclusive_query():
 
 
 def test_one_to_one_lane_loss_uses_hungarian_assignment():
-    loss_module = LaneLoomOneToOneLaneLoss()
+    loss_module = LaneLoss()
 
-    assert isinstance(loss_module.assigner, LaneLoomHungarianAssigner)
+    assert isinstance(loss_module.assigner, HungarianAssigner)
     assert loss_module.emit_diagnostics is True
 
 
 def test_one_to_one_loss_separates_objectness_from_positive_only_category():
-    loss_module = LaneLoomOneToOneLaneLoss(
+    loss_module = LaneLoss(
         negative_objectness_weight=.1)
     predictions = dict(
         pred_x=torch.tensor([[[0., 0.], [10., 10.]]]),
@@ -552,7 +552,7 @@ def test_one_to_one_loss_separates_objectness_from_positive_only_category():
 
 
 def test_balanced_objectness_loss_is_invariant_to_easy_negative_count():
-    loss_module = LaneLoomOneToOneLaneLoss(
+    loss_module = LaneLoss(
         negative_objectness_weight=.1)
 
     def objectness_loss(num_queries):
@@ -575,7 +575,7 @@ def test_balanced_objectness_loss_is_invariant_to_easy_negative_count():
 
 
 def test_geometrically_ambiguous_unmatched_query_is_downweighted():
-    loss_module = LaneLoomOneToOneLaneLoss(
+    loss_module = LaneLoss(
         negative_objectness_weight=1.0,
         ambiguous_negative_weight=.1,
         ambiguous_distance_threshold=.5,
@@ -599,7 +599,7 @@ def test_geometrically_ambiguous_unmatched_query_is_downweighted():
 
 
 def test_layer_zero_topk_recall_uses_unforced_ranking():
-    loss_module = LaneLoomOneToOneLaneLoss()
+    loss_module = LaneLoss()
     auxiliary = dict(
         pred_x=torch.tensor([[[0., 0.], [10., 10.], [20., 20.]]]),
         pred_z=torch.zeros(1, 3, 2),
@@ -626,7 +626,7 @@ def test_layer_zero_topk_recall_uses_unforced_ranking():
 
 
 def test_one_to_one_lane_loss_reports_background_collapse_diagnostics():
-    loss_module = LaneLoomOneToOneLaneLoss()
+    loss_module = LaneLoss()
     predictions = dict(
         pred_x=torch.tensor([[[0., 0.], [10., 10.]]]),
         pred_z=torch.zeros(1, 2, 2),
@@ -655,7 +655,7 @@ def test_one_to_one_lane_loss_reports_background_collapse_diagnostics():
 
 
 def test_one_to_one_lane_loss_prediction_diagnostics_match_inference_filter():
-    loss_module = LaneLoomOneToOneLaneLoss()
+    loss_module = LaneLoss()
     predictions = dict(
         pred_x=torch.tensor([[[0., 0.], [10., 10.], [20., 20.]]]),
         pred_z=torch.zeros(1, 3, 2),
@@ -685,7 +685,7 @@ def test_one_to_one_lane_loss_prediction_diagnostics_match_inference_filter():
 
 
 def test_one_to_one_lane_loss_matches_final_predictions_not_q0():
-    loss_module = LaneLoomOneToOneLaneLoss()
+    loss_module = LaneLoss()
     predictions = dict(
         pred_x=torch.tensor([[[0., 0.], [10., 10.]]]),
         pred_z=torch.zeros(1, 2, 2),
@@ -704,7 +704,7 @@ def test_one_to_one_lane_loss_matches_final_predictions_not_q0():
 
 
 def test_one_to_one_lane_loss_matches_each_decoder_layer_independently():
-    loss_module = LaneLoomOneToOneLaneLoss()
+    loss_module = LaneLoss()
     gt_lanes = torch.zeros(1, 2, 2, 3)
     gt_lanes[0, 1, :, 0] = 10.
     gt_visibility = torch.ones(1, 2, 2)
@@ -725,7 +725,7 @@ def test_one_to_one_lane_loss_matches_each_decoder_layer_independently():
 
 
 def test_one_to_one_lane_loss_reports_auxiliary_matching_health():
-    loss_module = LaneLoomOneToOneLaneLoss()
+    loss_module = LaneLoss()
 
     def prediction(x):
         return dict(
@@ -756,7 +756,7 @@ def test_one_to_one_lane_loss_reports_auxiliary_matching_health():
 
 
 def test_topk_lane_loss_has_one_visibility_objective():
-    loss_module = LaneLoomTopKLaneLoss(pos_k=2)
+    loss_module = TopkLaneLoss(pos_k=2)
     anchor_x = torch.tensor([[-1.5, -1.5], [-.5, -.5],
                              [.5, .5], [1.5, 1.5]])
     anchor_points = torch.stack((

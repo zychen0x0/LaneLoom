@@ -78,7 +78,7 @@ def _configure_layout(cfg, experiment_dir: Path, create: bool) -> Path:
     cfg.experiment_dir = str(experiment_dir)
     cfg.default_hooks = dict(cfg.default_hooks)
     checkpoint_cfg = dict(cfg.default_hooks['checkpoint'])
-    checkpoint_cfg['type'] = 'LaneLoomCheckpointHook'
+    checkpoint_cfg['type'] = 'ExperimentCheckpointHook'
     checkpoint_cfg['out_dir'] = str(checkpoints_dir)
     cfg.default_hooks['checkpoint'] = checkpoint_cfg
     cfg.visualizer = dict(

@@ -1,4 +1,4 @@
-"""Compact Top-k classification and regression losses for 3D lanes."""
+"""Compact classification and regression losses for 3D lanes."""
 
 import torch
 import torch.nn as nn
@@ -6,12 +6,11 @@ import torch.nn.functional as F
 
 from mmdet3d.registry import MODELS, TASK_UTILS
 
-from .topk_assigner import LaneLoomTopKAssigner
+from .topk_assigner import TopkAssigner
 
 
-@MODELS.register_module()
-class LaneLoomTopKLaneLoss(nn.Module):
-    """Supervise two nearest anchors per GT and classify all others as background."""
+class LaneLossBase(nn.Module):
+    """Shared lane classification, regression, and diagnostic objectives."""
 
     def __init__(self, assigner=None, pos_k=2, cls_loss_weight=1.0,
                  x_loss_weight=1.0, z_loss_weight=1.0,
@@ -22,7 +21,7 @@ class LaneLoomTopKLaneLoss(nn.Module):
         super().__init__()
         self.assigner = (
             TASK_UTILS.build(assigner) if assigner is not None
-            else LaneLoomTopKAssigner(pos_k=pos_k))
+            else TopkAssigner(pos_k=pos_k))
         self.cls_loss_weight = float(cls_loss_weight)
         self.x_loss_weight = float(x_loss_weight)
         self.z_loss_weight = float(z_loss_weight)
@@ -246,7 +245,12 @@ class LaneLoomTopKLaneLoss(nn.Module):
 
 
 @MODELS.register_module()
-class LaneLoomOneToOneLaneLoss(LaneLoomTopKLaneLoss):
+class TopkLaneLoss(LaneLossBase):
+    """Supervise nearest anchors per GT and classify others as background."""
+
+
+@MODELS.register_module()
+class LaneLoss(LaneLossBase):
     """Keep the compact lane objectives with Hungarian one-to-one matching."""
 
     def __init__(self, assigner=None, objectness_loss_weight=1.0,
@@ -259,7 +263,7 @@ class LaneLoomOneToOneLaneLoss(LaneLoomTopKLaneLoss):
                  diagnostic_geometry_match_ratio=.8,
                  **kwargs):
         if assigner is None:
-            assigner = dict(type='LaneLoomHungarianAssigner')
+            assigner = dict(type='HungarianAssigner')
         self.objectness_loss_weight = float(objectness_loss_weight)
         self.category_loss_weight = float(category_loss_weight)
         self.negative_objectness_weight = float(negative_objectness_weight)

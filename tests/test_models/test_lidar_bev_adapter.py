@@ -1,12 +1,12 @@
 import torch
 
 from LaneLoom.models.fusion_layers.lidar_bev_adapter import (
-    LaneLoomLiDARBEVAdapter,
+    LiDARBEVAdapter,
 )
 
 
 def test_lidar_adapter_keeps_lane_channels_until_curve_sampling():
-    adapter = LaneLoomLiDARBEVAdapter(
+    adapter = LiDARBEVAdapter(
         embed_dims=128, lidar_in_channels=128)
     features = torch.randn(2, 128, 20, 10)
 

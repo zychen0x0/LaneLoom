@@ -6,7 +6,7 @@ from mmengine.config import Config
 
 import LaneLoom  # noqa: F401 - register project components.
 from LaneLoom.engine import (
-    LaneLoomRunner,
+    ExperimentRunner,
     build_openlane_test_configs,
     configure_test_experiment,
     remove_runtime_config_artifacts,
@@ -56,7 +56,7 @@ def main():
         cfg.load_from = checkpoint
         experiment_dir = configure_test_experiment(
             cfg, checkpoint, base_work_dir / case_name)
-        runner = LaneLoomRunner.from_cfg(cfg)
+        runner = ExperimentRunner.from_cfg(cfg)
         remove_runtime_config_artifacts(experiment_dir, config_path)
         metrics = runner.test()
         if runner.rank == 0 and score_thresholds is not None:

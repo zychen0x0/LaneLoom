@@ -70,7 +70,7 @@ model = dict(
     # Statistics-enhanced dynamic PFE followed by a PillarNeXt-style sparse
     # ResNet and single-scale dilated lane neck.
     pts_bev_encoder=dict(
-        type='LaneLoomDynamicPillarBEVEncoder',
+        type='DynamicPillarBEVEncoder',
         point_cloud_range=point_cloud_range,
         pillar_size=[0.25, 0.25],
         out_channels=_lidar_dim_,
@@ -82,10 +82,10 @@ model = dict(
     # ---------------------------------------------------lane head start---------------------------------------------------
     # LiDAR geometry prior plus curve-aligned temporal FV/LiDAR sampling.
     lane_head=dict(
-        type='LaneLoomBEVLaneHead',
+        type='BEVLaneHead',
         # LiDAR predicts five translation-invariant road-shape tokens.
         anchor_prior=dict(
-            type='LaneLoomLiDARShapeTokenPrior',
+            type='LiDARShapeTokenPrior',
             lidar_in_channels=_lidar_dim_,
             anchor_y_steps=output_y_steps,
             max_templates=5,
@@ -116,7 +116,7 @@ model = dict(
         # Include both -25m and +25m at an exact 0.5m step:
         # 5 templates x 101 seeds = 505 unfiltered Q0 queries.
         proposal_expander=dict(
-            type='LaneLoomShapeProposalExpander',
+            type='ShapeProposalExpander',
             embed_dims=_dim_,
             pc_range=point_cloud_range,
             anchor_y_steps=output_y_steps,
@@ -126,15 +126,15 @@ model = dict(
             q0_match_ratio=0.8,
             q0_geometry_loss_weight=1.0),
         bev_encoder=dict(
-            type='LaneLoomBEVEncoder',
+            type='BEVEncoder',
             bev_h=bev_h_,
             bev_w=bev_w_,
             lidar_bev_adapter=dict(
-                type='LaneLoomLiDARBEVAdapter',
+                type='LiDARBEVAdapter',
                 embed_dims=_lidar_dim_,
                 lidar_in_channels=_lidar_dim_)),
         query_sampler=dict(
-            type='LaneLoomDualPlaneTemporalSampler',
+            type='DualPlaneTemporalSampler',
             image_in_channels=_dim_,
             # Project sampled 128-D lane evidence to decoder width only after
             # curve-aligned sampling, instead of widening the complete map.
@@ -148,7 +148,7 @@ model = dict(
             max_image_offset_pixels=2.0,
             max_lidar_offset_residual=0.5),
         lane_decoder=dict(
-            type='LaneLoomLaneQueryDecoder',
+            type='LaneQueryDecoder',
             embed_dims=_dim_,
             pc_range=point_cloud_range,
             num_query=505,
@@ -173,8 +173,8 @@ model = dict(
             # then promotes exactly one query for each visible GT lane.
             objectness_prior_probability=0.01),
         loss_module=dict(
-            type='LaneLoomOneToOneLaneLoss',
-            assigner=dict(type='LaneLoomHungarianAssigner'),
+            type='LaneLoss',
+            assigner=dict(type='HungarianAssigner'),
             objectness_loss_weight=1.0,
             category_loss_weight=0.25,
             # Positive/negative objectness are normalized separately, so an
@@ -242,5 +242,5 @@ else:
 # Final benchmark testing always reports the official OpenLane score.
 test_evaluator = official_evaluator
 default_hooks = dict(
-    logger=dict(type='LaneLoomLoggerHook', interval=50),
+    logger=dict(type='TrainingLoggerHook', interval=50),
     checkpoint=dict(save_best=f'{val_evaluator["prefix"]}/F1'))

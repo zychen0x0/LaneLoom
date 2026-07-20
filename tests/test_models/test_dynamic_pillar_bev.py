@@ -2,12 +2,12 @@ import torch
 import pytest
 
 from LaneLoom.models.backbones.dynamic_pillar_bev import (
-    LaneLoomDynamicPillarBEVEncoder,
+    DynamicPillarBEVEncoder,
 )
 
 
 def _encoder():
-    encoder = LaneLoomDynamicPillarBEVEncoder(
+    encoder = DynamicPillarBEVEncoder(
         point_cloud_range=[-1., 0., -2., 1., 2., 2.],
         pillar_size=[.5, .5],
         out_channels=16,
@@ -92,7 +92,7 @@ def test_dynamic_pillar_returns_stride_two_features_and_empty_occupancy():
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason='spconv requires CUDA')
 def test_configured_sparse_lane_grid_densifies_at_half_pillar_resolution():
-    encoder = LaneLoomDynamicPillarBEVEncoder(
+    encoder = DynamicPillarBEVEncoder(
         point_cloud_range=[-25., 0., -5., 25., 100., 5.],
         pillar_size=[.25, .25],
         out_channels=128,

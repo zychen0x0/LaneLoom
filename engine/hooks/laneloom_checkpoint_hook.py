@@ -8,7 +8,7 @@ from mmengine.registry import HOOKS
 
 
 @HOOKS.register_module()
-class LaneLoomCheckpointHook(CheckpointHook):
+class ExperimentCheckpointHook(CheckpointHook):
     """Keep ``out_dir`` literal instead of appending the runner log directory.
 
     MMEngine's generic hook still creates a deprecated ``FileClient`` even
