@@ -55,9 +55,8 @@ default_hooks = dict(
         type='ExperimentCheckpointHook',
         interval=1,
         max_keep_ckpts=keep_n_ckpts,
-        # Emitted by the selected validation evaluator after each epoch. The
-        # main config selects the concrete metric used for best checkpoints.
-        save_best='OpenLane/F1',
+        # Dataset/evaluator configs select the explicit benchmark metric.
+        save_best=None,
         rule='greater'),
     sampler_seed=dict(type='DistSamplerSeedHook'))
 

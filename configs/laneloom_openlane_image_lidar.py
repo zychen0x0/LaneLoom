@@ -1,6 +1,7 @@
 # ---------------------------------------------------base config start---------------------------------------------------
 _base_ = [
     './_base_/datasets/openlane_datasets_D5.py',
+    './_base_/evaluators/openlane_official.py',
     './_base_/schedules/schedule_24e_adamw_cosine.py',
 ]
 # ----------------------------------------------------base config end----------------------------------------------------
@@ -33,7 +34,7 @@ bev_w_ = 100
 queue_length = 3
 output_y_steps = [2.0 * i for i in range(1, 51)]
 evidence_y_steps = [5.0 * i for i in range(1, 21)]
-score_threshold = 0.5
+score_threshold = {{_base_.score_threshold}}
 
 backbone_init = 'torchvision://resnet50'
 # ----------------------------------------------------model common config end----------------------------------------------------
@@ -204,43 +205,6 @@ model = dict(
 )
 # ----------------------------------------------------model config end----------------------------------------------------
 
-# MMEngine owns DDP, optimizer, scheduler, checkpointing, validation and test.
-# Training may use temporal GT enhancement, but benchmark metrics always use
-# the current-frame OpenLane annotation.
-evaluation_protocol = 'official'
-
-dv3dlane_evaluator = dict(
-    type='OpenLaneAnchorMetric',
-    prefix='DV3DLane',
-    score_threshold=score_threshold,
-    visibility_threshold=0.5,
-    distance_threshold=0.5,
-    match_ratio_threshold=0.75,
-    near_distance=40.0,
-    # Official OpenLane metrics use the current-frame annotation. Temporal
-    # supplementation remains a training target, not an evaluation target.
-    use_temporal_gt_supplement=False,
-    collect_device='cpu')
-
-official_evaluator = dict(
-    type='OpenLaneOfficialMetric',
-    prefix='OpenLaneOfficial',
-    score_threshold=score_threshold,
-    visibility_threshold=0.5,
-    use_temporal_gt_supplement=False,
-    collect_device='cpu')
-
-if evaluation_protocol == 'dv3dlane':
-    val_evaluator = dv3dlane_evaluator
-elif evaluation_protocol == 'official':
-    val_evaluator = official_evaluator
-else:
-    raise ValueError(
-        f'Unknown evaluation_protocol {evaluation_protocol!r}; expected '
-        "'dv3dlane' or 'official'.")
-
-# Final benchmark testing always reports the official OpenLane score.
-test_evaluator = official_evaluator
 default_hooks = dict(
     logger=dict(type='TrainingLoggerHook', interval=50),
-    checkpoint=dict(save_best=f'{val_evaluator["prefix"]}/F1'))
+    checkpoint=dict(save_best={{_base_.best_metric}}))

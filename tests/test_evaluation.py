@@ -299,8 +299,14 @@ def test_anchor_metric_uses_temporal_supplement_category():
 
 
 def test_config_enables_mmengine_validation_and_test_evaluators():
-    cfg = Config.fromfile(
+    config_path = Path(
         '/workspace/LaneLoom/configs/laneloom_openlane_image_lidar.py')
+    cfg = Config.fromfile(config_path)
+    source = config_path.read_text()
+
+    assert "'./_base_/evaluators/openlane_official.py'" in source
+    assert 'if evaluation_protocol' not in source
+    assert 'dv3dlane_evaluator = dict(' not in source
     assert cfg.val_cfg.type == 'ValLoop'
     assert cfg.test_cfg.type == 'TestLoop'
     assert cfg.val_dataloader is not None
@@ -325,13 +331,15 @@ def test_config_can_select_dv3dlane_validation_but_keeps_official_test():
         "'./_base_/datasets/openlane_datasets_D5.py'",
         repr(str(config_path.parent / '_base_/datasets/openlane_datasets_D5.py')))
     source = source.replace(
+        "'./_base_/evaluators/openlane_official.py'",
+        repr(str(
+            config_path.parent
+            / '_base_/evaluators/openlane_dv3dlane.py')))
+    source = source.replace(
         "'./_base_/schedules/schedule_24e_adamw_cosine.py'",
         repr(str(
             config_path.parent
             / '_base_/schedules/schedule_24e_adamw_cosine.py')))
-    source = source.replace(
-        "evaluation_protocol = 'official'",
-        "evaluation_protocol = 'dv3dlane'")
 
     cfg = Config.fromstring(source, '.py')
 
