@@ -134,7 +134,7 @@ def test_config_uses_strict_q0_and_one_to_one_assignment():
     assert expander.q0_distance_threshold == 0.3
     assert expander.q0_match_ratio == 0.8
     assert expander.q0_geometry_loss_weight == 1.0
-    assert cfg.model.lane_head.test_cfg.curve_nms.distance_threshold == 0.3
+    assert cfg.model.lane_head.test_cfg.curve_nms.distance_threshold == 0.5
     assert cfg.model.lane_head.test_cfg.curve_nms.match_ratio_threshold == 0.75
     assert cfg.model.lane_head.test_cfg.score_threshold == 0.5
     assert cfg.val_evaluator.score_threshold == 0.5

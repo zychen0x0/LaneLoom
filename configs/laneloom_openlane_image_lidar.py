@@ -200,7 +200,7 @@ model = dict(
             # Keep light geometric de-duplication as an inference safeguard.
             curve_nms=dict(
                 visibility_threshold=0.5,
-                distance_threshold=0.3,
+                distance_threshold=0.5,
                 match_ratio_threshold=0.75))),
 )
 # ----------------------------------------------------model config end----------------------------------------------------
