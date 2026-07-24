@@ -83,6 +83,64 @@ def _bare_gt_dataset(anchor_y_steps=None):
     return dataset
 
 
+def test_smooth_lane_reports_first_fit_status_for_accepted_full_fit():
+    dataset = _bare_gt_dataset(np.arange(0, 51, 10))
+    y = np.asarray([10., 20., 30., 40.], dtype=np.float32)
+    raw = np.column_stack(
+        (0.01 * y ** 2, y, 0.1 * y)).astype(np.float32)
+
+    smoothed, keep, fit_status = dataset._smooth_lane_ground(raw)
+
+    assert smoothed.shape == (4, 3)
+    assert keep.all()
+    assert fit_status == 'first_fit'
+
+
+def test_smooth_lane_reports_robust_refit_status_when_outlier_is_removed():
+    dataset = _bare_gt_dataset()
+    y = np.arange(0., 101., 10., dtype=np.float32)
+    z = 0.002 * y
+    z[5] += 2.
+    raw = np.column_stack((0.01 * y, y, z)).astype(np.float32)
+
+    _, keep, fit_status = dataset._smooth_lane_ground(raw)
+
+    assert keep.sum() == len(raw) - 1
+    assert fit_status == 'robust_refit'
+
+
+def test_smooth_lane_reports_linear_fallback_when_cubic_is_unavailable():
+    dataset = _bare_gt_dataset()
+    raw = np.asarray([
+        [0., 20., 0.],
+        [0.2, 30., 0.1],
+        [0.4, 40., 0.2],
+    ], dtype=np.float32)
+
+    smoothed, keep, fit_status = dataset._smooth_lane_ground(raw)
+
+    assert smoothed.shape[0] > 0
+    assert keep.all()
+    assert fit_status == 'linear_fallback'
+
+
+def test_smooth_lane_reports_linear_fallback_when_smoothing_is_disabled():
+    dataset = _bare_gt_dataset()
+    dataset.smooth_3d_gt = False
+    raw = np.asarray([
+        [0., 20., 0.],
+        [0.2, 30., 0.1],
+        [0.4, 40., 0.2],
+        [0.6, 50., 0.3],
+    ], dtype=np.float32)
+
+    unsmoothed, keep, fit_status = dataset._smooth_lane_ground(raw)
+
+    assert np.array_equal(unsmoothed, raw)
+    assert keep.all()
+    assert fit_status == 'linear_fallback'
+
+
 def test_smooth_lane_fits_full_raw_support_but_samples_only_model_intersection():
     dataset = _bare_gt_dataset(np.arange(0, 101, 10))
     dataset.gt_outlier_residual = 1e6
@@ -91,7 +149,7 @@ def test_smooth_lane_fits_full_raw_support_but_samples_only_model_intersection()
     z = np.asarray([0., 0.1, 0.2, 0.5, 1.0, 1.8, 3.0])
     raw = np.column_stack((x, y, z)).astype(np.float32)
 
-    smoothed, _ = dataset._smooth_lane_ground(raw)
+    smoothed, _, _ = dataset._smooth_lane_ground(raw)
 
     t = (y - y.min()) / (y.max() - y.min())
     design = np.stack(((1 - t) ** 3, 3 * (1 - t) ** 2 * t,
@@ -115,10 +173,11 @@ def test_smooth_lane_ignores_gt_entirely_outside_model_y_range():
         [1.9, 125., 0.4], [2.4, 130., 0.7],
     ], dtype=np.float32)
 
-    smoothed, keep = dataset._smooth_lane_ground(raw)
+    smoothed, keep, fit_status = dataset._smooth_lane_ground(raw)
 
     assert smoothed.shape == (0, 3)
     assert keep.all()  # The source annotation itself remains intact for audit/debug.
+    assert fit_status == 'rejected'
 
 
 def test_smooth_lane_uses_only_anchors_strictly_inside_raw_support():
@@ -126,7 +185,7 @@ def test_smooth_lane_uses_only_anchors_strictly_inside_raw_support():
     y = np.asarray([20.1, 21.0, 22.0, 23.0, 24.1], dtype=np.float32)
     raw = np.column_stack((0.1 * y, y, 0.01 * y)).astype(np.float32)
 
-    smoothed, _ = dataset._smooth_lane_ground(raw)
+    smoothed, _, _ = dataset._smooth_lane_ground(raw)
 
     assert np.array_equal(smoothed[:, 1], np.asarray([22., 24.], dtype=np.float32))
 
@@ -147,7 +206,7 @@ def test_smooth_lane_rejects_ill_conditioned_second_fit():
         [-7.861882, 19.909403, -0.188786],
     ], dtype=np.float32)
 
-    smoothed, keep = dataset._smooth_lane_ground(raw)
+    smoothed, keep, _ = dataset._smooth_lane_ground(raw)
 
     assert np.isfinite(smoothed).all()
     assert np.abs(smoothed[:, 0]).max() < 20.
@@ -213,6 +272,62 @@ def test_temporal_gt_skips_out_of_range_history_record_without_global_geometry()
 
     assert enhanced['temporal_gt_associations'] == []
     assert enhanced['gt_lane_track_ids_enhanced'][0].item() == 11
+
+
+def test_temporal_gt_rejects_linear_fallback_history_only_lane():
+    dataset = _bare_gt_dataset()
+    y = np.arange(20., 31., 2., dtype=np.float32)
+    trusted_ground = np.column_stack(
+        (np.zeros_like(y), y, np.zeros_like(y)))
+    history_only_ground = np.column_stack(
+        (np.full_like(y, 3.), y, np.zeros_like(y)))
+    current_record = {
+        'track_id': 11, 'ground': trusted_ground,
+        'global': trusted_ground.copy(), 'category': 1,
+        'fit_status': 'first_fit',
+    }
+    trusted_history_record = {
+        'track_id': 11, 'ground': trusted_ground,
+        'global': trusted_ground.copy(), 'category': 1,
+        'fit_status': 'first_fit',
+    }
+    fallback_history_record = {
+        'track_id': 22, 'ground': history_only_ground,
+        'global': history_only_ground.copy(), 'category': 1,
+        'fit_status': 'linear_fallback',
+    }
+    current_label = dict(frame='current')
+    history_label = dict(frame='history')
+
+    dataset._build_calib = lambda label: {}
+    dataset._global_from_ground = lambda label, meta: np.eye(4, dtype=np.float32)
+    dataset._parse_lane_records = (
+        lambda label, meta=None, is_history=False:
+        [current_record] if label is current_label else
+        [trusted_history_record, fallback_history_record])
+    dataset._clip_current_roi_and_fov = lambda points, calib: points
+
+    num_y = len(dataset.anchor_y_steps)
+    current_lanes = torch.zeros(dataset.max_lanes, num_y, 3)
+    current_visibility = torch.zeros(dataset.max_lanes, num_y)
+    current_anchor_mask = np.isin(dataset.anchor_y_steps, y)
+    current_lanes[0, current_anchor_mask, 1] = torch.from_numpy(y)
+    current_visibility[0, current_anchor_mask] = 1.
+    packed = dict(
+        gt_lanes_3d=current_lanes,
+        gt_lanes_visibility=current_visibility,
+        gt_lanes_category=torch.tensor([1, 0, 0, 0]),
+        gt_lane_track_ids=torch.tensor([11, -1, -1, -1]),
+    )
+    dataset._parse_openlane_gt = lambda label: packed
+
+    enhanced = dataset._build_temporal_enhanced_gt(
+        [history_label, current_label], [{}, {}])
+
+    assert 22 not in enhanced['gt_lane_track_ids_enhanced'].tolist()
+    assert any(
+        association.get('reason') == 'history_only_linear_fallback'
+        for association in enhanced['temporal_gt_associations'])
 
 
 def _assert_temporal_frame_meta(frame_meta, num_views):

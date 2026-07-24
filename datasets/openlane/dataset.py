@@ -943,10 +943,17 @@ class OpenLaneDataset(Dataset):
         accepted only when its design matrix still covers the original lane
         support and is numerically stable.  Sampling never extrapolates beyond
         either the raw GT support or the model anchor range.
+
+        Returns the sampled points, the retained raw-point mask, and one of
+        ``first_fit``, ``robust_refit``, ``linear_fallback``, or ``rejected``.
         """
         points = np.asarray(points, dtype=np.float32)
         if not self.smooth_3d_gt:
-            return points, np.ones(points.shape[0], dtype=bool)
+            return (
+                points,
+                np.ones(points.shape[0], dtype=bool),
+                'linear_fallback',
+            )
 
         order = np.argsort(points[:, 1])
         sorted_points = points[order]
@@ -956,7 +963,7 @@ class OpenLaneDataset(Dataset):
         keep_all = np.zeros(points.shape[0], dtype=bool)
         keep_all[retained_indices] = True
         if sorted_points.shape[0] == 0:
-            return np.zeros((0, 3), dtype=np.float32), keep_all
+            return np.zeros((0, 3), dtype=np.float32), keep_all, 'rejected'
 
         y_min = float(sorted_points[0, 1])
         y_max = float(sorted_points[-1, 1])
@@ -965,7 +972,7 @@ class OpenLaneDataset(Dataset):
         if sample_y.size == 0:
             # Preserve the raw annotation in ``ground_raw``/UV audit fields,
             # but do not manufacture a target at the nearest boundary anchor.
-            return np.zeros((0, 3), dtype=np.float32), keep_all
+            return np.zeros((0, 3), dtype=np.float32), keep_all, 'rejected'
 
         raw_y = sorted_points[:, 1].astype(np.float64)
         raw_xz = sorted_points[:, (0, 2)].astype(np.float64)
@@ -976,7 +983,7 @@ class OpenLaneDataset(Dataset):
             return np.column_stack((sample_x, sample_y, sample_z)).astype(np.float32)
 
         if sorted_points.shape[0] < 4 or y_max - y_min < 1e-4:
-            return linear_fallback(), keep_all
+            return linear_fallback(), keep_all, 'linear_fallback'
 
         def bezier_basis(y_values):
             t = (np.asarray(y_values, dtype=np.float64) - y_min) / (y_max - y_min)
@@ -995,11 +1002,12 @@ class OpenLaneDataset(Dataset):
 
         all_points = np.ones(sorted_points.shape[0], dtype=bool)
         selected_points = all_points
+        fit_status = 'first_fit'
         try:
             controls, first_rank, first_condition = fit(all_points)
             if (first_rank < 4 or not np.isfinite(first_condition)
                     or first_condition > 1e6):
-                return linear_fallback(), keep_all
+                return linear_fallback(), keep_all, 'linear_fallback'
 
             predicted = design @ controls
             residual = np.linalg.norm(raw_xz - predicted, axis=1)
@@ -1018,17 +1026,18 @@ class OpenLaneDataset(Dataset):
                         >= self.GT_REFIT_MIN_RMSE_IMPROVEMENT):
                     controls = refit_controls
                     selected_points = inliers
+                    fit_status = 'robust_refit'
         except (np.linalg.LinAlgError, ValueError):
-            return linear_fallback(), keep_all
+            return linear_fallback(), keep_all, 'linear_fallback'
 
         sample_xz = bezier_basis(sample_y) @ controls
         if not self._bezier_fit_is_physical(sample_xz, sample_y, raw_xz, raw_y):
-            return linear_fallback(), keep_all
+            return linear_fallback(), keep_all, 'linear_fallback'
 
         keep = np.zeros(points.shape[0], dtype=bool)
         keep[retained_indices[selected_points]] = True
         result = np.column_stack([sample_xz[:, 0], sample_y, sample_xz[:, 1]])
-        return result.astype(np.float32), keep
+        return result.astype(np.float32), keep, fit_status
 
     def _inliers_support_stable(self, raw_y, design, inliers):
         """Whether hard inliers can identify a full-support cubic safely."""
@@ -1120,7 +1129,8 @@ class OpenLaneDataset(Dataset):
                 lane_ground = lane_ground[order]
                 uv = uv[order]
             lane_ground_raw = lane_ground.copy()
-            lane_ground, smooth_keep = self._smooth_lane_ground(lane_ground)
+            lane_ground, smooth_keep, fit_status = self._smooth_lane_ground(
+                lane_ground)
             uv = uv[smooth_keep]
             uv_ground_y = lane_ground_raw[smooth_keep, 1:2]
 
@@ -1148,6 +1158,7 @@ class OpenLaneDataset(Dataset):
                 uvy=uv_y,
                 category=category,
                 track_id=track_id,
+                fit_status=fit_status,
                 is_history=bool(is_history))
             if global_from_ground is not None and lane_ground.shape[0] > 0:
                 lane_h = np.concatenate(
@@ -1520,6 +1531,11 @@ class OpenLaneDataset(Dataset):
         for frame_idx, history_record in reversed(history_records):
             track_id = history_record['track_id']
             if frame_idx not in trusted_frames or track_id in added_track_ids:
+                continue
+            if history_record.get('fit_status') == 'linear_fallback':
+                associations.append(dict(
+                    track_id=track_id, frame_idx=frame_idx, accepted=False,
+                    reason='history_only_linear_fallback'))
                 continue
             if not free_lane_indices:
                 associations.append(dict(
