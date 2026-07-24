@@ -4,6 +4,8 @@ import torch.nn as nn
 
 from mmdet3d.registry import MODELS
 
+from ..valid_range_tube_iou import pairwise_valid_range_tube_overlap
+
 
 class _PerQueryTransformerLayer(nn.Module):
     """Update lane queries from their own sampled curve evidence."""
@@ -69,7 +71,11 @@ class LaneQueryDecoder(nn.Module):
                  visibility_start_prior=0.14,
                  visibility_end_prior=0.58,
                  reference_x_residual_scale=5.0,
-                 reference_z_residual_scale=1.0):
+                 reference_z_residual_scale=1.0,
+                 tube_radius=.5, tube_z_weight=1., tube_epsilon=1e-6,
+                 duplicate_iou_threshold=.6,
+                 duplicate_containment_threshold=.9,
+                 duplicate_score_decay=.5):
         super().__init__()
         self.embed_dims = int(embed_dims)
         self.pc_range = pc_range
@@ -129,9 +135,31 @@ class LaneQueryDecoder(nn.Module):
         self.visibility_temperature = float(visibility_temperature)
         self.reference_x_residual_scale = float(reference_x_residual_scale)
         self.reference_z_residual_scale = float(reference_z_residual_scale)
+        self.tube_radius = float(tube_radius)
+        self.tube_z_weight = float(tube_z_weight)
+        self.tube_epsilon = float(tube_epsilon)
+        self.duplicate_iou_threshold = float(duplicate_iou_threshold)
+        self.duplicate_containment_threshold = float(
+            duplicate_containment_threshold)
+        self.duplicate_score_decay = float(duplicate_score_decay)
         if (self.reference_x_residual_scale <= 0
                 or self.reference_z_residual_scale <= 0):
             raise ValueError('Reference residual scales must be positive.')
+        if self.tube_radius <= 0:
+            raise ValueError('tube_radius must be positive.')
+        if self.tube_z_weight < 0:
+            raise ValueError('tube_z_weight must be non-negative.')
+        if self.tube_epsilon <= 0:
+            raise ValueError('tube_epsilon must be positive.')
+        if not 0 <= self.duplicate_iou_threshold < 1:
+            raise ValueError(
+                'duplicate_iou_threshold must be in [0, 1).')
+        if not 0 <= self.duplicate_containment_threshold < 1:
+            raise ValueError(
+                'duplicate_containment_threshold must be in [0, 1).')
+        if not 0 <= self.duplicate_score_decay <= 1:
+            raise ValueError(
+                'duplicate_score_decay must be in [0, 1].')
         if self.visibility_temperature <= 0:
             raise ValueError('visibility_temperature must be positive.')
         visibility_start_prior = float(visibility_start_prior)
@@ -324,17 +352,100 @@ class LaneQueryDecoder(nn.Module):
         return tensor.gather(
             1, index.expand(*indices.shape, *tensor.shape[2:]))
 
-    def _select_layer_queries(self, objectness, required_query_mask):
-        budget = min(self.layer_query_budget, objectness.size(1))
-        predicted = objectness.detach().topk(budget, dim=-1).indices
+    def _soft_reranked_indices(
+            self, scores, pairwise_iou, pairwise_containment, budget):
+        selected = []
+        for batch_idx in range(scores.size(0)):
+            adjusted = scores[batch_idx].clone()
+            available = torch.ones(
+                scores.size(1), dtype=torch.bool, device=scores.device)
+            batch_selected = []
+            for _ in range(budget):
+                candidate = adjusted.masked_fill(
+                    ~available, -torch.inf).argmax()
+                batch_selected.append(candidate)
+                available[candidate] = False
+                iou_strength = (
+                    (pairwise_iou[batch_idx, candidate]
+                     - self.duplicate_iou_threshold)
+                    / (1.0 - self.duplicate_iou_threshold)
+                ).clamp(0.0, 1.0)
+                containment_strength = (
+                    (pairwise_containment[batch_idx, candidate]
+                     - self.duplicate_containment_threshold)
+                    / (1.0 - self.duplicate_containment_threshold)
+                ).clamp(0.0, 1.0)
+                duplicate_strength = torch.maximum(
+                    iou_strength, containment_strength)
+                adjusted = adjusted * (
+                    1.0 - self.duplicate_score_decay
+                    * duplicate_strength)
+            selected.append(torch.stack(batch_selected))
+        return torch.stack(selected)
+
+    def _select_layer_queries(self, predictions, required_query_mask):
+        scores = predictions['pred_cls'].detach().sigmoid()
+        budget = min(self.layer_query_budget, scores.size(1))
+        pairwise_iou, pairwise_containment = (
+            pairwise_valid_range_tube_overlap(
+                predictions['pred_x'].detach(),
+                predictions['pred_z'].detach(),
+                predictions['pred_vis'].detach().sigmoid(),
+                tube_radius=self.tube_radius,
+                z_weight=self.tube_z_weight,
+                epsilon=self.tube_epsilon))
+        predicted = self._soft_reranked_indices(
+            scores, pairwise_iou, pairwise_containment, budget)
+        raw_topk = scores.topk(budget, dim=-1).indices
+        retained_raw = (
+            predicted.unsqueeze(-1) == raw_topk.unsqueeze(-2)
+        ).any(dim=-1).sum(dim=-1)
+        duplicate = (
+            (pairwise_iou > self.duplicate_iou_threshold)
+            | (pairwise_containment
+               > self.duplicate_containment_threshold))
+        raw_duplicate_pairs = []
+        topk_duplicate_pairs = []
+        for batch_idx in range(scores.size(0)):
+            raw_duplicate = duplicate[batch_idx][
+                raw_topk[batch_idx]][:, raw_topk[batch_idx]]
+            raw_duplicate_pairs.append(torch.triu(
+                raw_duplicate, diagonal=1).sum())
+            topk_duplicate = duplicate[batch_idx][
+                predicted[batch_idx]][:, predicted[batch_idx]]
+            topk_duplicate_pairs.append(torch.triu(
+                topk_duplicate, diagonal=1).sum())
+        diagnostics = dict(
+            layer0_raw_topk_indices=raw_topk,
+            diag_layer0_soft_rerank_change_ratio=(
+                1.0 - retained_raw.to(scores.dtype) / budget).mean(),
+            diag_layer0_raw_duplicate_pairs=torch.stack(
+                raw_duplicate_pairs).to(scores.dtype).mean(),
+            diag_layer0_topk_duplicate_pairs=torch.stack(
+                topk_duplicate_pairs).to(scores.dtype).mean())
         if required_query_mask is None:
-            return predicted, predicted
-        if tuple(required_query_mask.shape) != tuple(objectness.shape):
+            return predicted, predicted, diagnostics
+        if tuple(required_query_mask.shape) != tuple(scores.shape):
             raise ValueError(
                 'required_query_mask must match the initial query shape.')
-        ranking = objectness.detach().masked_fill(required_query_mask, torch.inf)
-        selected = ranking.topk(budget, dim=-1).indices
-        return selected, predicted
+        selected = []
+        for batch_idx in range(scores.size(0)):
+            required = torch.where(required_query_mask[batch_idx])[0]
+            if required.numel() > budget:
+                raise ValueError(
+                    f'{int(required.numel())} required queries exceed '
+                    f'the layer query budget of {budget}.')
+            batch_selected = required.tolist()
+            selected_set = set(batch_selected)
+            for candidate in predicted[batch_idx].tolist():
+                if candidate not in selected_set:
+                    batch_selected.append(candidate)
+                    selected_set.add(candidate)
+                if len(batch_selected) == budget:
+                    break
+            selected.append(torch.tensor(
+                batch_selected, dtype=torch.long, device=scores.device))
+        return torch.stack(selected), predicted, diagnostics
 
     def forward(self, bev, bev_pos=None,
                 query_features=None, initial_reference_controls=None,
@@ -376,6 +487,7 @@ class LaneQueryDecoder(nn.Module):
         layer_predictions = []
         selected_query_indices = None
         layer0_topk_indices = None
+        layer0_selection_diagnostics = {}
         main_reference = initial_reference_controls
         main_visibility_reference = None
         for layer_idx, layer in enumerate(self.layers):
@@ -420,8 +532,9 @@ class LaneQueryDecoder(nn.Module):
                         required_query_mask
                         if layer_required_mask is None
                         else layer_required_mask | required_query_mask)
-                selected, predicted = self._select_layer_queries(
-                    predictions['pred_cls'], layer_required_mask)
+                selected, predicted, layer0_selection_diagnostics = (
+                    self._select_layer_queries(
+                        predictions, layer_required_mask))
                 layer0_topk_indices = self._gather_query_tensor(
                     source_query_indices, predicted)
                 source_query_indices = self._gather_query_tensor(
@@ -440,5 +553,6 @@ class LaneQueryDecoder(nn.Module):
         if selected_query_indices is not None:
             predictions['selected_query_indices'] = selected_query_indices
             predictions['layer0_topk_indices'] = layer0_topk_indices
+            predictions.update(layer0_selection_diagnostics)
         predictions['bev'] = bev
         return predictions

@@ -113,7 +113,7 @@ def test_config_uses_strict_q0_and_one_to_one_assignment():
     loss = cfg.model.lane_head.loss_module
 
     assert loss.type == 'LaneLoss'
-    assert loss.objectness_loss_weight == 1.0
+    assert loss.score_loss_weight == 1.0
     assert loss.category_loss_weight == 0.25
     assert loss.negative_objectness_weight == 1.0
     assert loss.ambiguous_negative_weight == 0.1
@@ -122,8 +122,10 @@ def test_config_uses_strict_q0_and_one_to_one_assignment():
     assert loss.diagnostic_score_threshold == 0.5
     assert loss.assigner.type == 'HungarianAssigner'
     assert loss.visibility_loss_weight == 1.0
-    assert loss.focal_alpha == 0.25
-    assert loss.focal_gamma == 2.0
+    assert loss.tube_loss_weight == 0.5
+    assert loss.tube_radius == 0.5
+    assert loss.tube_z_weight == 1.0
+    assert loss.tube_epsilon == 1e-6
     assert 'visibility_dice_loss_weight' not in loss
     assert 'visibility_boundary_loss_weight' not in loss
     assert cfg.model.lane_head.lane_decoder.get('dn_num_groups', 0) == 0
@@ -134,8 +136,19 @@ def test_config_uses_strict_q0_and_one_to_one_assignment():
     assert expander.q0_distance_threshold == 0.3
     assert expander.q0_match_ratio == 0.8
     assert expander.q0_geometry_loss_weight == 1.0
-    assert cfg.model.lane_head.test_cfg.curve_nms.distance_threshold == 0.5
-    assert cfg.model.lane_head.test_cfg.curve_nms.match_ratio_threshold == 0.75
+    decoder = cfg.model.lane_head.lane_decoder
+    assert decoder.tube_radius == 0.5
+    assert decoder.tube_z_weight == 1.0
+    assert decoder.tube_epsilon == 1e-6
+    assert decoder.duplicate_iou_threshold == 0.6
+    assert decoder.duplicate_containment_threshold == 0.9
+    assert decoder.duplicate_score_decay == 0.5
+    curve_nms = cfg.model.lane_head.test_cfg.curve_nms
+    assert curve_nms.tube_radius == 0.5
+    assert curve_nms.z_weight == 1.0
+    assert curve_nms.epsilon == 1e-6
+    assert curve_nms.iou_threshold == 0.6
+    assert curve_nms.containment_threshold == 0.9
     assert cfg.model.lane_head.test_cfg.score_threshold == 0.5
     assert cfg.val_evaluator.score_threshold == 0.5
 

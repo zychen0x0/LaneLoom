@@ -1,18 +1,15 @@
-"""Visibility-aware non-maximum suppression for sampled 3D lanes."""
+"""VR-TubeIoU non-maximum suppression for sampled 3D lanes."""
 
 import torch
 
+from ..valid_range_tube_iou import pairwise_valid_range_tube_overlap
 
-def curve_nms(x, z, visibility, scores, *, visibility_threshold,
-              distance_threshold,
-              match_ratio_threshold, candidate_mask=None):
-    """Return the highest-scoring non-duplicate lane queries.
 
-    Two predictions are duplicates only when anchors closer than
-    ``distance_threshold`` cover at least ``match_ratio_threshold`` of both
-    predictions' visible intervals.  This prevents a short shared segment from
-    suppressing two lanes that diverge later.
-    """
+def curve_nms(
+        x, z, visibility, scores, *, tube_radius,
+        iou_threshold, containment_threshold,
+        z_weight=1.0, epsilon=1e-6, candidate_mask=None):
+    """Keep the highest-score lane from each overlapping tube group."""
     keep = torch.zeros_like(scores, dtype=torch.bool)
     if candidate_mask is None:
         candidate_mask = torch.ones_like(scores, dtype=torch.bool)
@@ -20,26 +17,21 @@ def curve_nms(x, z, visibility, scores, *, visibility_threshold,
         indices = torch.where(candidate_mask[batch_idx])[0]
         if indices.numel() == 0:
             continue
-        local_x = x[batch_idx, indices]
-        local_z = z[batch_idx, indices]
-        local_visible = (
-            visibility[batch_idx, indices] >= visibility_threshold)
-        shared = local_visible.unsqueeze(1) & local_visible.unsqueeze(0)
-        distance = torch.hypot(
-            local_x.unsqueeze(1) - local_x.unsqueeze(0),
-            local_z.unsqueeze(1) - local_z.unsqueeze(0))
-        matched_count = (
-            shared & (distance < distance_threshold)).sum(dim=-1)
-        visible_count = local_visible.sum(dim=-1)
+        pairwise_iou, pairwise_containment = (
+            pairwise_valid_range_tube_overlap(
+                x[batch_idx, indices].unsqueeze(0),
+                z[batch_idx, indices].unsqueeze(0),
+                visibility[batch_idx, indices].unsqueeze(0),
+                tube_radius=tube_radius,
+                z_weight=z_weight,
+                epsilon=epsilon))
         duplicate = (
-            (matched_count > 0)
-            & (matched_count >=
-               match_ratio_threshold * visible_count.unsqueeze(1))
-            & (matched_count >=
-               match_ratio_threshold * visible_count.unsqueeze(0)))
+            (pairwise_iou[0] > iou_threshold)
+            | (pairwise_containment[0] > containment_threshold))
         duplicate.diagonal().fill_(False)
 
-        order = torch.argsort(scores[batch_idx, indices], descending=True)
+        order = torch.argsort(
+            scores[batch_idx, indices], descending=True)
         suppressed = torch.zeros(
             indices.numel(), dtype=torch.bool, device=scores.device)
         for local_candidate in order:

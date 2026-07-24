@@ -170,15 +170,20 @@ model = dict(
             # Median visible interval from the OpenLane training anchors.
             visibility_start_prior=0.14,
             visibility_end_prior=0.58,
-            # Start with almost every query as background; one-to-one matching
-            # then promotes exactly one query for each visible GT lane.
-            objectness_prior_probability=0.01),
+            # Start with almost every query at low lane quality.
+            objectness_prior_probability=0.01,
+            tube_radius=0.5,
+            tube_z_weight=1.0,
+            tube_epsilon=1e-6,
+            duplicate_iou_threshold=0.6,
+            duplicate_containment_threshold=0.9,
+            duplicate_score_decay=0.5),
         loss_module=dict(
             type='LaneLoss',
             assigner=dict(type='HungarianAssigner'),
-            objectness_loss_weight=1.0,
+            score_loss_weight=1.0,
             category_loss_weight=0.25,
-            # Positive/negative objectness are normalized separately, so an
+            # Positive/negative lane scores are normalized separately, so an
             # equal group weight cannot be amplified by the 505-query count.
             # Near-GT unmatched candidates remain weaker ambiguous negatives.
             negative_objectness_weight=1.0,
@@ -190,18 +195,22 @@ model = dict(
             x_loss_weight=1.0,
             z_loss_weight=1.0,
             visibility_loss_weight=1.0,
+            tube_loss_weight=0.5,
+            tube_radius=0.5,
+            tube_z_weight=1.0,
+            tube_epsilon=1e-6,
             aux_loss_weight=0.5,
             smooth_l1_beta=0.5,
-            focal_alpha=0.25,
-            focal_gamma=2.0,
             diagnostic_score_threshold=score_threshold),
         test_cfg=dict(
             score_threshold=score_threshold,
-            # Keep light geometric de-duplication as an inference safeguard.
             curve_nms=dict(
                 visibility_threshold=0.5,
-                distance_threshold=0.5,
-                match_ratio_threshold=0.75))),
+                tube_radius=0.5,
+                z_weight=1.0,
+                epsilon=1e-6,
+                iou_threshold=0.6,
+                containment_threshold=0.9))),
 )
 # ----------------------------------------------------model config end----------------------------------------------------
 

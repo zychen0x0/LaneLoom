@@ -122,6 +122,133 @@ def test_decoder_prunes_after_layer_zero_and_keeps_required_training_queries():
     assert predictions['layer0_topk_indices'].shape == (1, 4)
 
 
+def _selection_predictions(scores, x, visibility):
+    score_tensor = torch.tensor([scores])
+    x_tensor = torch.tensor([x], dtype=torch.float32)
+    visibility_tensor = torch.tensor(
+        [visibility], dtype=torch.float32)
+    return dict(
+        pred_cls=torch.logit(score_tensor),
+        pred_x=x_tensor,
+        pred_z=torch.zeros_like(x_tensor),
+        pred_vis=torch.logit(
+            visibility_tensor.clamp(1e-4, 1 - 1e-4)))
+
+
+def test_decoder_soft_reranking_deprioritizes_a_contained_lower_score_query():
+    decoder = LaneQueryDecoder(
+        embed_dims=8,
+        pc_range=[-25., 0., -5., 25., 100., 5.], num_query=3,
+        layer_query_budget=2,
+        anchor_y_steps=[0.0, 2.0, 4.0, 6.0],
+        num_layers=2, num_heads=2, feedforward_channels=16,
+        dropout=0.0)
+    predictions = _selection_predictions(
+        scores=[.9, .85, .8],
+        x=[[0.] * 4, [0.] * 4, [3.] * 4],
+        visibility=[
+            [1.] * 4,
+            [0., 1., 1., 0.],
+            [1.] * 4,
+        ])
+
+    selected, predicted, diagnostics = decoder._select_layer_queries(
+        predictions, required_query_mask=None)
+
+    assert predicted.tolist() == [[0, 2]]
+    assert selected.tolist() == [[0, 2]]
+    assert diagnostics['diag_layer0_soft_rerank_change_ratio'] == .5
+    assert diagnostics['diag_layer0_raw_duplicate_pairs'] == 1
+    assert diagnostics['diag_layer0_topk_duplicate_pairs'] == 0
+    assert diagnostics['layer0_raw_topk_indices'].tolist() == [[0, 1]]
+
+
+def test_decoder_soft_reranking_keeps_a_better_short_lane_over_overextension():
+    decoder = LaneQueryDecoder(
+        embed_dims=8,
+        pc_range=[-25., 0., -5., 25., 100., 5.], num_query=3,
+        layer_query_budget=2,
+        anchor_y_steps=[0.0, 2.0, 4.0, 6.0],
+        num_layers=2, num_heads=2, feedforward_channels=16,
+        dropout=0.0)
+    predictions = _selection_predictions(
+        scores=[.85, .9, .8],
+        x=[[0.] * 4, [0.] * 4, [3.] * 4],
+        visibility=[
+            [1.] * 4,
+            [0., 1., 1., 0.],
+            [1.] * 4,
+        ])
+
+    _, predicted, _ = decoder._select_layer_queries(
+        predictions, required_query_mask=None)
+
+    assert predicted.tolist() == [[1, 2]]
+
+
+def test_decoder_soft_reranking_preserves_lanes_that_diverge():
+    decoder = LaneQueryDecoder(
+        embed_dims=8,
+        pc_range=[-25., 0., -5., 25., 100., 5.], num_query=3,
+        layer_query_budget=2,
+        anchor_y_steps=[0.0, 2.0, 4.0, 6.0],
+        num_layers=2, num_heads=2, feedforward_channels=16,
+        dropout=0.0)
+    predictions = _selection_predictions(
+        scores=[.9, .85, .8],
+        x=[
+            [0., 0., 0., 0.],
+            [0., 0., 2., 2.],
+            [3., 3., 3., 3.],
+        ],
+        visibility=[[1.] * 4] * 3)
+
+    _, predicted, _ = decoder._select_layer_queries(
+        predictions, required_query_mask=None)
+
+    assert predicted.tolist() == [[0, 1]]
+
+
+def test_decoder_required_queries_do_not_change_unforced_soft_ranking():
+    decoder = LaneQueryDecoder(
+        embed_dims=8,
+        pc_range=[-25., 0., -5., 25., 100., 5.], num_query=3,
+        layer_query_budget=2,
+        anchor_y_steps=[0.0, 2.0, 4.0, 6.0],
+        num_layers=2, num_heads=2, feedforward_channels=16,
+        dropout=0.0)
+    predictions = _selection_predictions(
+        scores=[.9, .8, .1],
+        x=[[0.] * 4, [3.] * 4, [6.] * 4],
+        visibility=[[1.] * 4] * 3)
+    required = torch.tensor([[False, False, True]])
+
+    selected, predicted, _ = decoder._select_layer_queries(
+        predictions, required_query_mask=required)
+
+    assert predicted.tolist() == [[0, 1]]
+    assert set(selected[0].tolist()) == {0, 2}
+
+
+def test_decoder_rejects_more_required_queries_than_the_layer_budget():
+    decoder = LaneQueryDecoder(
+        embed_dims=8,
+        pc_range=[-25., 0., -5., 25., 100., 5.], num_query=3,
+        layer_query_budget=2,
+        anchor_y_steps=[0.0, 2.0, 4.0, 6.0],
+        num_layers=2, num_heads=2, feedforward_channels=16,
+        dropout=0.0)
+    predictions = _selection_predictions(
+        scores=[.9, .8, .7],
+        x=[[0.] * 4, [3.] * 4, [6.] * 4],
+        visibility=[[1.] * 4] * 3)
+
+    with pytest.raises(ValueError, match='required queries'):
+        decoder._select_layer_queries(
+            predictions,
+            required_query_mask=torch.ones(1, 3, dtype=torch.bool))
+
+
 def test_lane_query_decoder_refines_lidar_bezier_controls():
     decoder = LaneQueryDecoder(
         embed_dims=8,
@@ -525,7 +652,7 @@ def test_one_to_one_lane_loss_uses_hungarian_assignment():
     assert loss_module.emit_diagnostics is True
 
 
-def test_one_to_one_loss_separates_objectness_from_positive_only_category():
+def test_one_to_one_loss_separates_lane_score_from_positive_only_category():
     loss_module = LaneLoss(
         negative_objectness_weight=.1)
     predictions = dict(
@@ -541,21 +668,79 @@ def test_one_to_one_loss_separates_objectness_from_positive_only_category():
         predictions, gt_lanes_3d=gt_lanes,
         gt_lanes_visibility=gt_visibility,
         gt_lanes_category=torch.tensor([[2]]))
-    (losses['loss_objectness'] + losses['loss_category']).backward()
+    (losses['loss_score'] + losses['loss_category']).backward()
 
     assert 'loss_cls' not in losses
-    assert losses['loss_objectness'] > 0
+    assert losses['loss_score'] > 0
     assert losses['loss_category'] > 0
     assert predictions['pred_cls'].grad.abs().sum() > 0
     assert predictions['pred_category'].grad[0, 0].abs().sum() > 0
     assert torch.all(predictions['pred_category'].grad[0, 1] == 0)
 
 
-def test_balanced_objectness_loss_is_invariant_to_easy_negative_count():
+def test_lane_score_uses_detached_soft_tube_iou_for_matched_queries():
+    loss_module = LaneLoss(
+        negative_objectness_weight=1.0,
+        ambiguous_negative_weight=1.0,
+        tube_loss_weight=0.5)
+    score_logits = torch.zeros(1, 2, requires_grad=True)
+    predicted_x = torch.tensor(
+        [[[0.0, 0.0], [10.0, 10.0]]], requires_grad=True)
+    predicted_visibility = torch.full(
+        (1, 2, 2), torch.logit(torch.tensor(0.25)),
+        requires_grad=True)
+    predictions = dict(
+        pred_x=predicted_x,
+        pred_z=torch.zeros(1, 2, 2, requires_grad=True),
+        pred_vis=predicted_visibility,
+        pred_cls=score_logits,
+        pred_category=torch.zeros(1, 2, 21, requires_grad=True))
+    gt_lanes = torch.zeros(1, 1, 2, 3)
+
+    losses = loss_module(
+        predictions, gt_lanes_3d=gt_lanes,
+        gt_lanes_visibility=torch.ones(1, 1, 2),
+        gt_lanes_category=torch.zeros(1, 1, dtype=torch.long))
+    losses['loss_score'].backward()
+
+    assert torch.allclose(
+        score_logits.grad, torch.tensor([[0.25, 0.5]]), atol=1e-5)
+    assert predicted_x.grad is None
+    assert predicted_visibility.grad is None
+
+
+def test_tube_loss_updates_positive_geometry_and_visibility():
+    loss_module = LaneLoss(tube_loss_weight=0.5)
+    predicted_x = torch.full(
+        (1, 1, 3), 0.2, requires_grad=True)
+    predicted_visibility = torch.zeros(
+        1, 1, 3, requires_grad=True)
+    predictions = dict(
+        pred_x=predicted_x,
+        pred_z=torch.zeros(1, 1, 3, requires_grad=True),
+        pred_vis=predicted_visibility,
+        pred_cls=torch.zeros(1, 1, requires_grad=True),
+        pred_category=torch.zeros(1, 1, 21, requires_grad=True))
+    gt_lanes = torch.zeros(1, 1, 3, 3)
+
+    losses = loss_module(
+        predictions, gt_lanes_3d=gt_lanes,
+        gt_lanes_visibility=torch.ones(1, 1, 3),
+        gt_lanes_category=torch.zeros(1, 1, dtype=torch.long))
+    losses['loss_tube'].backward()
+
+    assert losses['loss_tube'] > 0
+    assert predicted_x.grad is not None
+    assert predicted_x.grad.abs().sum() > 0
+    assert predicted_visibility.grad is not None
+    assert predicted_visibility.grad.abs().sum() > 0
+
+
+def test_balanced_lane_score_loss_is_invariant_to_easy_negative_count():
     loss_module = LaneLoss(
         negative_objectness_weight=.1)
 
-    def objectness_loss(num_queries):
+    def score_loss(num_queries):
         predictions = dict(
             pred_x=torch.cat((
                 torch.zeros(1, 1, 2),
@@ -569,9 +754,9 @@ def test_balanced_objectness_loss_is_invariant_to_easy_negative_count():
             predictions, gt_lanes_3d=gt_lanes,
             gt_lanes_visibility=torch.ones(1, 1, 2),
             gt_lanes_category=torch.zeros(1, 1, dtype=torch.long),
-        )['loss_objectness']
+        )['loss_score']
 
-    assert torch.allclose(objectness_loss(4), objectness_loss(40))
+    assert torch.allclose(score_loss(4), score_loss(40))
 
 
 def test_geometrically_ambiguous_unmatched_query_is_downweighted():
@@ -593,7 +778,7 @@ def test_geometrically_ambiguous_unmatched_query_is_downweighted():
         predictions, gt_lanes_3d=gt_lanes,
         gt_lanes_visibility=torch.ones(1, 1, 2),
         gt_lanes_category=torch.zeros(1, 1, dtype=torch.long))
-    losses['loss_objectness'].backward()
+    losses['loss_score'].backward()
 
     assert pred_cls.grad[0, 1].abs() < pred_cls.grad[0, 2].abs() * .2
 
@@ -613,7 +798,10 @@ def test_layer_zero_topk_recall_uses_unforced_ranking():
         pred_cls=auxiliary['pred_cls'][:, :2],
         pred_category=auxiliary['pred_category'][:, :2],
         aux_predictions=[auxiliary],
-        layer0_topk_indices=torch.tensor([[0, 2]]))
+        layer0_topk_indices=torch.tensor([[0, 2]]),
+        selected_query_indices=torch.tensor([[0, 1]]),
+        diag_layer0_soft_rerank_change_ratio=torch.tensor(.5),
+        diag_layer0_raw_duplicate_pairs=torch.tensor(1.))
     gt_lanes = torch.zeros(1, 2, 2, 3)
     gt_lanes[0, 1, :, 0] = 10.
 
@@ -623,6 +811,12 @@ def test_layer_zero_topk_recall_uses_unforced_ranking():
         gt_lanes_category=torch.zeros(1, 2, dtype=torch.long))
 
     assert losses['diag_layer0_topk_gt_recall'] == .5
+    assert losses['diag_layer0_training_gt_recall'] == 1
+    assert losses['diag_layer0_topk_queries_per_gt'] == .5
+    assert losses['diag_layer0_topk_queries_per_gt_max'] == 1
+    assert losses['diag_layer0_topk_uncovered_gt_ratio'] == .5
+    assert losses['diag_layer0_soft_rerank_change_ratio'] == .5
+    assert losses['diag_layer0_raw_duplicate_pairs'] == 1
 
 
 def test_one_to_one_lane_loss_reports_background_collapse_diagnostics():
@@ -649,9 +843,13 @@ def test_one_to_one_lane_loss_reports_background_collapse_diagnostics():
     assert losses['diag_unmatched_gt'] == 0
     assert losses['diag_duplicate_gt_assignments'] == 0
     assert losses['diag_positive_queries'] == 1
-    assert losses['diag_objectness_queries'] == 0
+    assert losses['diag_lane_score_queries'] == 0
     assert losses['diag_prediction_queries'] == 0
     assert losses['diag_pred_gt_ratio'] == 0
+    assert losses['diag_positive_lane_score'] < 1e-4
+    assert losses['diag_negative_lane_score'] < 1e-4
+    assert losses['diag_lane_score_margin'] == 0
+    assert losses['diag_positive_tube_iou'] > .99
 
 
 def test_one_to_one_lane_loss_prediction_diagnostics_match_inference_filter():
@@ -679,9 +877,34 @@ def test_one_to_one_lane_loss_prediction_diagnostics_match_inference_filter():
 
     # Query 0 passes objectness and visibility even while category is
     # uncertain. Query 2 has the same objectness but no visible point.
-    assert losses['diag_objectness_queries'] == 2
+    assert losses['diag_lane_score_queries'] == 2
     assert losses['diag_prediction_queries'] == 1
     assert losses['diag_pred_gt_ratio'] == 1
+
+
+def test_lane_loss_reports_tube_quality_and_lane_score_margin():
+    loss_module = LaneLoss()
+    predictions = dict(
+        pred_x=torch.tensor([[[0., 0.], [10., 10.]]]),
+        pred_z=torch.zeros(1, 2, 2),
+        pred_vis=torch.zeros(1, 2, 2),
+        pred_cls=torch.logit(torch.tensor([[.8, .2]])),
+        pred_category=torch.zeros(1, 2, 21))
+    gt_lanes = torch.zeros(1, 1, 2, 3)
+
+    losses = loss_module(
+        predictions, gt_lanes_3d=gt_lanes,
+        gt_lanes_visibility=torch.ones(1, 1, 2),
+        gt_lanes_category=torch.zeros(1, 1, dtype=torch.long))
+
+    assert torch.allclose(
+        losses['diag_positive_lane_score'], torch.tensor(.8))
+    assert torch.allclose(
+        losses['diag_negative_lane_score'], torch.tensor(.2))
+    assert torch.allclose(
+        losses['diag_lane_score_margin'], torch.tensor(.6))
+    assert torch.allclose(
+        losses['diag_positive_tube_iou'], torch.tensor(.5), atol=1e-5)
 
 
 def test_one_to_one_lane_loss_matches_final_predictions_not_q0():

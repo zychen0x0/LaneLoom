@@ -485,16 +485,17 @@ def test_training_logger_brief_mode_only_prints_key_lane_losses(monkeypatch):
     monkeypatch.setattr(logger_module.time, 'monotonic', lambda: next(clock))
     outputs = dict(
         loss=3.3,
-        loss_objectness=0.1,
+        loss_score=0.1,
         loss_category=0.2,
         loss_x=0.3,
         loss_z=0.4,
         loss_visibility=0.5,
+        loss_tube=0.55,
         loss_lidar_shape_cover=0.6,
         loss_lidar_shape_mode=0.7,
         loss_lidar_shape_diversity=0.8,
         loss_q0_geometry=0.9,
-        loss_aux_0_objectness=1.0,
+        loss_aux_0_score=1.0,
         diag_gt_match_recall=1.0,
     )
 
@@ -502,16 +503,17 @@ def test_training_logger_brief_mode_only_prints_key_lane_losses(monkeypatch):
     hook.after_train_iter(runner, batch_idx=49, outputs=outputs)
 
     message = messages[0]
-    assert 'loss_objectness:0.1000' in message
+    assert 'loss_score:0.1000' in message
     assert 'loss_category:0.2000' in message
     assert 'loss_x:0.3000' in message
     assert 'loss_z:0.4000' in message
     assert 'loss_visibility:0.5000' in message
+    assert 'loss_tube:0.5500' in message
     assert 'loss_lidar_shape_cover:0.6000' in message
     assert 'loss_lidar_shape_mode:0.7000' in message
     assert 'loss_lidar_shape_diversity:0.8000' in message
     assert 'loss_q0_geometry:0.9000' in message
-    assert 'loss_aux_0_objectness' not in message
+    assert 'loss_aux_0_score' not in message
     assert 'diag_gt_match_recall' not in message
     assert 'Loss(avg1) 3.30000000' in message
     assert scalars == [({

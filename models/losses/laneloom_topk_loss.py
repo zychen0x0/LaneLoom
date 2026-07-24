@@ -6,6 +6,7 @@ import torch.nn.functional as F
 
 from mmdet3d.registry import MODELS, TASK_UTILS
 
+from ..valid_range_tube_iou import valid_range_tube_iou
 from .topk_assigner import TopkAssigner
 
 
@@ -133,19 +134,26 @@ class LaneLossBase(nn.Module):
         return assignments
 
     def _assignment_diagnostics(self, predictions, assignments,
-                                gt_visibility):
+                                gt_lanes_3d, gt_visibility):
         reference = predictions['pred_cls']
         matched = 0
         unique_matched = 0
-        for assignment in assignments:
+        positive_scores = []
+        negative_scores = []
+        lane_scores = reference.sigmoid()
+        for batch_idx, assignment in enumerate(assignments):
             matched_gt = assignment[assignment >= 0]
             matched += int(matched_gt.numel())
             unique_matched += int(torch.unique(matched_gt).numel())
+            positive = assignment >= 0
+            if positive.any():
+                positive_scores.append(lane_scores[batch_idx, positive])
+            if (~positive).any():
+                negative_scores.append(lane_scores[batch_idx, ~positive])
         valid_gt = int((gt_visibility > .5).any(dim=-1).sum())
-        foreground_probability = reference.sigmoid()
-        objectness_queries = int((
-            foreground_probability >= self.diagnostic_score_threshold).sum())
-        scores = foreground_probability
+        lane_score_queries = int((
+            lane_scores >= self.diagnostic_score_threshold).sum())
+        scores = lane_scores
         visible = (
             predictions['pred_vis'].sigmoid()
             >= self.diagnostic_visibility_threshold).any(dim=-1)
@@ -153,6 +161,13 @@ class LaneLossBase(nn.Module):
             (scores >= self.diagnostic_score_threshold) & visible).sum())
         batch = max(reference.size(0), 1)
         queries = max(reference.numel(), 1)
+        zero = reference.new_tensor(0.0)
+        positive_lane_score = (
+            torch.cat(positive_scores).mean()
+            if positive_scores else zero)
+        negative_lane_score = (
+            torch.cat(negative_scores).mean()
+            if negative_scores else zero)
         diagnostics = dict(
             diag_gt_match_recall=reference.new_tensor(
                 unique_matched / max(valid_gt, 1)),
@@ -163,9 +178,13 @@ class LaneLossBase(nn.Module):
             diag_positive_queries=reference.new_tensor(matched / batch),
             diag_positive_query_ratio=reference.new_tensor(
                 matched / queries),
-            diag_objectness_probability=foreground_probability.mean(),
-            diag_objectness_queries=reference.new_tensor(
-                objectness_queries / batch),
+            diag_lane_score_probability=lane_scores.mean(),
+            diag_lane_score_queries=reference.new_tensor(
+                lane_score_queries / batch),
+            diag_positive_lane_score=positive_lane_score,
+            diag_negative_lane_score=negative_lane_score,
+            diag_lane_score_margin=(
+                positive_lane_score - negative_lane_score),
             diag_prediction_queries=reference.new_tensor(
                 predicted / batch),
             diag_pred_gt_ratio=reference.new_tensor(
@@ -175,6 +194,9 @@ class LaneLossBase(nn.Module):
             name = f'diag_{modality}_valid_ratio'
             if name in predictions:
                 diagnostics[name] = predictions[name]
+        for name, value in predictions.items():
+            if name.startswith('diag_layer0_') and torch.is_tensor(value):
+                diagnostics[name] = value
         return diagnostics
 
     def forward(self, predictions, gt_lanes_3d, gt_lanes_visibility,
@@ -195,7 +217,8 @@ class LaneLossBase(nn.Module):
             gt_lanes_category, assignments)
         if self.emit_diagnostics:
             losses.update(self._assignment_diagnostics(
-                predictions, assignments, gt_lanes_visibility))
+                predictions, assignments,
+                gt_lanes_3d, gt_lanes_visibility))
         for layer_idx, auxiliary in enumerate(
                 predictions.get('aux_predictions', ())):
             auxiliary_assignments = self._auxiliary_assignments(
@@ -209,7 +232,8 @@ class LaneLossBase(nn.Module):
                     value * self.aux_loss_weight)
             if self.emit_diagnostics:
                 auxiliary_diagnostics = self._assignment_diagnostics(
-                    auxiliary, auxiliary_assignments, gt_lanes_visibility)
+                    auxiliary, auxiliary_assignments,
+                    gt_lanes_3d, gt_lanes_visibility)
                 for name, value in auxiliary_diagnostics.items():
                     losses[
                         f'diag_aux_{layer_idx}_{name.removeprefix("diag_")}'] = (
@@ -218,29 +242,59 @@ class LaneLossBase(nn.Module):
         if (self.emit_diagnostics and topk_indices is not None
                 and predictions.get('aux_predictions')):
             auxiliary = predictions['aux_predictions'][0]
-            selected_x = auxiliary['pred_x'].gather(
-                1, topk_indices.unsqueeze(-1).expand(
-                    -1, -1, auxiliary['pred_x'].size(-1)))
-            selected_z = auxiliary['pred_z'].gather(
-                1, topk_indices.unsqueeze(-1).expand(
-                    -1, -1, auxiliary['pred_z'].size(-1)))
             visible = gt_lanes_visibility > .5
             valid_gt = visible.sum(dim=-1) >= 2
-            distance = torch.linalg.vector_norm(torch.stack((
-                selected_x.unsqueeze(2) - gt_lanes_3d[
-                    ..., 0].unsqueeze(1),
-                selected_z.unsqueeze(2) - gt_lanes_3d[
-                    ..., 2].unsqueeze(1)), dim=-1), dim=-1)
-            close_ratio = (
-                ((distance < self.diagnostic_geometry_distance_threshold)
-                 & visible.unsqueeze(1)).sum(dim=-1)
-                / visible.sum(dim=-1).unsqueeze(1).clamp_min(1))
-            covered = (
-                close_ratio >= self.diagnostic_geometry_match_ratio
-            ).any(dim=1) & valid_gt
+            valid_gt_count = valid_gt.sum().clamp_min(1)
+
+            def query_gt_matches(indices):
+                selected_x = auxiliary['pred_x'].gather(
+                    1, indices.unsqueeze(-1).expand(
+                        -1, -1, auxiliary['pred_x'].size(-1)))
+                selected_z = auxiliary['pred_z'].gather(
+                    1, indices.unsqueeze(-1).expand(
+                        -1, -1, auxiliary['pred_z'].size(-1)))
+                distance = torch.linalg.vector_norm(torch.stack((
+                    selected_x.unsqueeze(2) - gt_lanes_3d[
+                        ..., 0].unsqueeze(1),
+                    selected_z.unsqueeze(2) - gt_lanes_3d[
+                        ..., 2].unsqueeze(1)), dim=-1), dim=-1)
+                close_ratio = (
+                    ((distance
+                      < self.diagnostic_geometry_distance_threshold)
+                     & visible.unsqueeze(1)).sum(dim=-1)
+                    / visible.sum(dim=-1).unsqueeze(1).clamp_min(1))
+                return (
+                    close_ratio >= self.diagnostic_geometry_match_ratio
+                ) & valid_gt.unsqueeze(1)
+
+            predicted_matches = query_gt_matches(topk_indices)
+            covered = predicted_matches.any(dim=1) & valid_gt
             losses['diag_layer0_topk_gt_recall'] = (
                 covered.sum().to(predictions['pred_cls'].dtype)
-                / valid_gt.sum().clamp_min(1))
+                / valid_gt_count)
+            queries_per_gt = predicted_matches.sum(dim=1)
+            valid_queries_per_gt = queries_per_gt[valid_gt]
+            losses['diag_layer0_topk_queries_per_gt'] = (
+                valid_queries_per_gt.sum().to(
+                    predictions['pred_cls'].dtype)
+                / valid_gt_count)
+            losses['diag_layer0_topk_queries_per_gt_max'] = (
+                valid_queries_per_gt.max().to(
+                    predictions['pred_cls'].dtype)
+                if valid_queries_per_gt.numel()
+                else predictions['pred_cls'].new_tensor(0.0))
+            losses['diag_layer0_topk_uncovered_gt_ratio'] = (
+                (valid_queries_per_gt == 0).sum().to(
+                    predictions['pred_cls'].dtype)
+                / valid_gt_count)
+            selected_indices = predictions.get('selected_query_indices')
+            if selected_indices is not None:
+                training_covered = (
+                    query_gt_matches(selected_indices).any(dim=1) & valid_gt)
+                losses['diag_layer0_training_gt_recall'] = (
+                    training_covered.sum().to(
+                        predictions['pred_cls'].dtype)
+                    / valid_gt_count)
         return losses
 
 
@@ -253,7 +307,8 @@ class TopkLaneLoss(LaneLossBase):
 class LaneLoss(LaneLossBase):
     """Keep the compact lane objectives with Hungarian one-to-one matching."""
 
-    def __init__(self, assigner=None, objectness_loss_weight=1.0,
+    def __init__(self, assigner=None, score_loss_weight=1.0,
+                 objectness_loss_weight=None,
                  category_loss_weight=.25,
                  negative_objectness_weight=.1,
                  ambiguous_negative_weight=.1,
@@ -261,10 +316,14 @@ class LaneLoss(LaneLossBase):
                  ambiguous_match_ratio=.75,
                  diagnostic_geometry_distance_threshold=.3,
                  diagnostic_geometry_match_ratio=.8,
+                 tube_loss_weight=.5, tube_radius=.5,
+                 tube_z_weight=1., tube_epsilon=1e-6,
                  **kwargs):
         if assigner is None:
             assigner = dict(type='HungarianAssigner')
-        self.objectness_loss_weight = float(objectness_loss_weight)
+        if objectness_loss_weight is not None:
+            score_loss_weight = objectness_loss_weight
+        self.score_loss_weight = float(score_loss_weight)
         self.category_loss_weight = float(category_loss_weight)
         self.negative_objectness_weight = float(negative_objectness_weight)
         self.ambiguous_negative_weight = float(ambiguous_negative_weight)
@@ -275,12 +334,23 @@ class LaneLoss(LaneLossBase):
             diagnostic_geometry_distance_threshold)
         self.diagnostic_geometry_match_ratio = float(
             diagnostic_geometry_match_ratio)
+        self.tube_loss_weight = float(tube_loss_weight)
+        self.tube_radius = float(tube_radius)
+        self.tube_z_weight = float(tube_z_weight)
+        self.tube_epsilon = float(tube_epsilon)
         if min(
-                self.objectness_loss_weight,
+                self.score_loss_weight,
                 self.category_loss_weight,
                 self.negative_objectness_weight,
-                self.ambiguous_negative_weight) < 0:
+                self.ambiguous_negative_weight,
+                self.tube_loss_weight) < 0:
             raise ValueError('Lane loss weights must be non-negative.')
+        if self.tube_radius <= 0:
+            raise ValueError('tube_radius must be positive.')
+        if self.tube_z_weight < 0:
+            raise ValueError('tube_z_weight must be non-negative.')
+        if self.tube_epsilon <= 0:
+            raise ValueError('tube_epsilon must be positive.')
         if self.ambiguous_distance_threshold <= 0:
             raise ValueError(
                 'ambiguous_distance_threshold must be positive.')
@@ -328,19 +398,6 @@ class LaneLoss(LaneLossBase):
             gt_visibility)
         return assignments >= 0
 
-    def _binary_focal_terms(self, logits, targets):
-        probability = logits.sigmoid()
-        bce = F.binary_cross_entropy_with_logits(
-            logits, targets, reduction='none')
-        target_probability = torch.where(
-            targets > .5, probability, 1 - probability)
-        alpha = torch.where(
-            targets > .5,
-            logits.new_tensor(self.focal_alpha),
-            logits.new_tensor(1 - self.focal_alpha))
-        return alpha * (1 - target_probability).pow(
-            self.focal_gamma) * bce
-
     def _ambiguous_negative_mask(
             self, predictions, gt_lanes_3d, gt_visibility):
         visible = gt_visibility > .5
@@ -358,17 +415,46 @@ class LaneLoss(LaneLossBase):
             (close_ratio >= self.ambiguous_match_ratio)
             & valid_gt.unsqueeze(1)).any(dim=-1)
 
+    def _assignment_diagnostics(
+            self, predictions, assignments,
+            gt_lanes_3d, gt_visibility):
+        diagnostics = super()._assignment_diagnostics(
+            predictions, assignments, gt_lanes_3d, gt_visibility)
+        tube_ious = []
+        for batch_idx, assignment in enumerate(assignments):
+            positive_queries = torch.where(assignment >= 0)[0]
+            if positive_queries.numel() == 0:
+                continue
+            matched_gt = assignment[positive_queries]
+            tube_ious.append(valid_range_tube_iou(
+                predictions['pred_x'][batch_idx, positive_queries],
+                predictions['pred_z'][batch_idx, positive_queries],
+                predictions['pred_vis'][
+                    batch_idx, positive_queries].sigmoid(),
+                gt_lanes_3d[batch_idx, matched_gt, :, 0],
+                gt_lanes_3d[batch_idx, matched_gt, :, 2],
+                gt_visibility[batch_idx, matched_gt],
+                tube_radius=self.tube_radius,
+                z_weight=self.tube_z_weight,
+                epsilon=self.tube_epsilon))
+        diagnostics['diag_positive_tube_iou'] = (
+            torch.cat(tube_ious).mean()
+            if tube_ious else predictions['pred_cls'].new_tensor(0.0))
+        return diagnostics
+
     def _prediction_losses(self, predictions, gt_lanes_3d,
                            gt_visibility, gt_category, assignments):
         pred_x, pred_z = predictions['pred_x'], predictions['pred_z']
         pred_visibility = predictions['pred_vis']
-        pred_objectness = predictions['pred_cls']
+        pred_score = predictions['pred_cls']
         pred_category = predictions['pred_category']
-        total_objectness = pred_objectness.sum() * 0
+        total_score = pred_score.sum() * 0
         total_category = pred_category.sum() * 0
         total_x = pred_x.sum() * 0
         total_z = pred_z.sum() * 0
         total_visibility = pred_visibility.sum() * 0
+        total_tube = (
+            pred_x.sum() + pred_z.sum() + pred_visibility.sum()) * 0
         positive_count = 0
         visible_point_count = 0
         ambiguous = self._ambiguous_negative_mask(
@@ -377,39 +463,54 @@ class LaneLoss(LaneLossBase):
         for batch_idx, assignment in enumerate(assignments):
             positive_queries = torch.where(assignment >= 0)[0]
             positive = torch.zeros(
-                pred_objectness.size(1), dtype=torch.bool,
-                device=pred_objectness.device)
+                pred_score.size(1), dtype=torch.bool,
+                device=pred_score.device)
             positive[positive_queries] = True
-            objectness_target = positive.to(pred_objectness.dtype)
-            focal = self._binary_focal_terms(
-                pred_objectness[batch_idx], objectness_target)
-            positive_loss = torch.where(positive, focal, 0).sum()
-            positive_loss = positive_loss / positive.sum().clamp_min(1)
+            score_target = pred_score.new_zeros(pred_score.size(1))
+            if positive_queries.numel() > 0:
+                matched_gt = assignment[positive_queries]
+                target_x = gt_lanes_3d[batch_idx, matched_gt, :, 0]
+                target_z = gt_lanes_3d[batch_idx, matched_gt, :, 2]
+                visible = gt_visibility[
+                    batch_idx, matched_gt].to(pred_x.dtype)
+                tube_iou = valid_range_tube_iou(
+                    pred_x[batch_idx, positive_queries],
+                    pred_z[batch_idx, positive_queries],
+                    pred_visibility[
+                        batch_idx, positive_queries].sigmoid(),
+                    target_x, target_z, visible,
+                    tube_radius=self.tube_radius,
+                    z_weight=self.tube_z_weight,
+                    epsilon=self.tube_epsilon)
+                score_target[positive_queries] = tube_iou.detach()
+                total_tube = total_tube + (1.0 - tube_iou).sum()
+            score_terms = F.binary_cross_entropy_with_logits(
+                pred_score[batch_idx], score_target, reduction='none')
+            positive_loss = torch.where(
+                positive, score_terms, 0).sum()
+            positive_loss = (
+                positive_loss / positive.sum().clamp_min(1))
             negative = ~positive
             negative_weight = torch.where(
                 ambiguous[batch_idx] & negative,
-                focal.new_tensor(self.ambiguous_negative_weight),
-                focal.new_tensor(1.0))
+                score_terms.new_tensor(self.ambiguous_negative_weight),
+                score_terms.new_tensor(1.0))
             negative_loss = torch.where(
-                negative, focal * negative_weight, 0).sum()
+                negative, score_terms * negative_weight, 0).sum()
             negative_loss = (
                 negative_loss / negative.sum().clamp_min(1))
-            total_objectness = total_objectness + (
+            total_score = total_score + (
                 positive_loss
                 + self.negative_objectness_weight * negative_loss)
 
             if positive_queries.numel() == 0:
                 continue
-            matched_gt = assignment[positive_queries]
             positive_count += int(positive_queries.numel())
             total_category = total_category + F.cross_entropy(
                 pred_category[batch_idx, positive_queries],
                 gt_category[batch_idx, matched_gt].long(),
                 reduction='sum')
-            visible = gt_visibility[batch_idx, matched_gt].to(pred_x.dtype)
             visible_point_count += int(visible.sum())
-            target_x = gt_lanes_3d[batch_idx, matched_gt, :, 0]
-            target_z = gt_lanes_3d[batch_idx, matched_gt, :, 2]
             total_x = total_x + (
                 F.smooth_l1_loss(
                     pred_x[batch_idx, positive_queries], target_x,
@@ -427,9 +528,8 @@ class LaneLoss(LaneLossBase):
         batch_size = max(pred_x.size(0), 1)
         visibility_count = max(positive_count * pred_x.size(-1), 1)
         return dict(
-            loss_objectness=(
-                total_objectness / batch_size
-                * self.objectness_loss_weight),
+            loss_score=(
+                total_score / batch_size * self.score_loss_weight),
             loss_category=(
                 total_category / max(positive_count, 1)
                 * self.category_loss_weight),
@@ -438,4 +538,7 @@ class LaneLoss(LaneLossBase):
             loss_z=(total_z / max(visible_point_count, 1)
                     * self.z_loss_weight),
             loss_visibility=(total_visibility / visibility_count
-                             * self.visibility_loss_weight))
+                             * self.visibility_loss_weight),
+            loss_tube=(
+                total_tube / max(positive_count, 1)
+                * self.tube_loss_weight))

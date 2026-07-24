@@ -15,11 +15,12 @@ class TrainingLoggerHook(Hook):
     priority = 'VERY_LOW'
 
     DEFAULT_BRIEF_METRICS = (
-        'loss_objectness',
+        'loss_score',
         'loss_category',
         'loss_x',
         'loss_z',
         'loss_visibility',
+        'loss_tube',
         'loss_lidar_shape_cover',
         'loss_lidar_shape_mode',
         'loss_lidar_shape_diversity',
