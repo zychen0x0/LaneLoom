@@ -63,6 +63,12 @@ img_norm_cfg = dict(mean=[123.675, 116.28, 103.53], std=[58.395, 57.12, 57.375],
 num_views = 1
 view_mode = 'multi_aug_views'
 eval_view_mode = 'original'
+use_grid_mask = False
+grid_mask = dict(
+    type='GridMask',
+    ratio=0.5,
+    prob=0.7,
+    mode=1)
 
 # 6 个 view 的顺序是
 # original     原图
@@ -240,6 +246,7 @@ train_pipeline = [
         multi_aug_view_transforms=multi_aug_view_transforms),
     dict(type='ResizeOpenLaneImages', img_scale=img_scale, keep_ratio=True),
     dict(type='NormalizeOpenLaneImages', **img_norm_cfg),
+    *([grid_mask] if use_grid_mask else []),
     dict(
         type='LoadPoseAlignedOpenLanePoints',
         load_dim=load_dim,

@@ -116,7 +116,13 @@ def test_config_uses_named_augmentation_views_for_training_only():
     assert cfg.eval_view_mode == 'original'
     assert 'albu_train_transforms' not in cfg
     assert 'image_augmentation' not in cfg
-    assert 'use_grid_mask' not in cfg
+    assert cfg.use_grid_mask is False
+    assert cfg.grid_mask == dict(
+        type='GridMask',
+        ratio=0.5,
+        prob=0.7,
+        mode=1,
+    )
     assert 'use_grid_mask' not in cfg.model
     assert cfg.train_pipeline[0].view_mode == 'multi_aug_views'
     assert cfg.train_pipeline[0].multi_aug_view_transforms == (
@@ -127,6 +133,27 @@ def test_config_uses_named_augmentation_views_for_training_only():
     assert cfg.test_pipeline[0].multi_aug_view_transforms == []
     assert all(stage.type != 'Albu' for stage in cfg.test_pipeline)
     assert all(stage.type != 'GridMask' for stage in cfg.test_pipeline)
+
+
+def test_grid_mask_ablation_switch_builds_training_only_stage():
+    config_path = Path(__file__).resolve().parents[2] / 'configs/_base_/datasets/openlane_datasets.py'
+    source = config_path.read_text()
+    disabled_setting = 'use_grid_mask = False'
+    assert source.count(disabled_setting) == 1
+
+    namespace = {'__file__': str(config_path)}
+    exec(compile(
+        source.replace(disabled_setting, 'use_grid_mask = True'),
+        str(config_path),
+        'exec',
+    ), namespace)
+
+    train_stage_types = [
+        stage['type'] for stage in namespace['train_pipeline']]
+    test_stage_types = [
+        stage['type'] for stage in namespace['test_pipeline']]
+    assert train_stage_types.count('GridMask') == 1
+    assert 'GridMask' not in test_stage_types
 
 
 def test_config_uses_strict_q0_and_one_to_one_assignment():
