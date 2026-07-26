@@ -99,3 +99,6 @@ data/*
 *.tgz
 *.7z
 *.rar
+
+# Data
+/data/*
