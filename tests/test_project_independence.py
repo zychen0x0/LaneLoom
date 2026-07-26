@@ -56,3 +56,14 @@ def test_grid_mask_is_a_local_module_and_preserves_image_shape():
         'LaneLoom.datasets.openlane.pipelines.transforms')
     assert masked.shape == image.shape
     assert torch.any(masked == 0)
+
+
+def test_grid_mask_modes_select_complementary_regions():
+    image = torch.ones(2, 3, 12, 16)
+
+    torch.manual_seed(7)
+    regular = GridMask(ratio=0.5, prob=1.0, mode=0).train()(image)
+    torch.manual_seed(7)
+    inverted = GridMask(ratio=0.5, prob=1.0, mode=1).train()(image)
+
+    assert torch.equal(regular + inverted, image)

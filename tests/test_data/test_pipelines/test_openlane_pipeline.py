@@ -70,6 +70,7 @@ def test_openlane_pipelines_declare_the_complete_data_flow_in_order():
         'ResizeOpenLaneImages',
         'Albu',
         'NormalizeOpenLaneImages',
+        'GridMask',
         'LoadPoseAlignedOpenLanePoints',
         'PointsRangeFilter',
         'PointShuffle',

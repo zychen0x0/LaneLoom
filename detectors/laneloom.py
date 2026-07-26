@@ -4,9 +4,6 @@ from mmcv.ops import Voxelization
 from mmengine.model import BaseModel
 from mmdet3d.registry import MODELS
 
-from LaneLoom.datasets.openlane.pipelines import GridMask
-
-
 def _build_module(cfg):
     if cfg is None or isinstance(cfg, nn.Module):
         return cfg
@@ -25,7 +22,6 @@ class LaneLoom(BaseModel):
 
     # ---------------------------------------------------init start---------------------------------------------------
     def __init__(self,
-                 use_grid_mask=False,
                  pts_voxel_layer=None,
                  pts_voxel_encoder=None,
                  pts_middle_encoder=None,
@@ -53,8 +49,6 @@ class LaneLoom(BaseModel):
         self.img_neck = _build_module(img_neck)
         self.lane_head = _build_module(lane_head)
 
-        self.grid_mask = GridMask(ratio=0.5, prob=0.7)
-        self.use_grid_mask = use_grid_mask
         self.fp16_enabled = False
 
         self.num_levels = num_levels
@@ -149,9 +143,6 @@ class LaneLoom(BaseModel):
             batch_size, num_cams, channels, height, width = img.size()
             num_views = num_cams
             img = img.reshape(batch_size * num_cams, channels, height, width)
-
-        if self.use_grid_mask:
-            img = self.grid_mask(img)
 
         img_feats = self.img_backbone(img.float())
         if isinstance(img_feats, dict):

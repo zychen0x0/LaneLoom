@@ -9,16 +9,24 @@ except ImportError:
 
 
 class GridMask(nn.Module):
-    """Randomly mask image stripes during training."""
+    """Apply one shared periodic mask to a batch during training.
 
-    def __init__(self, ratio=0.5, prob=0.7):
+    ``ratio`` is the stripe width divided by the grid period, not the final
+    masked-area fraction.  ``mode=0`` keeps pixels outside the horizontal and
+    vertical stripes; ``mode=1`` keeps the complementary stripe union.
+    """
+
+    def __init__(self, ratio=0.5, prob=0.7, mode=0):
         super().__init__()
         if not 0.0 <= ratio < 1.0:
             raise ValueError('ratio must lie in [0, 1).')
         if not 0.0 <= prob <= 1.0:
             raise ValueError('prob must lie in [0, 1].')
+        if mode not in (0, 1):
+            raise ValueError('mode must be either 0 or 1.')
         self.ratio = float(ratio)
         self.prob = float(prob)
+        self.mode = int(mode)
 
     def forward(self, image):
         if not self.training or self.prob == 0.0 or torch.rand(()) >= self.prob:
@@ -36,6 +44,8 @@ class GridMask(nn.Module):
         rows = (torch.arange(height, device=image.device) + shift_y) % period
         cols = (torch.arange(width, device=image.device) + shift_x) % period
         keep = (rows[:, None] >= stripe) & (cols[None, :] >= stripe)
+        if self.mode == 1:
+            keep = ~keep
         return image * keep.to(dtype=image.dtype)[None, None]
 
 

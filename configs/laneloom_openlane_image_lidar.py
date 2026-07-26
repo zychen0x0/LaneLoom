@@ -43,7 +43,6 @@ backbone_init = 'torchvision://resnet50'
 # ---------------------------------------------------model config start---------------------------------------------------
 model = dict(
     type='LaneLoom',
-    use_grid_mask=True,
     freeze_img=False,
     num_levels=_num_levels_,
 

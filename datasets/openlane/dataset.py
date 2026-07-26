@@ -14,6 +14,8 @@ from torch.utils.data import Dataset
 from mmengine.registry import FUNCTIONS
 from mmdet3d.registry import DATASETS
 
+from .pipelines import GridMask
+
 try:
     from scipy.spatial import cKDTree
 except ImportError:  # pragma: no cover - kept for minimal environments
@@ -177,6 +179,7 @@ class OpenLaneDataset(Dataset):
         'ResizeOpenLaneImages',
         'Albu',
         'NormalizeOpenLaneImages',
+        'GridMask',
         'LoadPoseAlignedOpenLanePoints',
         'PointsRangeFilter',
         'PointShuffle',
@@ -221,6 +224,10 @@ class OpenLaneDataset(Dataset):
         image_load_cfg = self._pipeline_stage('LoadTemporalOpenLaneImages')
         image_resize_cfg = self._pipeline_stage('ResizeOpenLaneImages')
         image_normalize_cfg = self._pipeline_stage('NormalizeOpenLaneImages')
+        grid_mask_cfg = next((
+            stage for stage in self.pipeline_cfg
+            if stage.get('type') == 'GridMask'
+        ), None)
         points_load_cfg = self._pipeline_stage('LoadPoseAlignedOpenLanePoints')
         self._pipeline_stage('LoadOpenLaneAnnotations')
         pack_cfg = self._pipeline_stage('PackInputs')
@@ -283,6 +290,7 @@ class OpenLaneDataset(Dataset):
         self.img_aug = self._build_img_aug()
         self.img_aug_replay = self._build_img_aug(replay=True)
         self.view_aug_names, self.view_aug_transforms = self._build_view_aug()
+        self.grid_mask = self._build_grid_mask(grid_mask_cfg)
         self.pts_aug_cfg = [
             stage for stage in self.pipeline_cfg
             if stage['type'] in ('PointsRangeFilter', 'PointShuffle')
@@ -409,6 +417,14 @@ class OpenLaneDataset(Dataset):
             names.append(view_cfg.get('name', f'view{len(names)}'))
             transforms.append(self._build_albu_compose(view_cfg.get('transforms', [])))
         return names, transforms
+
+    @staticmethod
+    def _build_grid_mask(cfg):
+        if cfg is None:
+            return None
+        cfg = dict(cfg)
+        cfg.pop('type')
+        return GridMask(**cfg).train()
 
     def _resolve_point_cloud_range(self):
         for aug in self.pts_aug_cfg:
@@ -1722,6 +1738,10 @@ class OpenLaneDataset(Dataset):
         # 多增强视图构造: OpenLane 当前只有前视相机, 这里将同一图像构造成 num_views 个增强视图。
         # 后续模型侧可基于 view_mask 做增强视图 dropout、特征融合和 Image-LiDAR 鲁棒融合。
         img = torch.stack(img_tensors, dim=0)
+        if self.grid_mask is not None:
+            image_shape = img.shape
+            img = self.grid_mask(
+                img.reshape(-1, *image_shape[-3:])).reshape(image_shape)
         view_mask = torch.stack(view_masks, dim=0)
         lidar = self._load_lidar_queue(lidar_scene, queue_keys)
         gt = self._parse_openlane_gt(label_infos[-1])

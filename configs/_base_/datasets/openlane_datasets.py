@@ -273,6 +273,19 @@ albu_train_transforms = [
         p=0.3),
 ]
 
+image_augmentation = dict(
+    albumentations=dict(
+        type='Albu',
+        transforms=albu_train_transforms),
+    grid_mask=dict(
+        type='GridMask',
+        ratio=0.5,
+        prob=0.7,
+        # mode=0 preserves LaneLoom's existing mask. mode=1 selects its
+        # complement, matching the mode used by BEVFormer's default config.
+        mode=0),
+)
+
 packed_keys = [
     'img',
     'lidar',
@@ -300,8 +313,9 @@ train_pipeline = [
         view_mode=view_mode,
         multi_aug_view_transforms=multi_aug_view_transforms),
     dict(type='ResizeOpenLaneImages', img_scale=img_scale, keep_ratio=True),
-    dict(type='Albu', transforms=albu_train_transforms),
+    image_augmentation['albumentations'],
     dict(type='NormalizeOpenLaneImages', **img_norm_cfg),
+    image_augmentation['grid_mask'],
     dict(
         type='LoadPoseAlignedOpenLanePoints',
         load_dim=load_dim,
