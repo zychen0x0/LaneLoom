@@ -1434,8 +1434,8 @@ class OpenLaneDataset(Dataset):
         current_from_global = np.linalg.inv(
             self._global_from_ground(current_label, current_meta))
         settings = dict(resample_step=1.0, max_segment_gap=3.0,
-                        match_radius=0.5, max_local_chamfer=0.25,
-                        min_current_coverage=0.60, min_y_overlap=5.0)
+                        match_radius=0.2, max_local_chamfer=0.25,
+                        min_current_coverage=0.40, min_y_overlap=4.0)
 
         current_records = {
             record['track_id']: record for record in self._parse_lane_records(

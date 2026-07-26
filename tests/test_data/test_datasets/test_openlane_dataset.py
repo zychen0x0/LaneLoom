@@ -330,6 +330,71 @@ def test_temporal_gt_rejects_linear_fallback_history_only_lane():
         for association in enhanced['temporal_gt_associations'])
 
 
+def test_temporal_gt_uses_strict_match_radius_with_relaxed_overlap_gates():
+    dataset = _bare_gt_dataset()
+    y_short = np.arange(20., 25., dtype=np.float32)
+    y_long = np.arange(20., 26., dtype=np.float32)
+    current_partial = np.column_stack(
+        (np.zeros_like(y_short), y_short, np.zeros_like(y_short)))
+    history_partial = np.column_stack((
+        np.asarray([0.15, 0.15, 1., 1., 1.], dtype=np.float32),
+        y_short,
+        np.zeros_like(y_short),
+    ))
+    current_offset = np.column_stack((
+        np.full_like(y_long, 3.), y_long, np.zeros_like(y_long)))
+    history_offset = np.column_stack((
+        np.full_like(y_long, 3.21), y_long, np.zeros_like(y_long)))
+
+    def record(track_id, ground):
+        return {
+            'track_id': track_id,
+            'ground': ground,
+            'global': ground.copy(),
+            'category': 1,
+            'fit_status': 'first_fit',
+        }
+
+    current_records = [
+        record(11, current_partial),
+        record(22, current_offset),
+    ]
+    history_records = [
+        record(11, history_partial),
+        record(22, history_offset),
+    ]
+    current_label = dict(frame='current')
+    history_label = dict(frame='history')
+
+    dataset._build_calib = lambda label: {}
+    dataset._global_from_ground = lambda label, meta: np.eye(4, dtype=np.float32)
+    dataset._parse_lane_records = (
+        lambda label, meta=None, is_history=False:
+        current_records if label is current_label else history_records)
+    dataset._clip_current_roi_and_fov = lambda points, calib: points
+    empty_uv = np.zeros((0, 2), dtype=np.float32)
+    empty_uvy = np.zeros((0, 3), dtype=np.float32)
+    packed = dataset._pack_lane_targets(
+        [current_partial, current_offset],
+        [empty_uv, empty_uv],
+        [empty_uvy, empty_uvy],
+        [1, 1],
+        track_ids=[11, 22],
+    )
+    packed.pop('gt_lanes_memory_mask')
+    dataset._parse_openlane_gt = lambda label: packed
+
+    enhanced = dataset._build_temporal_enhanced_gt(
+        [history_label, current_label], [{}, {}])
+    accepted_by_track = {
+        association['track_id']: association['accepted']
+        for association in enhanced['temporal_gt_associations']
+        if 'reason' not in association
+    }
+
+    assert accepted_by_track == {11: True, 22: False}
+
+
 def _assert_temporal_frame_meta(frame_meta, num_views):
     standard_keys = [
         'sample_idx',
