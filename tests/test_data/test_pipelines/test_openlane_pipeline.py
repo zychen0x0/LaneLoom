@@ -932,6 +932,10 @@ def test_visualize_temporal_gt_enhancement_comparison():
     image_path = os.getenv('LANELOOM_TEMPORAL_GT_IMAGE_PATH') or _default_openlane_image(
         cfg, '155250133677391100.jpg')
     dataset = DATASETS.build(dataset_cfg)
+    # The training PackInputs stage intentionally omits the diagnostic memory
+    # mask.  This visualization needs the unfiltered sample to distinguish
+    # current-frame anchors from history-only anchors.
+    dataset.pack_keys = ()
     sample, sample_index = _select_visualization_sample(dataset, image_path)
     assert 'gt_lanes_3d_enhanced' in sample
 

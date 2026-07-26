@@ -75,6 +75,7 @@ last_checkpoint
 *.tiff
 *.webp
 *.svg
+*.json
 
 # Local datasets and large intermediate data
 data/*

@@ -10,8 +10,18 @@ PYTHONPATH=/workspace CUDA_VISIBLE_DEVICES=0,1 \
 torchrun --nproc_per_node=2 --master_port=29501 \
 tools/train.py \
 configs/laneloom_openlane_image_lidar.py \
---launcher pytorch
+--launcher pytorch \
+--load-from "work_dirs/laneloom_openlane_image_lidar/exp_date_20260725_163203/checkpoints/epoch_24.pth"
+
 ```
+
+## 继续训练 load_from
+
+PYTHONPATH=/workspace CUDA_VISIBLE_DEVICES=0,1 \
+torchrun --nproc_per_node=2 --master_port=29501 \
+tools/train.py \
+configs/laneloom_openlane_image_lidar.py \
+--launcher pytorch
 
 
 ## 评估 checkpoint
@@ -56,6 +66,6 @@ work_dirs/laneloom_openlane_image_lidar/exp_date_20260715_191319/checkpoints/bes
 cd /workspace/LaneLoom
 
 tensorboard \
-  --logdir work_dirs/laneloom_openlane_image_lidar/exp_date_20260715_191319/Tensorboard \
+  --logdir work_dirs/laneloom_openlane_image_lidar/exp_date_20260720_220252/Tensorboard \
   --host 0.0.0.0 \
   --port 6006
