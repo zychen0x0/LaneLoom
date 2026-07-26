@@ -111,7 +111,7 @@ def test_gt_visualization_config_disables_all_image_augmentation():
     dataset_cfg = _without_image_augmentation(cfg.train_dataloader['dataset'])
     stages = dataset_cfg['dataset_cfg']['train_pipeline']
 
-    assert stages[0]['view_mode'] == 'original'
+    assert stages[0]['image_augmentation_mode'] == 'none'
     assert all(stage['type'] not in ('Albu', 'GridMask') for stage in stages)
 
 
@@ -215,7 +215,7 @@ def test_configured_point_pipeline_processes_loaded_openlane_points():
         pytest.skip('No non-empty LiDAR points found in sampled OpenLane data.')
 
 
-def test_configured_multi_aug_views_load_one_shared_gt_sample():
+def test_configured_named_recipes_load_six_views_from_one_shared_gt_sample():
     np.random.seed(0)
     cfg = _load_cfg()
     _require_openlane_data(cfg)
@@ -225,14 +225,14 @@ def test_configured_multi_aug_views_load_one_shared_gt_sample():
     dataset_cfg['dataset_cfg'] = dict(dataset_cfg['dataset_cfg'])
     dataset_cfg['dataset_cfg'].update(
         num_views=6,
-        view_mode='multi_aug_views',
-        multi_aug_view_transforms=cfg.multi_aug_view_transforms,
+        image_augmentation_mode='named_recipes',
+        image_augmentation_recipes=cfg.image_augmentation_recipes,
     )
     dataset = DATASETS.build(dataset_cfg)
     sample = dataset[0]
 
     assert sample['img'].shape[1] == 6
-    assert sample['img_metas']['view_names'] == [
+    assert sample['img_metas']['augmentation_recipe_names'] == [
         'original',
         'brightness',
         'fog',
@@ -253,17 +253,17 @@ def test_configured_single_view_can_select_every_named_augmentation(monkeypatch)
     dataset_cfg = dict(cfg.train_dataloader['dataset'])
     dataset_cfg['max_samples'] = 1
     dataset = DATASETS.build(dataset_cfg)
-    selected_indices = iter(range(len(cfg.multi_aug_view_transforms)))
+    selected_indices = iter(range(len(cfg.image_augmentation_recipes)))
     monkeypatch.setattr(
         np.random, 'randint', lambda upper: next(selected_indices))
 
     assert [
-        dataset._sample_view_aug_indices()[0]
-        for _ in cfg.multi_aug_view_transforms
-    ] == list(range(len(cfg.multi_aug_view_transforms)))
+        dataset._sample_augmentation_recipe_indices()[0]
+        for _ in cfg.image_augmentation_recipes
+    ] == list(range(len(cfg.image_augmentation_recipes)))
 
 
-def test_single_named_aug_view_syncs_recipe_and_seed_across_temporal_queue():
+def test_single_named_recipe_syncs_recipe_and_seed_across_temporal_queue():
     cfg = _load_cfg()
     _require_openlane_data(cfg)
 
@@ -273,14 +273,18 @@ def test_single_named_aug_view_syncs_recipe_and_seed_across_temporal_queue():
     calls = []
     load_image_views = dataset._load_image_views
 
-    def record_load(image_path, random_aug_replays=None,
-                    view_aug_indices=None, view_aug_seeds=None):
-        calls.append((tuple(view_aug_indices), tuple(view_aug_seeds)))
+    def record_load(image_path, random_pipeline_replays=None,
+                    augmentation_recipe_indices=None,
+                    augmentation_recipe_seeds=None):
+        calls.append((
+            tuple(augmentation_recipe_indices),
+            tuple(augmentation_recipe_seeds),
+        ))
         return load_image_views(
             image_path,
-            random_aug_replays=random_aug_replays,
-            view_aug_indices=view_aug_indices,
-            view_aug_seeds=view_aug_seeds)
+            random_pipeline_replays=random_pipeline_replays,
+            augmentation_recipe_indices=augmentation_recipe_indices,
+            augmentation_recipe_seeds=augmentation_recipe_seeds)
 
     dataset._load_image_views = record_load
     np.random.seed(0)
@@ -289,8 +293,8 @@ def test_single_named_aug_view_syncs_recipe_and_seed_across_temporal_queue():
     assert len(calls) == len(sample['img_metas']['frame_keys'])
     assert len(set(calls)) == 1
     selected_index = calls[0][0][0]
-    assert sample['img_metas']['view_names'] == [
-        cfg.multi_aug_view_transforms[selected_index]['name']]
+    assert sample['img_metas']['augmentation_recipe_names'] == [
+        cfg.image_augmentation_recipes[selected_index]['name']]
 
 
 def test_random_aug_views_use_same_injected_aug_policy():
@@ -303,7 +307,7 @@ def test_random_aug_views_use_same_injected_aug_policy():
     dataset_cfg['dataset_cfg'] = dict(dataset_cfg['dataset_cfg'])
     dataset_cfg['dataset_cfg'].update(
         num_views=6,
-        view_mode='random_aug',
+        image_augmentation_mode='random_aug',
         train_pipeline=_with_test_coarse_dropout(cfg.train_pipeline),
     )
     dataset = DATASETS.build(dataset_cfg)
@@ -317,7 +321,7 @@ def test_random_aug_views_use_same_injected_aug_policy():
     )
 
 
-def test_random_aug_view_mode_ignores_surrounding_spaces():
+def test_random_aug_mode_ignores_surrounding_spaces():
     np.random.seed(0)
     cfg = _load_cfg()
     _require_openlane_data(cfg)
@@ -327,12 +331,12 @@ def test_random_aug_view_mode_ignores_surrounding_spaces():
     dataset_cfg['dataset_cfg'] = dict(dataset_cfg['dataset_cfg'])
     dataset_cfg['dataset_cfg'].update(
         num_views=1,
-        view_mode='random_aug ',
+        image_augmentation_mode='random_aug ',
     )
     dataset = DATASETS.build(dataset_cfg)
     sample = dataset[0]
 
-    assert sample['img_metas']['view_mode'] == 'random_aug'
+    assert sample['img_metas']['image_augmentation_mode'] == 'random_aug'
     assert sample['img'].shape[1] == 1
 
 
@@ -346,25 +350,25 @@ def test_random_aug_replay_syncs_temporal_queue_augmentation():
     dataset_cfg['dataset_cfg'] = dict(dataset_cfg['dataset_cfg'])
     dataset_cfg['dataset_cfg'].update(
         num_views=1,
-        view_mode='random_aug',
+        image_augmentation_mode='random_aug',
         train_pipeline=_with_test_coarse_dropout(cfg.train_pipeline))
     dataset = DATASETS.build(dataset_cfg)
     label_info = dataset._read_json(dataset.label_files[0])
     scene_name = dataset.label_files[0].parent.name
     frame_key = dataset.label_files[0].stem[:12]
     image_path = dataset._find_image_path(label_info, scene_name, frame_key)
-    random_aug_replays = [None] * dataset.num_views
+    random_pipeline_replays = [None] * dataset.num_views
 
     first_views, _ = dataset._load_image_views(
-        image_path, random_aug_replays=random_aug_replays)
+        image_path, random_pipeline_replays=random_pipeline_replays)
     replayed_views, _ = dataset._load_image_views(
-        image_path, random_aug_replays=random_aug_replays)
+        image_path, random_pipeline_replays=random_pipeline_replays)
 
-    assert random_aug_replays[0] is not None
+    assert random_pipeline_replays[0] is not None
     assert torch.allclose(first_views, replayed_views)
 
 
-def test_multi_aug_views_seed_syncs_temporal_queue_augmentation():
+def test_named_recipes_seed_syncs_temporal_queue_augmentation():
     np.random.seed(0)
     cfg = _load_cfg()
     _require_openlane_data(cfg)
@@ -374,20 +378,20 @@ def test_multi_aug_views_seed_syncs_temporal_queue_augmentation():
     dataset_cfg['dataset_cfg'] = dict(dataset_cfg['dataset_cfg'])
     dataset_cfg['dataset_cfg'].update(
         num_views=6,
-        view_mode='multi_aug_views',
-        multi_aug_view_transforms=cfg.multi_aug_view_transforms,
+        image_augmentation_mode='named_recipes',
+        image_augmentation_recipes=cfg.image_augmentation_recipes,
     )
     dataset = DATASETS.build(dataset_cfg)
     label_info = dataset._read_json(dataset.label_files[0])
     scene_name = dataset.label_files[0].parent.name
     frame_key = dataset.label_files[0].stem[:12]
     image_path = dataset._find_image_path(label_info, scene_name, frame_key)
-    view_aug_seeds = [11, 22, 33, 44, 55, 66]
+    augmentation_recipe_seeds = [11, 22, 33, 44, 55, 66]
 
     first_views, _ = dataset._load_image_views(
-        image_path, view_aug_seeds=view_aug_seeds)
+        image_path, augmentation_recipe_seeds=augmentation_recipe_seeds)
     replayed_views, _ = dataset._load_image_views(
-        image_path, view_aug_seeds=view_aug_seeds)
+        image_path, augmentation_recipe_seeds=augmentation_recipe_seeds)
 
     assert torch.allclose(first_views, replayed_views)
     assert not torch.allclose(first_views[0], first_views[1])
@@ -399,12 +403,13 @@ def test_multi_aug_views_seed_syncs_temporal_queue_augmentation():
         return image
 
     dataset._apply_transform_with_seed = record_transform
-    dataset._load_image_views(image_path, view_aug_seeds=view_aug_seeds)
+    dataset._load_image_views(
+        image_path, augmentation_recipe_seeds=augmentation_recipe_seeds)
 
     assert len(applied) == dataset.num_views - 1
     assert all(
-        transform is dataset.view_aug_transforms[view_index]
-        and seed == view_aug_seeds[view_index]
+        transform is dataset.augmentation_recipe_transforms[view_index]
+        and seed == augmentation_recipe_seeds[view_index]
         for view_index, (transform, seed) in enumerate(applied, start=1)
     )
 
@@ -515,20 +520,20 @@ def _network_input_report(cfg, sample):
     masks_are_shared = all(
         torch.equal(flattened_masks[0], mask)
         for mask in flattened_masks[1:])
-    view_mode = sample['img_metas']['view_mode']
-    view_names = sample['img_metas']['view_names']
-    named_aug_cfgs = {
-        view_cfg['name']: view_cfg
-        for view_cfg in cfg.multi_aug_view_transforms
+    augmentation_mode = sample['img_metas']['image_augmentation_mode']
+    recipe_names = sample['img_metas']['augmentation_recipe_names']
+    recipe_cfgs = {
+        recipe_cfg['name']: recipe_cfg
+        for recipe_cfg in cfg.image_augmentation_recipes
     }
     single_view_frequency = (
         {
-            name: 1.0 / len(named_aug_cfgs)
-            for name in named_aug_cfgs
+            name: 1.0 / len(recipe_cfgs)
+            for name in recipe_cfgs
         }
-        if view_mode == 'multi_aug_views'
+        if augmentation_mode == 'named_recipes'
         and sample['img'].shape[1] == 1
-        and named_aug_cfgs
+        and recipe_cfgs
         else None
     )
     grid_report = {'enabled': False}
@@ -565,21 +570,21 @@ def _network_input_report(cfg, sample):
             'LoadTemporalOpenLaneImages',
             'ResizeOpenLaneImages',
             *([
-                f'NamedAugmentation[{name}]'
-                for name in view_names
-            ] if view_mode == 'multi_aug_views' else []),
+                f'NamedRecipe[{name}]'
+                for name in recipe_names
+            ] if augmentation_mode == 'named_recipes' else []),
             'NormalizeOpenLaneImages',
             *(['GridMask'] if grid_cfg is not None else []),
         ],
-        'view_mode': view_mode,
-        'selected_named_augmentations': view_names,
-        'selected_named_augmentation_transforms': {
+        'image_augmentation_mode': augmentation_mode,
+        'selected_augmentation_recipes': recipe_names,
+        'selected_recipe_transforms': {
             name: [
                 transform['type']
-                for transform in named_aug_cfgs[name]['transforms']
+                for transform in recipe_cfgs[name]['transforms']
             ]
-            for name in view_names
-            if name in named_aug_cfgs
+            for name in recipe_names
+            if name in recipe_cfgs
         },
         'single_view_selection_frequency': single_view_frequency,
         'shared_across_temporal_frames': True,
@@ -603,8 +608,8 @@ def _without_image_augmentation(dataset_cfg):
     for stage in dataset_cfg['dataset_cfg']['train_pipeline']:
         stage = dict(stage)
         if stage['type'] == 'LoadTemporalOpenLaneImages':
-            stage['view_mode'] = 'original'
-            stage['multi_aug_view_transforms'] = []
+            stage['image_augmentation_mode'] = 'none'
+            stage['image_augmentation_recipes'] = []
         if stage['type'] not in ('Albu', 'GridMask'):
             train_pipeline.append(stage)
     dataset_cfg['dataset_cfg']['train_pipeline'] = train_pipeline
@@ -1052,10 +1057,10 @@ def test_visualize_one_openlane_network_input_sample():
         'LANELOOM_VIS_PIPELINE_OUTPUT',
         'tests/test_data/test_pipelines/show_load_img/'
         'openlane_resized_vs_network_input.jpg'))
-    view_names = sample['img_metas']['view_names']
-    if len(view_names) != sample['img'].shape[1]:
-        view_names = [
-            f'{sample["img_metas"]["view_mode"]} view{view_idx}'
+    recipe_names = sample['img_metas']['augmentation_recipe_names']
+    if len(recipe_names) != sample['img'].shape[1]:
+        recipe_names = [
+            f'{sample["img_metas"]["image_augmentation_mode"]} view{view_idx}'
             for view_idx in range(sample['img'].shape[1])
         ]
     comparison_canvas = show_tensor_img(
@@ -1067,7 +1072,7 @@ def test_visualize_one_openlane_network_input_sample():
             'resized original',
             *[
                 f'network input {name}'
-                for name in view_names
+                for name in recipe_names
             ],
         ])
     report = _network_input_report(cfg, sample)
@@ -1086,9 +1091,9 @@ def test_visualize_one_openlane_network_input_sample():
 
 
 @pytest.mark.skipif(
-    os.getenv('LANELOOM_VIS_MULTI_AUG_VIEWS') != '1',
-    reason='Set LANELOOM_VIS_MULTI_AUG_VIEWS=1 to compare multi-aug views.')
-def test_visualize_openlane_multi_aug_views():
+    os.getenv('LANELOOM_VIS_NAMED_RECIPES') != '1',
+    reason='Set LANELOOM_VIS_NAMED_RECIPES=1 to compare named recipes.')
+def test_visualize_openlane_named_recipes():
     """Apply each configured multi-view recipe to the same resized image."""
     cfg = _load_cfg()
     _require_openlane_data(cfg)
@@ -1105,19 +1110,19 @@ def test_visualize_openlane_multi_aug_views():
     dataset_cfg['max_samples'] = 1
     dataset_cfg['dataset_cfg'] = dict(dataset_cfg['dataset_cfg'])
     dataset_cfg['dataset_cfg'].update(
-        num_views=len(cfg.multi_aug_view_transforms),
-        view_mode='multi_aug_views',
-        multi_aug_view_transforms=cfg.multi_aug_view_transforms,
+        num_views=len(cfg.image_augmentation_recipes),
+        image_augmentation_mode='named_recipes',
+        image_augmentation_recipes=cfg.image_augmentation_recipes,
     )
     dataset = DATASETS.build(dataset_cfg)
     base_seed = 20260726
-    view_aug_seeds = [
+    augmentation_recipe_seeds = [
         base_seed + view_index
         for view_index in range(dataset.num_views)
     ]
     view_tensors, _ = dataset._load_image_views(
         image_path,
-        view_aug_seeds=view_aug_seeds)
+        augmentation_recipe_seeds=augmentation_recipe_seeds)
 
     mean = np.asarray(cfg.img_norm_cfg['mean'], dtype=np.float32)
     std = np.asarray(cfg.img_norm_cfg['std'], dtype=np.float32)
@@ -1130,35 +1135,35 @@ def test_visualize_openlane_multi_aug_views():
     ).astype(np.uint8)
     panels = [
         (name, Image.fromarray(view_arrays[view_index]))
-        for view_index, name in enumerate(dataset.view_aug_names)
+        for view_index, name in enumerate(dataset.augmentation_recipe_names)
     ]
     canvas = _make_labeled_image_grid(panels)
 
     output_path = Path(os.getenv(
-        'LANELOOM_VIS_MULTI_AUG_VIEWS_OUTPUT',
+        'LANELOOM_VIS_NAMED_RECIPES_OUTPUT',
         'tests/test_data/test_pipelines/show_load_img/'
-        'openlane_multi_aug_views.jpg'))
+        'openlane_named_recipes.jpg'))
     output_path.parent.mkdir(parents=True, exist_ok=True)
     canvas.save(output_path, quality=95)
 
-    print('\nOpenLane multi-augmentation view visualization:')
+    print('\nOpenLane named-recipe visualization:')
     print(json.dumps({
         'source_image': str(image_path),
-        'view_mode': 'multi_aug_views',
-        'view_aug_seeds': view_aug_seeds,
-        'views': {
-            view_cfg['name']: [
+        'image_augmentation_mode': 'named_recipes',
+        'augmentation_recipe_seeds': augmentation_recipe_seeds,
+        'recipes': {
+            recipe_cfg['name']: [
                 transform_cfg['type']
-                for transform_cfg in view_cfg['transforms']
+                for transform_cfg in recipe_cfg['transforms']
             ]
-            for view_cfg in cfg.multi_aug_view_transforms
+            for recipe_cfg in cfg.image_augmentation_recipes
         },
         'output_path': str(output_path),
     }, indent=2, ensure_ascii=False))
 
-    assert view_tensors.shape[0] == len(cfg.multi_aug_view_transforms)
-    assert dataset.view_aug_names == [
-        view_cfg['name'] for view_cfg in cfg.multi_aug_view_transforms
+    assert view_tensors.shape[0] == len(cfg.image_augmentation_recipes)
+    assert dataset.augmentation_recipe_names == [
+        recipe_cfg['name'] for recipe_cfg in cfg.image_augmentation_recipes
     ]
     assert output_path.is_file()
     assert canvas.size == (
@@ -1224,7 +1229,7 @@ def test_visualize_openlane_network_input_with_3d_gt():
         cfg, '155250133617394700.jpg')
     dataset_cfg['dataset_cfg']['load_interval'] = 1
     dataset = DATASETS.build(dataset_cfg)
-    assert dataset.view_mode == 'original'
+    assert dataset.image_augmentation_mode == 'none'
     assert dataset.img_aug is None
     assert dataset.grid_mask is None
     sample, sample_index = _select_visualization_sample(dataset, image_path)
@@ -1275,7 +1280,7 @@ def test_visualize_temporal_gt_enhancement_comparison():
         cfg, '155250133677391100.jpg')
     dataset_cfg['dataset_cfg']['load_interval'] = 1
     dataset = DATASETS.build(dataset_cfg)
-    assert dataset.view_mode == 'original'
+    assert dataset.image_augmentation_mode == 'none'
     assert dataset.img_aug is None
     assert dataset.grid_mask is None
     # The training PackInputs stage intentionally omits the diagnostic memory

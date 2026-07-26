@@ -29,12 +29,12 @@ tests/test_data/test_pipelines/test_openlane_pipeline.py::test_visualize_one_ope
 所选命名增强网络输入；`openlane_network_input_sample.jpg` 保存同一组三帧
 增强结果。命令输出的 JSON 会显示本次选择的方案和全部方案的理论频率。
 
-## multi_aug_views 效果对比
+## named_recipes 六视图效果对比
 
 下面的测试将同一张图片分别应用到当前配置的 `original`、`brightness`、
 `fog`、`blur`、`occlusion` 和 `random` 六个 view，输出 3 列 × 2 行对比图。
 测试临时将 `num_views` 调整为 6；训练配置已经使用
-`view_mode='multi_aug_views'`。
+`image_augmentation_mode='named_recipes'`。
 
 ```bash
 cd /workspace/LaneLoom
@@ -42,15 +42,15 @@ cd /workspace/LaneLoom
 SAMPLE=/workspace/LaneLoom/data/openlane/images/training/segment-16534202648288984983_900_000_920_000_with_camera_labels/155934387138996700.jpg
 
 PYTHONPATH=/workspace \
-LANELOOM_VIS_MULTI_AUG_VIEWS=1 \
+LANELOOM_VIS_NAMED_RECIPES=1 \
 LANELOOM_VIS_IMAGE_PATH="$SAMPLE" \
 python -m pytest \
-tests/test_data/test_pipelines/test_openlane_pipeline.py::test_visualize_openlane_multi_aug_views \
+tests/test_data/test_pipelines/test_openlane_pipeline.py::test_visualize_openlane_named_recipes \
 -q -s
 ```
 
 默认输出路径是
-`tests/test_data/test_pipelines/show_load_img/openlane_multi_aug_views.jpg`。
+`tests/test_data/test_pipelines/show_load_img/openlane_named_recipes.jpg`。
 每个 view 使用固定随机种子，因此随机参数和 `OneOf` 的选择可以稳定复现。
 
 每个外层配置对应一个 view。同一 view 的 `transforms` 会按顺序执行，例如

@@ -536,7 +536,8 @@ def test_openlane_getitem_loads_multimodal_temporal_sample():
     assert len(img_metas['frame_keys']) == len_queue
     assert len(img_metas['queue']) == len_queue
     assert img_metas['num_views'] == cfg.num_views
-    assert img_metas['view_mode'] == cfg.view_mode
+    assert img_metas['image_augmentation_mode'] == (
+        cfg.image_augmentation_mode)
     assert img_metas['view_mask'].shape == (len_queue, cfg.num_views)
     assert img_metas['view_mask'].dtype == torch.bool
     assert torch.all(img_metas['view_mask'])
@@ -671,7 +672,7 @@ def test_openlane_test_dataloader_uses_recursive_official_test_split():
     assert dataset._scenario_name(dataset.label_files[0]).endswith('_case')
 
 
-def test_openlane_original_mode_repeats_raw_views():
+def test_openlane_none_augmentation_mode_repeats_raw_views():
     np.random.seed(0)
     torch.manual_seed(0)
 
@@ -679,7 +680,7 @@ def test_openlane_original_mode_repeats_raw_views():
         max_samples=1,
         dataset_cfg_overrides=dict(
             num_views=6,
-            view_mode='original',
+            image_augmentation_mode='none',
         ))
     data = dataset[0]
 

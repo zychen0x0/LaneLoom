@@ -245,11 +245,12 @@ class OpenLaneDataset(Dataset):
         self.resize_w, self.resize_h = self._resolve_image_size(dataset_cfg)
         self.num_views = int(dataset_cfg.get(
             'num_views', image_load_cfg.get('num_views', 1)))
-        self.view_mode = str(dataset_cfg.get(
-            'view_mode', image_load_cfg.get('view_mode', 'original'))).strip()
-        self.view_aug_cfgs = list(dataset_cfg.get(
-            'multi_aug_view_transforms',
-            image_load_cfg.get('multi_aug_view_transforms', [])))
+        self.image_augmentation_mode = str(dataset_cfg.get(
+            'image_augmentation_mode',
+            image_load_cfg.get('image_augmentation_mode', 'none'))).strip()
+        self.augmentation_recipe_cfgs = list(dataset_cfg.get(
+            'image_augmentation_recipes',
+            image_load_cfg.get('image_augmentation_recipes', [])))
         self.mean = np.asarray(
             dataset_cfg.get('mean', image_normalize_cfg['mean']),
             dtype=np.float32).reshape(3, 1, 1)
@@ -289,7 +290,10 @@ class OpenLaneDataset(Dataset):
             dtype=np.float32)
         self.img_aug = self._build_img_aug()
         self.img_aug_replay = self._build_img_aug(replay=True)
-        self.view_aug_names, self.view_aug_transforms = self._build_view_aug()
+        (
+            self.augmentation_recipe_names,
+            self.augmentation_recipe_transforms,
+        ) = self._build_augmentation_recipes()
         self.grid_mask = self._build_grid_mask(grid_mask_cfg)
         self.pts_aug_cfg = [
             stage for stage in self.pipeline_cfg
@@ -410,20 +414,22 @@ class OpenLaneDataset(Dataset):
             return A.ReplayCompose(transforms)
         return A.Compose(transforms)
 
-    def _build_view_aug(self):
+    def _build_augmentation_recipes(self):
         names = []
         transforms = []
-        for view_cfg in self.view_aug_cfgs:
-            names.append(view_cfg.get('name', f'view{len(names)}'))
-            transforms.append(self._build_albu_compose(view_cfg.get('transforms', [])))
+        for recipe_cfg in self.augmentation_recipe_cfgs:
+            names.append(recipe_cfg.get('name', f'recipe{len(names)}'))
+            transforms.append(self._build_albu_compose(
+                recipe_cfg.get('transforms', [])))
         return names, transforms
 
-    def _sample_view_aug_indices(self):
-        if self.view_mode != 'multi_aug_views':
+    def _sample_augmentation_recipe_indices(self):
+        if self.image_augmentation_mode != 'named_recipes':
             return None
         indices = list(range(self.num_views))
-        if self.num_views == 1 and self.view_aug_transforms:
-            indices[0] = int(np.random.randint(len(self.view_aug_transforms)))
+        if self.num_views == 1 and self.augmentation_recipe_transforms:
+            indices[0] = int(np.random.randint(
+                len(self.augmentation_recipe_transforms)))
         return indices
 
     @staticmethod
@@ -886,8 +892,9 @@ class OpenLaneDataset(Dataset):
             np.random.set_state(numpy_state)
             random.setstate(random_state)
 
-    def _load_image_views(self, image_path, random_aug_replays=None,
-                          view_aug_indices=None, view_aug_seeds=None):
+    def _load_image_views(self, image_path, random_pipeline_replays=None,
+                          augmentation_recipe_indices=None,
+                          augmentation_recipe_seeds=None):
         image = Image.open(image_path).convert('RGB')
         image = image.resize((self.resize_w, self.resize_h), Image.BILINEAR)
         base_array = np.asarray(image, dtype=np.uint8)
@@ -895,10 +902,11 @@ class OpenLaneDataset(Dataset):
         view_tensors = []
         for view_idx in range(self.num_views):
             array = base_array.copy()
-            if self.view_mode == 'random_aug' and self.img_aug is not None:
-                if random_aug_replays is None or self.img_aug_replay is None:
+            if (self.image_augmentation_mode == 'random_aug'
+                    and self.img_aug is not None):
+                if random_pipeline_replays is None or self.img_aug_replay is None:
                     array = self.img_aug(image=array)['image']
-                elif random_aug_replays[view_idx] is None:
+                elif random_pipeline_replays[view_idx] is None:
                     with warnings.catch_warnings():
                         warnings.filterwarnings(
                             'ignore',
@@ -906,7 +914,7 @@ class OpenLaneDataset(Dataset):
                             category=UserWarning)
                         replayed = self.img_aug_replay(image=array)
                     array = replayed['image']
-                    random_aug_replays[view_idx] = replayed['replay']
+                    random_pipeline_replays[view_idx] = replayed['replay']
                 else:
                     with warnings.catch_warnings():
                         warnings.filterwarnings(
@@ -914,27 +922,29 @@ class OpenLaneDataset(Dataset):
                             message='.*could work incorrectly in ReplayMode.*',
                             category=UserWarning)
                         array = A.ReplayCompose.replay(
-                            random_aug_replays[view_idx], image=array)['image']
-            elif self.view_mode == 'multi_aug_views':
-                aug_idx = (
-                    view_aug_indices[view_idx]
-                    if view_aug_indices is not None
-                    and view_idx < len(view_aug_indices)
+                            random_pipeline_replays[view_idx], image=array)['image']
+            elif self.image_augmentation_mode == 'named_recipes':
+                recipe_idx = (
+                    augmentation_recipe_indices[view_idx]
+                    if augmentation_recipe_indices is not None
+                    and view_idx < len(augmentation_recipe_indices)
                     else view_idx
                 )
-                if aug_idx < len(self.view_aug_transforms):
-                    transform = self.view_aug_transforms[aug_idx]
+                if recipe_idx < len(self.augmentation_recipe_transforms):
+                    transform = self.augmentation_recipe_transforms[recipe_idx]
                     if transform is not None:
                         seed = (
-                            view_aug_seeds[view_idx]
-                            if view_aug_seeds is not None and view_idx < len(view_aug_seeds)
+                            augmentation_recipe_seeds[view_idx]
+                            if augmentation_recipe_seeds is not None
+                            and view_idx < len(augmentation_recipe_seeds)
                             else None
                         )
                         array = self._apply_transform_with_seed(transform, array, seed)
                 elif self.img_aug is not None:
                     seed = (
-                        view_aug_seeds[view_idx]
-                        if view_aug_seeds is not None and view_idx < len(view_aug_seeds)
+                        augmentation_recipe_seeds[view_idx]
+                        if augmentation_recipe_seeds is not None
+                        and view_idx < len(augmentation_recipe_seeds)
                         else None
                     )
                     array = self._apply_transform_with_seed(self.img_aug, array, seed)
@@ -1715,15 +1725,17 @@ class OpenLaneDataset(Dataset):
         view_masks = []
         label_infos = []
         frame_metas = {}
-        random_aug_replays = (
+        random_pipeline_replays = (
             [None] * self.num_views
-            if self.view_mode == 'random_aug' and self.img_aug_replay is not None
+            if (self.image_augmentation_mode == 'random_aug'
+                and self.img_aug_replay is not None)
             else None
         )
-        view_aug_indices = self._sample_view_aug_indices()
-        view_aug_seeds = (
+        augmentation_recipe_indices = (
+            self._sample_augmentation_recipe_indices())
+        augmentation_recipe_seeds = (
             np.random.randint(0, 2**31 - 1, size=self.num_views).tolist()
-            if self.view_mode == 'multi_aug_views'
+            if self.image_augmentation_mode == 'named_recipes'
             else None
         )
         current_label_info = self._read_json(current_json_path)
@@ -1742,9 +1754,9 @@ class OpenLaneDataset(Dataset):
             image_path = self._find_image_path(label_info, scene_name, key)
             image_views, active_view_mask = self._load_image_views(
                 image_path,
-                random_aug_replays=random_aug_replays,
-                view_aug_indices=view_aug_indices,
-                view_aug_seeds=view_aug_seeds)
+                random_pipeline_replays=random_pipeline_replays,
+                augmentation_recipe_indices=augmentation_recipe_indices,
+                augmentation_recipe_seeds=augmentation_recipe_seeds)
             img_tensors.append(image_views)
             view_masks.append(active_view_mask)
             label_infos.append(label_info)
@@ -1775,12 +1787,12 @@ class OpenLaneDataset(Dataset):
                 current_key=current_key,
                 sampling_mode=sampling_mode,
                 num_history_frames=len(queue_keys) - 1,
-                view_mode=self.view_mode,
+                image_augmentation_mode=self.image_augmentation_mode,
                 num_views=self.num_views,
-                view_names=[
-                    self.view_aug_names[index]
-                    for index in (view_aug_indices or [])
-                    if index < len(self.view_aug_names)
+                augmentation_recipe_names=[
+                    self.augmentation_recipe_names[index]
+                    for index in (augmentation_recipe_indices or [])
+                    if index < len(self.augmentation_recipe_names)
                 ],
                 view_mask=view_mask,
                 queue=frame_metas,

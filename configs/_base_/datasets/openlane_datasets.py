@@ -55,14 +55,14 @@ img_scale = (640, 960)
 img_norm_cfg = dict(mean=[123.675, 116.28, 103.53], std=[58.395, 57.12, 57.375], to_rgb=True)
 
 # Experiment ladder for image + LiDAR 3D lane detection:
-#   original          原始 image + LiDAR, num_views can be 1 or more
-#   multi_aug_views   num_views=1 时随机选择一个命名增强，num_views=6 时使用全部增强视图
+#   none              不进行图像增强
+#   named_recipes     num_views=1 时随机选择一个命名增强，num_views=6 时使用全部增强
 # TODO: view dropout 训练时随机丢增强视图
 # TODO: attention fusion 用 attention 替代 mean fusion
 
 num_views = 1
-view_mode = 'multi_aug_views'
-eval_view_mode = 'original'
+image_augmentation_mode = 'named_recipes'
+eval_image_augmentation_mode = 'none'
 use_grid_mask = False
 grid_mask = dict(
     type='GridMask',
@@ -78,7 +78,7 @@ grid_mask = dict(
 # occlusion    遮挡，模拟车流遮挡车道线
 # random       随机颜色/压缩/噪声
 
-multi_aug_view_transforms = [
+image_augmentation_recipes = [
     dict(name='original', transforms=[]),
     dict(
         name='brightness',
@@ -242,8 +242,8 @@ train_pipeline = [
     dict(
         type='LoadTemporalOpenLaneImages',
         num_views=num_views,
-        view_mode=view_mode,
-        multi_aug_view_transforms=multi_aug_view_transforms),
+        image_augmentation_mode=image_augmentation_mode,
+        image_augmentation_recipes=image_augmentation_recipes),
     dict(type='ResizeOpenLaneImages', img_scale=img_scale, keep_ratio=True),
     dict(type='NormalizeOpenLaneImages', **img_norm_cfg),
     *([grid_mask] if use_grid_mask else []),
@@ -261,8 +261,8 @@ test_pipeline = [
     dict(
         type='LoadTemporalOpenLaneImages',
         num_views=num_views,
-        view_mode=eval_view_mode,
-        multi_aug_view_transforms=[]),
+        image_augmentation_mode=eval_image_augmentation_mode,
+        image_augmentation_recipes=[]),
     dict(type='ResizeOpenLaneImages', img_scale=img_scale, keep_ratio=True),
     dict(type='NormalizeOpenLaneImages', **img_norm_cfg),
     dict(
