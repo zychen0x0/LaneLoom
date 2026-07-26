@@ -404,6 +404,24 @@ def show_tensor_img(tensor: torch.Tensor,
     return canvas
 
 
+def _make_labeled_image_grid(panels, columns=3):
+    rows = (len(panels) + columns - 1) // columns
+    panel_width, panel_height = panels[0][1].size
+    canvas = Image.new(
+        'RGB',
+        (columns * panel_width, rows * panel_height),
+        (255, 255, 255))
+    draw = ImageDraw.Draw(canvas)
+    for panel_index, (name, panel) in enumerate(panels):
+        assert panel.size == (panel_width, panel_height)
+        x0 = panel_index % columns * panel_width
+        y0 = panel_index // columns * panel_height
+        canvas.paste(panel, (x0, y0))
+        draw.rectangle((x0, y0, x0 + panel_width, y0 + 30), fill=(8, 8, 10))
+        draw.text((x0 + 8, y0 + 7), name, fill=(245, 245, 245))
+    return canvas
+
+
 def _load_resized_originals_as_normalized_tensor(sample):
     """Load the unaugmented resized queue in the network tensor convention."""
     tensors = []
@@ -1028,20 +1046,7 @@ def test_visualize_individual_openlane_augmentations():
         np.random.set_state(numpy_state)
         random.setstate(random_state)
 
-    columns = 3
-    rows = (len(panels) + columns - 1) // columns
-    panel_width, panel_height = source.size
-    canvas = Image.new(
-        'RGB',
-        (columns * panel_width, rows * panel_height),
-        (255, 255, 255))
-    draw = ImageDraw.Draw(canvas)
-    for panel_index, (name, panel) in enumerate(panels):
-        x0 = panel_index % columns * panel_width
-        y0 = panel_index // columns * panel_height
-        canvas.paste(panel, (x0, y0))
-        draw.rectangle((x0, y0, x0 + panel_width, y0 + 30), fill=(8, 8, 10))
-        draw.text((x0 + 8, y0 + 7), name, fill=(245, 245, 245))
+    canvas = _make_labeled_image_grid(panels)
 
     output_path = Path(os.getenv(
         'LANELOOM_VIS_INDIVIDUAL_AUGS_OUTPUT',
@@ -1062,8 +1067,90 @@ def test_visualize_individual_openlane_augmentations():
     assert len(panels) == len(leaf_configs) + 1
     assert output_path.is_file()
     assert canvas.size == (
-        columns * panel_width,
-        rows * panel_height,
+        3 * source.width,
+        ((len(panels) + 2) // 3) * source.height,
+    )
+
+
+@pytest.mark.skipif(
+    os.getenv('LANELOOM_VIS_MULTI_AUG_VIEWS') != '1',
+    reason='Set LANELOOM_VIS_MULTI_AUG_VIEWS=1 to compare multi-aug views.')
+def test_visualize_openlane_multi_aug_views():
+    """Apply each configured multi-view recipe to the same resized image."""
+    cfg = _load_cfg()
+    _require_openlane_data(cfg)
+    image_path = os.getenv('LANELOOM_VIS_IMAGE_PATH')
+    if image_path is None:
+        raise ValueError(
+            'LANELOOM_VIS_IMAGE_PATH must point to the source image.')
+
+    image_path = Path(image_path).expanduser().resolve()
+    if not image_path.is_file():
+        raise FileNotFoundError(f'Cannot find visualization image: {image_path}')
+
+    dataset_cfg = dict(cfg.train_dataloader['dataset'])
+    dataset_cfg['max_samples'] = 1
+    dataset_cfg['dataset_cfg'] = dict(dataset_cfg['dataset_cfg'])
+    dataset_cfg['dataset_cfg'].update(
+        num_views=len(cfg.multi_aug_view_transforms),
+        view_mode='multi_aug_views',
+        multi_aug_view_transforms=cfg.multi_aug_view_transforms,
+    )
+    dataset = DATASETS.build(dataset_cfg)
+    base_seed = 20260726
+    view_aug_seeds = [
+        base_seed + view_index
+        for view_index in range(dataset.num_views)
+    ]
+    view_tensors, _ = dataset._load_image_views(
+        image_path,
+        view_aug_seeds=view_aug_seeds)
+
+    mean = np.asarray(cfg.img_norm_cfg['mean'], dtype=np.float32)
+    std = np.asarray(cfg.img_norm_cfg['std'], dtype=np.float32)
+    view_arrays = view_tensors.permute(0, 2, 3, 1).cpu().numpy()
+    view_arrays = np.clip(
+        view_arrays * std[None, None, None, :]
+        + mean[None, None, None, :],
+        0,
+        255,
+    ).astype(np.uint8)
+    panels = [
+        (name, Image.fromarray(view_arrays[view_index]))
+        for view_index, name in enumerate(dataset.view_aug_names)
+    ]
+    canvas = _make_labeled_image_grid(panels)
+
+    output_path = Path(os.getenv(
+        'LANELOOM_VIS_MULTI_AUG_VIEWS_OUTPUT',
+        'tests/test_data/test_pipelines/show_load_img/'
+        'openlane_multi_aug_views.jpg'))
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    canvas.save(output_path, quality=95)
+
+    print('\nOpenLane multi-augmentation view visualization:')
+    print(json.dumps({
+        'source_image': str(image_path),
+        'view_mode': 'multi_aug_views',
+        'view_aug_seeds': view_aug_seeds,
+        'views': {
+            view_cfg['name']: [
+                transform_cfg['type']
+                for transform_cfg in view_cfg['transforms']
+            ]
+            for view_cfg in cfg.multi_aug_view_transforms
+        },
+        'output_path': str(output_path),
+    }, indent=2, ensure_ascii=False))
+
+    assert view_tensors.shape[0] == len(cfg.multi_aug_view_transforms)
+    assert dataset.view_aug_names == [
+        view_cfg['name'] for view_cfg in cfg.multi_aug_view_transforms
+    ]
+    assert output_path.is_file()
+    assert canvas.size == (
+        3 * dataset.resize_w,
+        ((len(panels) + 2) // 3) * dataset.resize_h,
     )
 
 

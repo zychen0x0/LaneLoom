@@ -48,6 +48,34 @@ tests/test_data/test_pipelines/test_openlane_pipeline.py::test_visualize_individ
 进行独立概率判断，因此一次输入可能不增强、只增强一次，或者叠加多个增强。
 只有 `OneOf` 组内部是单选：当该组触发时，最多选择其中一个子增强。
 
+## multi_aug_views 效果对比
+
+下面的测试将同一张图片分别应用到当前配置的 `original`、`brightness`、
+`fog`、`blur`、`occlusion` 和 `random` 六个 view，输出 3 列 × 2 行对比图。
+测试临时启用 `view_mode='multi_aug_views'` 和 `num_views=6`，不会修改训练配置。
+
+```bash
+cd /workspace/LaneLoom
+
+SAMPLE=/workspace/LaneLoom/data/openlane/images/training/segment-16534202648288984983_900_000_920_000_with_camera_labels/155934387138996700.jpg
+
+PYTHONPATH=/workspace \
+LANELOOM_VIS_MULTI_AUG_VIEWS=1 \
+LANELOOM_VIS_IMAGE_PATH="$SAMPLE" \
+python -m pytest \
+tests/test_data/test_pipelines/test_openlane_pipeline.py::test_visualize_openlane_multi_aug_views \
+-q -s
+```
+
+默认输出路径是
+`tests/test_data/test_pipelines/show_load_img/openlane_multi_aug_views.jpg`。
+每个 view 使用固定随机种子，因此随机参数和 `OneOf` 的选择可以稳定复现。
+
+每个外层配置对应一个 view。同一 view 的 `transforms` 会按顺序执行，例如
+`fog` 会依次叠加雾和亮度/对比度调整，`blur` 会依次叠加雨和高斯模糊。
+`random` 中第一个 `OneOf(p=1.0)` 必定选择一种颜色增强，第二个
+`OneOf(p=0.65)` 有 65% 概率再选择压缩、噪声或 ToneCurve 中的一种。
+
 ## 当前帧 3D GT 投影
 
 该可视化使用原始图像，只执行 Resize 和 Normalize，不执行 Albu 或 GridMask。
