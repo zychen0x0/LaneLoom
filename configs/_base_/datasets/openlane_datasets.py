@@ -62,7 +62,8 @@ img_norm_cfg = dict(mean=[123.675, 116.28, 103.53], std=[58.395, 57.12, 57.375],
 # TODO: attention fusion 用 attention 替代 mean fusion
 
 num_views = 1
-view_mode = 'original'
+view_mode = 'random_aug'
+eval_view_mode = 'original'
 
 # 6 个 view 的顺序是
 # original     原图
@@ -279,6 +280,7 @@ image_augmentation = dict(
         # complement, matching the mode used by BEVFormer's default config.
         mode=1),
 )
+use_grid_mask = False
 
 packed_keys = [
     'img',
@@ -305,11 +307,11 @@ train_pipeline = [
         type='LoadTemporalOpenLaneImages',
         num_views=num_views,
         view_mode=view_mode,
-        multi_aug_view_transforms=multi_aug_view_transforms),
+        multi_aug_view_transforms=[]),
     dict(type='ResizeOpenLaneImages', img_scale=img_scale, keep_ratio=True),
     image_augmentation['albumentations'],
     dict(type='NormalizeOpenLaneImages', **img_norm_cfg),
-    image_augmentation['grid_mask'],
+    *([image_augmentation['grid_mask']] if use_grid_mask else []),
     dict(
         type='LoadPoseAlignedOpenLanePoints',
         load_dim=load_dim,
@@ -324,8 +326,8 @@ test_pipeline = [
     dict(
         type='LoadTemporalOpenLaneImages',
         num_views=num_views,
-        view_mode=view_mode,
-        multi_aug_view_transforms=multi_aug_view_transforms),
+        view_mode=eval_view_mode,
+        multi_aug_view_transforms=[]),
     dict(type='ResizeOpenLaneImages', img_scale=img_scale, keep_ratio=True),
     dict(type='NormalizeOpenLaneImages', **img_norm_cfg),
     dict(

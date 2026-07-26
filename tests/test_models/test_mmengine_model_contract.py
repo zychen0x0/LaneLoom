@@ -107,16 +107,22 @@ def test_config_uses_single_level_temporal_fv_and_dynamic_pillar_bev():
     assert 'temporal_self_attn' not in cfg.model.lane_head.bev_encoder
 
 
-def test_config_owns_grid_mask_in_the_training_image_pipeline():
+def test_config_uses_random_aug_without_grid_mask_for_training_only():
     config_path = Path(__file__).resolve().parents[2] / 'configs/laneloom_openlane_image_lidar.py'
     cfg = Config.fromfile(config_path)
 
+    assert cfg.num_views == 1
+    assert cfg.view_mode == 'random_aug'
+    assert cfg.eval_view_mode == 'original'
+    assert cfg.use_grid_mask is False
     assert 'use_grid_mask' not in cfg.model
-    grid_mask = next(
-        stage for stage in cfg.train_pipeline if stage.type == 'GridMask')
-    assert grid_mask.ratio == 0.5
-    assert grid_mask.prob == 0.7
-    assert grid_mask.mode == 1
+    assert cfg.train_pipeline[0].view_mode == 'random_aug'
+    assert cfg.train_pipeline[0].multi_aug_view_transforms == []
+    assert any(stage.type == 'Albu' for stage in cfg.train_pipeline)
+    assert all(stage.type != 'GridMask' for stage in cfg.train_pipeline)
+    assert cfg.test_pipeline[0].view_mode == 'original'
+    assert cfg.test_pipeline[0].multi_aug_view_transforms == []
+    assert all(stage.type != 'Albu' for stage in cfg.test_pipeline)
     assert all(stage.type != 'GridMask' for stage in cfg.test_pipeline)
 
 

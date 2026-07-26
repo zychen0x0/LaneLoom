@@ -70,7 +70,6 @@ def test_openlane_pipelines_declare_the_complete_data_flow_in_order():
         'ResizeOpenLaneImages',
         'Albu',
         'NormalizeOpenLaneImages',
-        'GridMask',
         'LoadPoseAlignedOpenLanePoints',
         'PointsRangeFilter',
         'PointShuffle',
@@ -199,6 +198,7 @@ def test_configured_multi_aug_views_load_one_shared_gt_sample():
     dataset_cfg['dataset_cfg'].update(
         num_views=6,
         view_mode='multi_aug_views',
+        multi_aug_view_transforms=cfg.multi_aug_view_transforms,
     )
     dataset = DATASETS.build(dataset_cfg)
     sample = dataset[0]
@@ -314,6 +314,7 @@ def test_multi_aug_views_seed_syncs_temporal_queue_augmentation():
     dataset_cfg['dataset_cfg'].update(
         num_views=6,
         view_mode='multi_aug_views',
+        multi_aug_view_transforms=cfg.multi_aug_view_transforms,
     )
     dataset = DATASETS.build(dataset_cfg)
     label_info = dataset._read_json(dataset.label_files[0])
@@ -410,9 +411,10 @@ def _load_resized_originals_as_normalized_tensor(sample):
 
 
 def _network_input_report(cfg, sample):
-    grid_cfg = next(
+    grid_cfg = next((
         dict(stage) for stage in cfg.train_pipeline
-        if stage['type'] == 'GridMask')
+        if stage['type'] == 'GridMask'
+    ), None)
     albu_cfg = next(
         dict(stage) for stage in cfg.train_pipeline
         if stage['type'] == 'Albu')
@@ -421,27 +423,16 @@ def _network_input_report(cfg, sample):
     masks_are_shared = all(
         torch.equal(flattened_masks[0], mask)
         for mask in flattened_masks[1:])
-    ratio = float(grid_cfg['ratio'])
-    mode = int(grid_cfg['mode'])
-    stripe_union = 1.0 - (1.0 - ratio) ** 2
-    expected_masked_fraction = stripe_union if mode == 0 else 1.0 - stripe_union
     view_mode = sample['img_metas']['view_mode']
-
-    return {
-        'configured_pipeline': [stage['type'] for stage in cfg.train_pipeline],
-        'effective_image_pipeline': [
-            'LoadTemporalOpenLaneImages',
-            'ResizeOpenLaneImages',
-            *(['Albu'] if view_mode in ('random_aug', 'multi_aug_views') else []),
-            'NormalizeOpenLaneImages',
-            'GridMask',
-        ],
-        'view_mode': view_mode,
-        'albumentations_applied': view_mode in ('random_aug', 'multi_aug_views'),
-        'albumentations_top_level_transforms': [
-            transform['type'] for transform in albu_cfg['transforms']
-        ],
-        'grid_mask': {
+    grid_report = {'enabled': False}
+    if grid_cfg is not None:
+        ratio = float(grid_cfg['ratio'])
+        mode = int(grid_cfg['mode'])
+        stripe_union = 1.0 - (1.0 - ratio) ** 2
+        expected_masked_fraction = (
+            stripe_union if mode == 0 else 1.0 - stripe_union)
+        grid_report = {
+            'enabled': True,
             'ratio': ratio,
             'prob': float(grid_cfg['prob']),
             'mode': mode,
@@ -450,18 +441,38 @@ def _network_input_report(cfg, sample):
             'measured_zero_fraction': float(zero_mask.float().mean()),
             'shared_across_all_temporal_frames_and_views': masks_are_shared,
             'masked_network_value': 0.0,
-        },
+        }
+    visualization_note = (
+        'Saved previews only undo normalization for display. Grid-masked '
+        'network zeros therefore appear as the normalization mean color '
+        'RGB [123.675, 116.28, 103.53], while the model receives zeros.'
+        if grid_cfg is not None else
+        'GridMask is disabled. The network-input preview shows the configured '
+        'random Albumentations result with normalization undone for display.'
+    )
+
+    return {
+        'configured_pipeline': [stage['type'] for stage in cfg.train_pipeline],
+        'effective_image_pipeline': [
+            'LoadTemporalOpenLaneImages',
+            'ResizeOpenLaneImages',
+            *(['Albu'] if view_mode in ('random_aug', 'multi_aug_views') else []),
+            'NormalizeOpenLaneImages',
+            *(['GridMask'] if grid_cfg is not None else []),
+        ],
+        'view_mode': view_mode,
+        'albumentations_applied': view_mode in ('random_aug', 'multi_aug_views'),
+        'albumentations_top_level_transforms': [
+            transform['type'] for transform in albu_cfg['transforms']
+        ],
+        'grid_mask': grid_report,
         'network_tensor': {
             'shape': list(sample['img'].shape),
             'dtype': str(sample['img'].dtype),
             'min': float(sample['img'].min()),
             'max': float(sample['img'].max()),
         },
-        'visualization_note': (
-            'Saved previews only undo normalization for display. Grid-masked '
-            'network zeros therefore appear as the normalization mean color '
-            'RGB [123.675, 116.28, 103.53], while the model receives zeros.'
-        ),
+        'visualization_note': visualization_note,
     }
 
 
