@@ -277,7 +277,7 @@ image_augmentation = dict(
         prob=0.7,
         # mode=0 preserves LaneLoom's existing mask. mode=1 selects its
         # complement, matching the mode used by BEVFormer's default config.
-        mode=0),
+        mode=1),
 )
 
 packed_keys = [

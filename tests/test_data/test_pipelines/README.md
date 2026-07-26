@@ -27,6 +27,9 @@ tests/test_data/test_pipelines/test_openlane_pipeline.py::test_visualize_openlan
 tests/test_data/test_pipelines/test_openlane_pipeline.py::test_visualize_temporal_gt_enhancement_comparison \
 -q -s
 
+只有 `openlane_resized_vs_network_input.jpg` 对比图展示训练配置中的 GridMask。
+普通输入、3D GT 和时序 GT 图片均关闭 GridMask，避免遮挡标注可视化。
+
 
 ## 长尾 GT 表述与 Q0 覆盖审计
 

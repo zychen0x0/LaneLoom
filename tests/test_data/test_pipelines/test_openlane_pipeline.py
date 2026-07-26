@@ -465,6 +465,18 @@ def _network_input_report(cfg, sample):
     }
 
 
+def _without_grid_mask(dataset_cfg):
+    """Return a visualization dataset config without training-time GridMask."""
+    dataset_cfg = dict(dataset_cfg)
+    dataset_cfg['dataset_cfg'] = dict(dataset_cfg['dataset_cfg'])
+    dataset_cfg['dataset_cfg']['train_pipeline'] = [
+        dict(stage)
+        for stage in dataset_cfg['dataset_cfg']['train_pipeline']
+        if stage['type'] != 'GridMask'
+    ]
+    return dataset_cfg
+
+
 def _select_visualization_sample(dataset, image_path=None):
     if image_path:
         image_path = Path(image_path).expanduser().resolve()
@@ -891,16 +903,19 @@ def test_visualize_one_openlane_network_input_sample():
     dataset = DATASETS.build(dataset_cfg)
 
     sample, sample_index = _select_visualization_sample(dataset, image_path=image_path)
+    unmasked_dataset = DATASETS.build(_without_grid_mask(dataset_cfg))
+    unmasked_sample, _ = _select_visualization_sample(
+        unmasked_dataset, image_path=image_path)
 
+    resized_originals = _load_resized_originals_as_normalized_tensor(sample)
     output_path = Path(os.getenv(
         'LANELOOM_VIS_OUTPUT',
         'LaneLoom/tests/test_data/test_pipelines/openlane_network_input_sample.jpg'))
     canvas = show_tensor_img(
-        sample['img'],
+        unmasked_sample['img'],
         denorm=True,
         save_path=output_path,
         show=os.getenv('LANELOOM_SHOW_INPUT') == '1')
-    resized_originals = _load_resized_originals_as_normalized_tensor(sample)
     comparison_tensor = torch.cat((resized_originals, sample['img']), dim=1)
     comparison_path = Path(os.getenv(
         'LANELOOM_VIS_PIPELINE_OUTPUT',
@@ -920,7 +935,7 @@ def test_visualize_one_openlane_network_input_sample():
         ])
     report = _network_input_report(cfg, sample)
     report['output_paths'] = {
-        'network_input': str(output_path),
+        'unmasked_network_input': str(output_path),
         'resized_vs_network_input': str(comparison_path),
     }
     print('\nOpenLane network-input augmentation report:')
@@ -985,12 +1000,12 @@ def test_visualize_openlane_network_input_with_3d_gt():
     np.random.seed(0)
     cfg = _load_cfg()
     _require_openlane_data(cfg)
-    dataset_cfg = dict(cfg.train_dataloader['dataset'])
+    dataset_cfg = _without_grid_mask(cfg.train_dataloader['dataset'])
     image_path = os.getenv('LANELOOM_VIS_IMAGE_PATH') or _default_openlane_image(
         cfg, '155250133617394700.jpg')
-    dataset_cfg['dataset_cfg'] = dict(dataset_cfg['dataset_cfg'])
     dataset_cfg['dataset_cfg']['load_interval'] = 1
     dataset = DATASETS.build(dataset_cfg)
+    assert dataset.grid_mask is None
     sample, sample_index = _select_visualization_sample(dataset, image_path)
     scene_name = sample['img_metas']['scene_name']
     label_scene = dataset._load_label_scene(scene_name)
@@ -1033,13 +1048,13 @@ def test_visualize_temporal_gt_enhancement_comparison():
     np.random.seed(0)
     cfg = _load_cfg()
     _require_openlane_data(cfg)
-    dataset_cfg = dict(cfg.train_dataloader['dataset'])
+    dataset_cfg = _without_grid_mask(cfg.train_dataloader['dataset'])
     dataset_cfg['temporal_gt_augmentation'] = True
     image_path = os.getenv('LANELOOM_TEMPORAL_GT_IMAGE_PATH') or _default_openlane_image(
         cfg, '155250133677391100.jpg')
-    dataset_cfg['dataset_cfg'] = dict(dataset_cfg['dataset_cfg'])
     dataset_cfg['dataset_cfg']['load_interval'] = 1
     dataset = DATASETS.build(dataset_cfg)
+    assert dataset.grid_mask is None
     # The training PackInputs stage intentionally omits the diagnostic memory
     # mask.  This visualization needs the unfiltered sample to distinguish
     # current-frame anchors from history-only anchors.

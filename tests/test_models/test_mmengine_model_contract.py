@@ -116,7 +116,7 @@ def test_config_owns_grid_mask_in_the_training_image_pipeline():
         stage for stage in cfg.train_pipeline if stage.type == 'GridMask')
     assert grid_mask.ratio == 0.5
     assert grid_mask.prob == 0.7
-    assert grid_mask.mode == 0
+    assert grid_mask.mode == 1
     assert all(stage.type != 'GridMask' for stage in cfg.test_pipeline)
 
 
