@@ -1,5 +1,6 @@
 import json
 import os
+import random
 from pathlib import Path
 
 import numpy as np
@@ -973,6 +974,97 @@ def test_visualize_one_openlane_network_input_sample():
     assert sample_index >= 0
     assert canvas.size[0] > 0 and canvas.size[1] > 0
     assert comparison_canvas.size[0] > canvas.size[0]
+
+
+@pytest.mark.skipif(
+    os.getenv('LANELOOM_VIS_INDIVIDUAL_AUGS') != '1',
+    reason='Set LANELOOM_VIS_INDIVIDUAL_AUGS=1 to compare each augmentation.')
+def test_visualize_individual_openlane_augmentations():
+    """Apply every configured Albumentations leaf to the same resized image."""
+    cfg = _load_cfg()
+    image_path = os.getenv('LANELOOM_VIS_IMAGE_PATH')
+    if image_path is None:
+        raise ValueError(
+            'LANELOOM_VIS_IMAGE_PATH must point to the source image.')
+
+    image_path = Path(image_path).expanduser().resolve()
+    if not image_path.is_file():
+        raise FileNotFoundError(f'Cannot find visualization image: {image_path}')
+
+    albu_cfg = next(
+        dict(stage) for stage in cfg.train_pipeline
+        if stage['type'] == 'Albu')
+    leaf_configs = []
+    for transform_cfg in albu_cfg['transforms']:
+        transform_cfg = dict(transform_cfg)
+        nested = transform_cfg.pop('transforms', None)
+        if nested is None:
+            transform_cfg['p'] = 1.0
+            leaf_configs.append(transform_cfg)
+            continue
+        for child_cfg in nested:
+            child_cfg = dict(child_cfg)
+            child_cfg['p'] = 1.0
+            leaf_configs.append(child_cfg)
+
+    source = Image.open(image_path).convert('RGB').resize(
+        (cfg.img_scale[1], cfg.img_scale[0]), Image.BILINEAR)
+    source_array = np.asarray(source, dtype=np.uint8)
+    panels = [('Original', source)]
+
+    numpy_state = np.random.get_state()
+    random_state = random.getstate()
+    try:
+        for transform_index, transform_cfg in enumerate(leaf_configs):
+            np.random.seed(20260726 + transform_index)
+            random.seed(20260726 + transform_index)
+            transformed = Albu([transform_cfg])(
+                {'img': source_array.copy()})['img']
+            panels.append((
+                transform_cfg['type'],
+                Image.fromarray(transformed),
+            ))
+    finally:
+        np.random.set_state(numpy_state)
+        random.setstate(random_state)
+
+    columns = 3
+    rows = (len(panels) + columns - 1) // columns
+    panel_width, panel_height = source.size
+    canvas = Image.new(
+        'RGB',
+        (columns * panel_width, rows * panel_height),
+        (255, 255, 255))
+    draw = ImageDraw.Draw(canvas)
+    for panel_index, (name, panel) in enumerate(panels):
+        x0 = panel_index % columns * panel_width
+        y0 = panel_index // columns * panel_height
+        canvas.paste(panel, (x0, y0))
+        draw.rectangle((x0, y0, x0 + panel_width, y0 + 30), fill=(8, 8, 10))
+        draw.text((x0 + 8, y0 + 7), name, fill=(245, 245, 245))
+
+    output_path = Path(os.getenv(
+        'LANELOOM_VIS_INDIVIDUAL_AUGS_OUTPUT',
+        'tests/test_data/test_pipelines/show_load_img/'
+        'openlane_individual_augmentations.jpg'))
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    canvas.save(output_path, quality=95)
+
+    print('\nOpenLane individual augmentation visualization:')
+    print(json.dumps({
+        'source_image': str(image_path),
+        'forced_probability': 1.0,
+        'base_random_seed': 20260726,
+        'augmentations': [cfg['type'] for cfg in leaf_configs],
+        'output_path': str(output_path),
+    }, indent=2, ensure_ascii=False))
+
+    assert len(panels) == len(leaf_configs) + 1
+    assert output_path.is_file()
+    assert canvas.size == (
+        columns * panel_width,
+        rows * panel_height,
+    )
 
 
 @pytest.mark.skipif(

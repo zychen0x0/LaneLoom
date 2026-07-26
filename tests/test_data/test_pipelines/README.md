@@ -20,6 +20,34 @@ tests/test_data/test_pipelines/test_openlane_pipeline.py::test_visualize_one_ope
 左侧三帧 resize 原图与右侧三帧 `random_aug` 网络输入；
 `openlane_network_input_sample.jpg` 保存同一组三帧增强结果。
 
+## 单项图像增强效果对比
+
+下面的测试读取同一张图片，将训练配置中的 11 种 Albumentations 增强分别
+强制执行一次。输出为 `原图 + 11 种单项增强` 的 3 列 × 4 行对比图，不会
+修改训练 pipeline 中的概率或组合逻辑。
+
+```bash
+cd /workspace/LaneLoom
+
+SAMPLE=/workspace/LaneLoom/data/openlane/images/training/segment-16534202648288984983_900_000_920_000_with_camera_labels/155934387138996700.jpg
+
+PYTHONPATH=/workspace \
+LANELOOM_VIS_INDIVIDUAL_AUGS=1 \
+LANELOOM_VIS_IMAGE_PATH="$SAMPLE" \
+python -m pytest \
+tests/test_data/test_pipelines/test_openlane_pipeline.py::test_visualize_individual_openlane_augmentations \
+-q -s
+```
+
+默认输出路径是
+`tests/test_data/test_pipelines/show_load_img/openlane_individual_augmentations.jpg`。
+测试固定了随机种子，方便重复对比；每个单项的 `p` 仅在这个可视化测试中
+临时设为 `1.0`。
+
+训练时并不是从全部 11 种增强中只选一种。5 个顶层配置会按照声明顺序分别
+进行独立概率判断，因此一次输入可能不增强、只增强一次，或者叠加多个增强。
+只有 `OneOf` 组内部是单选：当该组触发时，最多选择其中一个子增强。
+
 ## 当前帧 3D GT 投影
 
 该可视化使用原始图像，只执行 Resize 和 Normalize，不执行 Albu 或 GridMask。
