@@ -42,9 +42,7 @@ def test_source_and_configs_do_not_reference_other_project_code():
 def test_config_owns_its_default_data_root(monkeypatch):
     monkeypatch.delenv('LANELOOM_DATA_ROOT', raising=False)
     cfg = Config.fromfile(PROJECT_ROOT / 'configs/laneloom_openlane_image_lidar.py')
-    mounted_root = Path('/workspace/lanedet3d/data')
-    expected_root = mounted_root if mounted_root.is_dir() else PROJECT_ROOT / 'data'
-    assert Path(cfg.data_root) == expected_root
+    assert Path(cfg.data_root) == PROJECT_ROOT / 'data'
 
 
 def test_grid_mask_is_a_local_module_and_preserves_image_shape():

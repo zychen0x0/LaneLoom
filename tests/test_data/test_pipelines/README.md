@@ -7,16 +7,18 @@
 cd /workspace/LaneLoom
 
 
-DATA_ROOT="${LANELOOM_DATA_ROOT:-/workspace/lanedet3d/data}"
+DATA_ROOT="${LANELOOM_DATA_ROOT:-/workspace/LaneLoom/data}"
 SAMPLE="$DATA_ROOT/openlane/images/training/segment-16534202648288984983_900_000_920_000_with_camera_labels/155934387138996700.jpg"
 
 PYTHONPATH="/workspace${PYTHONPATH:+:$PYTHONPATH}" \
+LANELOOM_DATA_ROOT="$DATA_ROOT" \
 LANELOOM_VIS_INPUT=1 \
 LANELOOM_VIS_3D_GT=1 \
 LANELOOM_VIS_TEMPORAL_GT=1 \
 LANELOOM_VIS_IMAGE_PATH="$SAMPLE" \
 LANELOOM_TEMPORAL_GT_IMAGE_PATH="$SAMPLE" \
 LANELOOM_VIS_OUTPUT=tests/test_data/test_pipelines/show_load_img/openlane_network_input_sample.jpg \
+LANELOOM_VIS_PIPELINE_OUTPUT=tests/test_data/test_pipelines/show_load_img/openlane_resized_vs_network_input.jpg \
 LANELOOM_VIS_3D_GT_OUTPUT=tests/test_data/test_pipelines/show_load_img/openlane_network_input_3d_gt_bezier.jpg \
 LANELOOM_TEMPORAL_GT_OUTPUT=tests/test_data/test_pipelines/show_load_img/openlane_temporal_gt_bezier.jpg \
 python -m pytest \
