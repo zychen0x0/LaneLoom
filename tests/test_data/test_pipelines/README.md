@@ -17,9 +17,12 @@ tests/test_data/test_pipelines/test_openlane_pipeline.py::test_visualize_one_ope
 ```
 
 当前训练配置关闭 GridMask。`openlane_resized_vs_network_input.jpg` 对比
-resize 原图与 `random_aug` 后的网络输入；验证和测试 pipeline 不执行随机增强。
+左侧三帧 resize 原图与右侧三帧 `random_aug` 网络输入；
+`openlane_network_input_sample.jpg` 保存同一组三帧增强结果。
 
 ## 当前帧 3D GT 投影
+
+该可视化使用原始图像，只执行 Resize 和 Normalize，不执行 Albu 或 GridMask。
 
 ```bash
 cd /workspace/LaneLoom
@@ -35,6 +38,8 @@ tests/test_data/test_pipelines/test_openlane_pipeline.py::test_visualize_openlan
 ```
 
 ## 时序 GT 增强对比
+
+该可视化使用原始图像，只执行 Resize 和 Normalize，不执行 Albu 或 GridMask。
 
 ```bash
 cd /workspace/LaneLoom
