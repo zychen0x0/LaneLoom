@@ -56,20 +56,19 @@ img_norm_cfg = dict(mean=[123.675, 116.28, 103.53], std=[58.395, 57.12, 57.375],
 
 # Experiment ladder for image + LiDAR 3D lane detection:
 #   original          原始 image + LiDAR, num_views can be 1 or more
-#   random_aug        每个 view 都使用同一套随机颜色/压缩/噪声增强策略
-#   multi_aug_views   num_views=6 时使用原图 + 5 个固定场景增强视图
+#   multi_aug_views   num_views=1 时随机选择一个命名增强，num_views=6 时使用全部增强视图
 # TODO: view dropout 训练时随机丢增强视图
 # TODO: attention fusion 用 attention 替代 mean fusion
 
 num_views = 1
-view_mode = 'random_aug'
+view_mode = 'multi_aug_views'
 eval_view_mode = 'original'
 
 # 6 个 view 的顺序是
 # original     原图
 # brightness   明暗/过曝/夜间鲁棒
-# blur         细雨/轻微模糊
-# blur         高斯模糊，模拟雨水/镜头污染
+# fog          雾天/低对比度
+# blur         细雨/轻微模糊，模拟雨水/镜头污染
 # occlusion    遮挡，模拟车流遮挡车道线
 # random       随机颜色/压缩/噪声
 
@@ -213,75 +212,6 @@ num_y_steps = len(anchor_y_steps)
 
 
 # ---------------------------------------------------augmentation start---------------------------------------------------
-albu_train_transforms = [
-    dict(
-        type='RandomBrightnessContrast',
-        brightness_limit=[0.1, 0.3],
-        contrast_limit=[0.1, 0.3],
-        p=0.2),
-    dict(
-        type='OneOf',
-        transforms=[
-            dict(
-                type='RGBShift',
-                r_shift_limit=20,
-                g_shift_limit=20,
-                b_shift_limit=20,
-                p=1.),
-            dict(
-                type='HueSaturationValue',
-                hue_shift_limit=20,
-                sat_shift_limit=30,
-                val_shift_limit=20,
-                p=1.),
-        ],
-        p=0.5),
-    dict(
-        type='PixelDropout',
-        dropout_prob=0.01,
-        per_channel=False,
-        drop_value=0,
-        mask_drop_value=None,
-        always_apply=None,
-        p=0.2),
-    dict(
-        type='OneOf',
-        transforms=[
-            dict(type='ImageCompression', quality_lower=85, quality_upper=95, p=1),
-            dict(type='GaussNoise', var_limit=(10.0, 50.0), p=1),
-            dict(type='RandomToneCurve', scale=0.1, always_apply=None, p=1.0),
-        ],
-        p=0.2),
-    dict(
-        type='OneOf',
-        transforms=[
-            dict(type='Blur', blur_limit=3, p=1.0),
-            dict(type='MedianBlur', blur_limit=3, p=1.0),
-            dict(type='GaussianBlur', blur_limit=(3, 7), sigma_limit=(0.1, 2.0), p=1.0),
-            dict(
-                type='ZoomBlur',
-                max_factor=(1, 1.05),
-                step_factor=(0.01, 0.01),
-                always_apply=None,
-                p=1.0),
-        ],
-        p=0.3),
-]
-
-image_augmentation = dict(
-    albumentations=dict(
-        type='Albu',
-        transforms=albu_train_transforms),
-    grid_mask=dict(
-        type='GridMask',
-        ratio=0.5,
-        prob=0.7,
-        # mode=0 preserves LaneLoom's existing mask. mode=1 selects its
-        # complement, matching the mode used by BEVFormer's default config.
-        mode=1),
-)
-use_grid_mask = False
-
 packed_keys = [
     'img',
     'lidar',
@@ -307,11 +237,9 @@ train_pipeline = [
         type='LoadTemporalOpenLaneImages',
         num_views=num_views,
         view_mode=view_mode,
-        multi_aug_view_transforms=[]),
+        multi_aug_view_transforms=multi_aug_view_transforms),
     dict(type='ResizeOpenLaneImages', img_scale=img_scale, keep_ratio=True),
-    image_augmentation['albumentations'],
     dict(type='NormalizeOpenLaneImages', **img_norm_cfg),
-    *([image_augmentation['grid_mask']] if use_grid_mask else []),
     dict(
         type='LoadPoseAlignedOpenLanePoints',
         load_dim=load_dim,

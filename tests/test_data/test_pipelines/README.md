@@ -1,7 +1,7 @@
 # OpenLane Pipeline Tests
 
 
-## 当前 random_aug 网络输入
+## 当前单 view 命名增强网络输入
 
 ```bash
 cd /workspace/LaneLoom
@@ -16,43 +16,25 @@ tests/test_data/test_pipelines/test_openlane_pipeline.py::test_visualize_one_ope
 -q -s
 ```
 
-当前训练配置关闭 GridMask。`openlane_resized_vs_network_input.jpg` 对比
-左侧三帧 resize 原图与右侧三帧 `random_aug` 网络输入；
-`openlane_network_input_sample.jpg` 保存同一组三帧增强结果。
+当前训练配置从 `original`、`brightness`、`fog`、`blur`、`occlusion`、
+`random` 中均匀选择一个，单项频率均为 `1/6 ≈ 16.67%`。同一样本的三帧
+共用所选方案及随机参数，不会叠加不同的命名方案。
 
-## 单项图像增强效果对比
+当选中 `random` 时，第一个 `OneOf` 必定从两种 ColorTint 和 HSV 中选择
+一种，各占全部训练样本约 `1/18 ≈ 5.56%`。第二个 `OneOf(p=0.65)` 再以
+65% 概率从压缩、噪声和 ToneCurve 中选择一种，各占全部样本约 `3.61%`；
+剩余约 `5.83%` 的全部样本只执行 `random` 的第一项颜色增强。
 
-下面的测试读取同一张图片，将训练配置中的 11 种 Albumentations 增强分别
-强制执行一次。输出为 `原图 + 11 种单项增强` 的 3 列 × 4 行对比图，不会
-修改训练 pipeline 中的概率或组合逻辑。
-
-```bash
-cd /workspace/LaneLoom
-
-SAMPLE=/workspace/LaneLoom/data/openlane/images/training/segment-16534202648288984983_900_000_920_000_with_camera_labels/155934387138996700.jpg
-
-PYTHONPATH=/workspace \
-LANELOOM_VIS_INDIVIDUAL_AUGS=1 \
-LANELOOM_VIS_IMAGE_PATH="$SAMPLE" \
-python -m pytest \
-tests/test_data/test_pipelines/test_openlane_pipeline.py::test_visualize_individual_openlane_augmentations \
--q -s
-```
-
-默认输出路径是
-`tests/test_data/test_pipelines/show_load_img/openlane_individual_augmentations.jpg`。
-测试固定了随机种子，方便重复对比；每个单项的 `p` 仅在这个可视化测试中
-临时设为 `1.0`。
-
-训练时并不是从全部 11 种增强中只选一种。5 个顶层配置会按照声明顺序分别
-进行独立概率判断，因此一次输入可能不增强、只增强一次，或者叠加多个增强。
-只有 `OneOf` 组内部是单选：当该组触发时，最多选择其中一个子增强。
+`openlane_resized_vs_network_input.jpg` 对比左侧三帧 resize 原图与右侧三帧
+所选命名增强网络输入；`openlane_network_input_sample.jpg` 保存同一组三帧
+增强结果。命令输出的 JSON 会显示本次选择的方案和全部方案的理论频率。
 
 ## multi_aug_views 效果对比
 
 下面的测试将同一张图片分别应用到当前配置的 `original`、`brightness`、
 `fog`、`blur`、`occlusion` 和 `random` 六个 view，输出 3 列 × 2 行对比图。
-测试临时启用 `view_mode='multi_aug_views'` 和 `num_views=6`，不会修改训练配置。
+测试临时将 `num_views` 调整为 6；训练配置已经使用
+`view_mode='multi_aug_views'`。
 
 ```bash
 cd /workspace/LaneLoom

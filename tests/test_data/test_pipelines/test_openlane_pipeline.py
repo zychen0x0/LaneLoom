@@ -59,6 +59,25 @@ def _build_transform_from_cfg(cfg):
     raise ValueError(f'Unsupported pipeline transform in test: {transform_type}')
 
 
+def _with_test_coarse_dropout(pipeline):
+    pipeline = [dict(stage) for stage in pipeline]
+    pipeline.insert(2, dict(
+        type='Albu',
+        transforms=[
+            dict(
+                type='CoarseDropout',
+                max_holes=8,
+                max_height=96,
+                max_width=96,
+                min_holes=8,
+                min_height=96,
+                min_width=96,
+                fill_value=0,
+                p=1.0),
+        ]))
+    return pipeline
+
+
 def _as_rows(points):
     return {tuple(row.tolist()) for row in points}
 
@@ -69,7 +88,6 @@ def test_openlane_pipelines_declare_the_complete_data_flow_in_order():
     assert [stage['type'] for stage in cfg.train_pipeline] == [
         'LoadTemporalOpenLaneImages',
         'ResizeOpenLaneImages',
-        'Albu',
         'NormalizeOpenLaneImages',
         'LoadPoseAlignedOpenLanePoints',
         'PointsRangeFilter',
@@ -228,7 +246,54 @@ def test_configured_multi_aug_views_load_one_shared_gt_sample():
     assert not torch.allclose(sample['img'][0, 0], sample['img'][0, 1])
 
 
-def test_configured_random_aug_views_use_same_random_aug_policy():
+def test_configured_single_view_can_select_every_named_augmentation(monkeypatch):
+    cfg = _load_cfg()
+    _require_openlane_data(cfg)
+
+    dataset_cfg = dict(cfg.train_dataloader['dataset'])
+    dataset_cfg['max_samples'] = 1
+    dataset = DATASETS.build(dataset_cfg)
+    selected_indices = iter(range(len(cfg.multi_aug_view_transforms)))
+    monkeypatch.setattr(
+        np.random, 'randint', lambda upper: next(selected_indices))
+
+    assert [
+        dataset._sample_view_aug_indices()[0]
+        for _ in cfg.multi_aug_view_transforms
+    ] == list(range(len(cfg.multi_aug_view_transforms)))
+
+
+def test_single_named_aug_view_syncs_recipe_and_seed_across_temporal_queue():
+    cfg = _load_cfg()
+    _require_openlane_data(cfg)
+
+    dataset_cfg = dict(cfg.train_dataloader['dataset'])
+    dataset_cfg['max_samples'] = 1
+    dataset = DATASETS.build(dataset_cfg)
+    calls = []
+    load_image_views = dataset._load_image_views
+
+    def record_load(image_path, random_aug_replays=None,
+                    view_aug_indices=None, view_aug_seeds=None):
+        calls.append((tuple(view_aug_indices), tuple(view_aug_seeds)))
+        return load_image_views(
+            image_path,
+            random_aug_replays=random_aug_replays,
+            view_aug_indices=view_aug_indices,
+            view_aug_seeds=view_aug_seeds)
+
+    dataset._load_image_views = record_load
+    np.random.seed(0)
+    sample = dataset[0]
+
+    assert len(calls) == len(sample['img_metas']['frame_keys'])
+    assert len(set(calls)) == 1
+    selected_index = calls[0][0][0]
+    assert sample['img_metas']['view_names'] == [
+        cfg.multi_aug_view_transforms[selected_index]['name']]
+
+
+def test_random_aug_views_use_same_injected_aug_policy():
     np.random.seed(0)
     cfg = _load_cfg()
     _require_openlane_data(cfg)
@@ -239,6 +304,7 @@ def test_configured_random_aug_views_use_same_random_aug_policy():
     dataset_cfg['dataset_cfg'].update(
         num_views=6,
         view_mode='random_aug',
+        train_pipeline=_with_test_coarse_dropout(cfg.train_pipeline),
     )
     dataset = DATASETS.build(dataset_cfg)
     sample = dataset[0]
@@ -278,25 +344,10 @@ def test_random_aug_replay_syncs_temporal_queue_augmentation():
     dataset_cfg = dict(cfg.train_dataloader['dataset'])
     dataset_cfg['max_samples'] = 1
     dataset_cfg['dataset_cfg'] = dict(dataset_cfg['dataset_cfg'])
-    train_pipeline = [dict(stage) for stage in cfg.train_pipeline]
-    for stage in train_pipeline:
-        if stage['type'] == 'Albu':
-            stage['transforms'] = [
-                dict(
-                    type='CoarseDropout',
-                    max_holes=8,
-                    max_height=96,
-                    max_width=96,
-                    min_holes=8,
-                    min_height=96,
-                    min_width=96,
-                    fill_value=0,
-                    p=1.0),
-            ]
     dataset_cfg['dataset_cfg'].update(
         num_views=1,
         view_mode='random_aug',
-        train_pipeline=train_pipeline)
+        train_pipeline=_with_test_coarse_dropout(cfg.train_pipeline))
     dataset = DATASETS.build(dataset_cfg)
     label_info = dataset._read_json(dataset.label_files[0])
     scene_name = dataset.label_files[0].parent.name
@@ -340,6 +391,22 @@ def test_multi_aug_views_seed_syncs_temporal_queue_augmentation():
 
     assert torch.allclose(first_views, replayed_views)
     assert not torch.allclose(first_views[0], first_views[1])
+
+    applied = []
+
+    def record_transform(transform, image, seed):
+        applied.append((transform, seed))
+        return image
+
+    dataset._apply_transform_with_seed = record_transform
+    dataset._load_image_views(image_path, view_aug_seeds=view_aug_seeds)
+
+    assert len(applied) == dataset.num_views - 1
+    assert all(
+        transform is dataset.view_aug_transforms[view_index]
+        and seed == view_aug_seeds[view_index]
+        for view_index, (transform, seed) in enumerate(applied, start=1)
+    )
 
 
 # ---------------------------------------------------network input visualization start---------------------------------------------------
@@ -443,15 +510,27 @@ def _network_input_report(cfg, sample):
         dict(stage) for stage in cfg.train_pipeline
         if stage['type'] == 'GridMask'
     ), None)
-    albu_cfg = next(
-        dict(stage) for stage in cfg.train_pipeline
-        if stage['type'] == 'Albu')
     zero_mask = torch.all(sample['img'] == 0, dim=2)
     flattened_masks = zero_mask.reshape(-1, *zero_mask.shape[-2:])
     masks_are_shared = all(
         torch.equal(flattened_masks[0], mask)
         for mask in flattened_masks[1:])
     view_mode = sample['img_metas']['view_mode']
+    view_names = sample['img_metas']['view_names']
+    named_aug_cfgs = {
+        view_cfg['name']: view_cfg
+        for view_cfg in cfg.multi_aug_view_transforms
+    }
+    single_view_frequency = (
+        {
+            name: 1.0 / len(named_aug_cfgs)
+            for name in named_aug_cfgs
+        }
+        if view_mode == 'multi_aug_views'
+        and sample['img'].shape[1] == 1
+        and named_aug_cfgs
+        else None
+    )
     grid_report = {'enabled': False}
     if grid_cfg is not None:
         ratio = float(grid_cfg['ratio'])
@@ -475,8 +554,9 @@ def _network_input_report(cfg, sample):
         'network zeros therefore appear as the normalization mean color '
         'RGB [123.675, 116.28, 103.53], while the model receives zeros.'
         if grid_cfg is not None else
-        'GridMask is disabled. The network-input preview shows the configured '
-        'random Albumentations result with normalization undone for display.'
+        'The preview shows the one named augmentation selected for this '
+        'sample. Its recipe and random parameters are shared by all temporal '
+        'frames; different named recipes are not stacked.'
     )
 
     return {
@@ -484,15 +564,26 @@ def _network_input_report(cfg, sample):
         'effective_image_pipeline': [
             'LoadTemporalOpenLaneImages',
             'ResizeOpenLaneImages',
-            *(['Albu'] if view_mode in ('random_aug', 'multi_aug_views') else []),
+            *([
+                f'NamedAugmentation[{name}]'
+                for name in view_names
+            ] if view_mode == 'multi_aug_views' else []),
             'NormalizeOpenLaneImages',
             *(['GridMask'] if grid_cfg is not None else []),
         ],
         'view_mode': view_mode,
-        'albumentations_applied': view_mode in ('random_aug', 'multi_aug_views'),
-        'albumentations_top_level_transforms': [
-            transform['type'] for transform in albu_cfg['transforms']
-        ],
+        'selected_named_augmentations': view_names,
+        'selected_named_augmentation_transforms': {
+            name: [
+                transform['type']
+                for transform in named_aug_cfgs[name]['transforms']
+            ]
+            for name in view_names
+            if name in named_aug_cfgs
+        },
+        'single_view_selection_frequency': single_view_frequency,
+        'shared_across_temporal_frames': True,
+        'different_named_augmentations_stacked': False,
         'grid_mask': grid_report,
         'network_tensor': {
             'shape': list(sample['img'].shape),
@@ -992,84 +1083,6 @@ def test_visualize_one_openlane_network_input_sample():
     assert sample_index >= 0
     assert canvas.size[0] > 0 and canvas.size[1] > 0
     assert comparison_canvas.size[0] > canvas.size[0]
-
-
-@pytest.mark.skipif(
-    os.getenv('LANELOOM_VIS_INDIVIDUAL_AUGS') != '1',
-    reason='Set LANELOOM_VIS_INDIVIDUAL_AUGS=1 to compare each augmentation.')
-def test_visualize_individual_openlane_augmentations():
-    """Apply every configured Albumentations leaf to the same resized image."""
-    cfg = _load_cfg()
-    image_path = os.getenv('LANELOOM_VIS_IMAGE_PATH')
-    if image_path is None:
-        raise ValueError(
-            'LANELOOM_VIS_IMAGE_PATH must point to the source image.')
-
-    image_path = Path(image_path).expanduser().resolve()
-    if not image_path.is_file():
-        raise FileNotFoundError(f'Cannot find visualization image: {image_path}')
-
-    albu_cfg = next(
-        dict(stage) for stage in cfg.train_pipeline
-        if stage['type'] == 'Albu')
-    leaf_configs = []
-    for transform_cfg in albu_cfg['transforms']:
-        transform_cfg = dict(transform_cfg)
-        nested = transform_cfg.pop('transforms', None)
-        if nested is None:
-            transform_cfg['p'] = 1.0
-            leaf_configs.append(transform_cfg)
-            continue
-        for child_cfg in nested:
-            child_cfg = dict(child_cfg)
-            child_cfg['p'] = 1.0
-            leaf_configs.append(child_cfg)
-
-    source = Image.open(image_path).convert('RGB').resize(
-        (cfg.img_scale[1], cfg.img_scale[0]), Image.BILINEAR)
-    source_array = np.asarray(source, dtype=np.uint8)
-    panels = [('Original', source)]
-
-    numpy_state = np.random.get_state()
-    random_state = random.getstate()
-    try:
-        for transform_index, transform_cfg in enumerate(leaf_configs):
-            np.random.seed(20260726 + transform_index)
-            random.seed(20260726 + transform_index)
-            transformed = Albu([transform_cfg])(
-                {'img': source_array.copy()})['img']
-            panels.append((
-                transform_cfg['type'],
-                Image.fromarray(transformed),
-            ))
-    finally:
-        np.random.set_state(numpy_state)
-        random.setstate(random_state)
-
-    canvas = _make_labeled_image_grid(panels)
-
-    output_path = Path(os.getenv(
-        'LANELOOM_VIS_INDIVIDUAL_AUGS_OUTPUT',
-        'tests/test_data/test_pipelines/show_load_img/'
-        'openlane_individual_augmentations.jpg'))
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-    canvas.save(output_path, quality=95)
-
-    print('\nOpenLane individual augmentation visualization:')
-    print(json.dumps({
-        'source_image': str(image_path),
-        'forced_probability': 1.0,
-        'base_random_seed': 20260726,
-        'augmentations': [cfg['type'] for cfg in leaf_configs],
-        'output_path': str(output_path),
-    }, indent=2, ensure_ascii=False))
-
-    assert len(panels) == len(leaf_configs) + 1
-    assert output_path.is_file()
-    assert canvas.size == (
-        3 * source.width,
-        ((len(panels) + 2) // 3) * source.height,
-    )
 
 
 @pytest.mark.skipif(

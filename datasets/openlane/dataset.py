@@ -418,6 +418,14 @@ class OpenLaneDataset(Dataset):
             transforms.append(self._build_albu_compose(view_cfg.get('transforms', [])))
         return names, transforms
 
+    def _sample_view_aug_indices(self):
+        if self.view_mode != 'multi_aug_views':
+            return None
+        indices = list(range(self.num_views))
+        if self.num_views == 1 and self.view_aug_transforms:
+            indices[0] = int(np.random.randint(len(self.view_aug_transforms)))
+        return indices
+
     @staticmethod
     def _build_grid_mask(cfg):
         if cfg is None:
@@ -878,7 +886,8 @@ class OpenLaneDataset(Dataset):
             np.random.set_state(numpy_state)
             random.setstate(random_state)
 
-    def _load_image_views(self, image_path, random_aug_replays=None, view_aug_seeds=None):
+    def _load_image_views(self, image_path, random_aug_replays=None,
+                          view_aug_indices=None, view_aug_seeds=None):
         image = Image.open(image_path).convert('RGB')
         image = image.resize((self.resize_w, self.resize_h), Image.BILINEAR)
         base_array = np.asarray(image, dtype=np.uint8)
@@ -907,8 +916,14 @@ class OpenLaneDataset(Dataset):
                         array = A.ReplayCompose.replay(
                             random_aug_replays[view_idx], image=array)['image']
             elif self.view_mode == 'multi_aug_views':
-                if view_idx < len(self.view_aug_transforms):
-                    transform = self.view_aug_transforms[view_idx]
+                aug_idx = (
+                    view_aug_indices[view_idx]
+                    if view_aug_indices is not None
+                    and view_idx < len(view_aug_indices)
+                    else view_idx
+                )
+                if aug_idx < len(self.view_aug_transforms):
+                    transform = self.view_aug_transforms[aug_idx]
                     if transform is not None:
                         seed = (
                             view_aug_seeds[view_idx]
@@ -1705,6 +1720,7 @@ class OpenLaneDataset(Dataset):
             if self.view_mode == 'random_aug' and self.img_aug_replay is not None
             else None
         )
+        view_aug_indices = self._sample_view_aug_indices()
         view_aug_seeds = (
             np.random.randint(0, 2**31 - 1, size=self.num_views).tolist()
             if self.view_mode == 'multi_aug_views'
@@ -1727,6 +1743,7 @@ class OpenLaneDataset(Dataset):
             image_views, active_view_mask = self._load_image_views(
                 image_path,
                 random_aug_replays=random_aug_replays,
+                view_aug_indices=view_aug_indices,
                 view_aug_seeds=view_aug_seeds)
             img_tensors.append(image_views)
             view_masks.append(active_view_mask)
@@ -1760,7 +1777,11 @@ class OpenLaneDataset(Dataset):
                 num_history_frames=len(queue_keys) - 1,
                 view_mode=self.view_mode,
                 num_views=self.num_views,
-                view_names=self.view_aug_names[:self.num_views],
+                view_names=[
+                    self.view_aug_names[index]
+                    for index in (view_aug_indices or [])
+                    if index < len(self.view_aug_names)
+                ],
                 view_mask=view_mask,
                 queue=frame_metas,
                 current=frame_metas[len(queue_keys) - 1],
