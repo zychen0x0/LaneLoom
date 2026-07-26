@@ -921,7 +921,8 @@ def test_visualize_one_openlane_network_input_sample():
     resized_originals = _load_resized_originals_as_normalized_tensor(sample)
     output_path = Path(os.getenv(
         'LANELOOM_VIS_OUTPUT',
-        'LaneLoom/tests/test_data/test_pipelines/openlane_network_input_sample.jpg'))
+        'tests/test_data/test_pipelines/show_load_img/'
+        'openlane_network_input_sample.jpg'))
     canvas = show_tensor_img(
         unmasked_sample['img'],
         denorm=True,
@@ -930,8 +931,14 @@ def test_visualize_one_openlane_network_input_sample():
     comparison_tensor = torch.cat((resized_originals, sample['img']), dim=1)
     comparison_path = Path(os.getenv(
         'LANELOOM_VIS_PIPELINE_OUTPUT',
-        str(output_path.with_name(
-            f'{output_path.stem}_pipeline_comparison{output_path.suffix}'))))
+        'tests/test_data/test_pipelines/show_load_img/'
+        'openlane_resized_vs_network_input.jpg'))
+    view_names = sample['img_metas']['view_names']
+    if len(view_names) != sample['img'].shape[1]:
+        view_names = [
+            f'{sample["img_metas"]["view_mode"]} view{view_idx}'
+            for view_idx in range(sample['img'].shape[1])
+        ]
     comparison_canvas = show_tensor_img(
         comparison_tensor,
         denorm=True,
@@ -941,7 +948,7 @@ def test_visualize_one_openlane_network_input_sample():
             'resized original',
             *[
                 f'network input {name}'
-                for name in sample['img_metas']['view_names']
+                for name in view_names
             ],
         ])
     report = _network_input_report(cfg, sample)
@@ -1042,7 +1049,7 @@ def test_visualize_openlane_network_input_with_3d_gt():
         canvas.paste(panel, (0, frame_idx * height))
     output_path = Path(os.getenv(
         'LANELOOM_VIS_3D_GT_OUTPUT',
-        'LaneLoom/tests/test_data/test_pipelines/'
+        'tests/test_data/test_pipelines/show_load_img/'
         'openlane_network_input_3d_gt_bezier.jpg'))
     output_path.parent.mkdir(parents=True, exist_ok=True)
     canvas.save(output_path)
@@ -1090,7 +1097,7 @@ def test_visualize_temporal_gt_enhancement_comparison():
 
     output_path = Path(os.getenv(
         'LANELOOM_TEMPORAL_GT_OUTPUT',
-        'LaneLoom/tests/test_data/test_pipelines/'
+        'tests/test_data/test_pipelines/show_load_img/'
         'openlane_temporal_gt_bezier.jpg'))
     output_path.parent.mkdir(parents=True, exist_ok=True)
     canvas.save(output_path)

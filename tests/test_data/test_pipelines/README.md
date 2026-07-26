@@ -1,34 +1,56 @@
 # OpenLane Pipeline Tests
 
 
-## 多视图可增强视化  &&  时序GT增强可视化
+## 当前 random_aug 网络输入
 
-
+```bash
 cd /workspace/LaneLoom
 
+SAMPLE=/workspace/LaneLoom/data/openlane/images/training/segment-16534202648288984983_900_000_920_000_with_camera_labels/155934387138996700.jpg
 
-DATA_ROOT="${LANELOOM_DATA_ROOT:-/workspace/LaneLoom/data}"
-SAMPLE="$DATA_ROOT/openlane/images/training/segment-16534202648288984983_900_000_920_000_with_camera_labels/155934387138996700.jpg"
-
-PYTHONPATH="/workspace${PYTHONPATH:+:$PYTHONPATH}" \
-LANELOOM_DATA_ROOT="$DATA_ROOT" \
+PYTHONPATH=/workspace \
 LANELOOM_VIS_INPUT=1 \
-LANELOOM_VIS_3D_GT=1 \
-LANELOOM_VIS_TEMPORAL_GT=1 \
 LANELOOM_VIS_IMAGE_PATH="$SAMPLE" \
-LANELOOM_TEMPORAL_GT_IMAGE_PATH="$SAMPLE" \
-LANELOOM_VIS_OUTPUT=tests/test_data/test_pipelines/show_load_img/openlane_network_input_sample.jpg \
-LANELOOM_VIS_PIPELINE_OUTPUT=tests/test_data/test_pipelines/show_load_img/openlane_resized_vs_network_input.jpg \
-LANELOOM_VIS_3D_GT_OUTPUT=tests/test_data/test_pipelines/show_load_img/openlane_network_input_3d_gt_bezier.jpg \
-LANELOOM_TEMPORAL_GT_OUTPUT=tests/test_data/test_pipelines/show_load_img/openlane_temporal_gt_bezier.jpg \
 python -m pytest \
 tests/test_data/test_pipelines/test_openlane_pipeline.py::test_visualize_one_openlane_network_input_sample \
-tests/test_data/test_pipelines/test_openlane_pipeline.py::test_visualize_openlane_network_input_with_3d_gt \
-tests/test_data/test_pipelines/test_openlane_pipeline.py::test_visualize_temporal_gt_enhancement_comparison \
 -q -s
+```
 
 当前训练配置关闭 GridMask。`openlane_resized_vs_network_input.jpg` 对比
 resize 原图与 `random_aug` 后的网络输入；验证和测试 pipeline 不执行随机增强。
+
+## 当前帧 3D GT 投影
+
+```bash
+cd /workspace/LaneLoom
+
+SAMPLE=/workspace/LaneLoom/data/openlane/images/training/segment-16534202648288984983_900_000_920_000_with_camera_labels/155934387138996700.jpg
+
+PYTHONPATH=/workspace \
+LANELOOM_VIS_3D_GT=1 \
+LANELOOM_VIS_IMAGE_PATH="$SAMPLE" \
+python -m pytest \
+tests/test_data/test_pipelines/test_openlane_pipeline.py::test_visualize_openlane_network_input_with_3d_gt \
+-q -s
+```
+
+## 时序 GT 增强对比
+
+```bash
+cd /workspace/LaneLoom
+
+SAMPLE=/workspace/LaneLoom/data/openlane/images/training/segment-16534202648288984983_900_000_920_000_with_camera_labels/155934387138996700.jpg
+
+PYTHONPATH=/workspace \
+LANELOOM_VIS_TEMPORAL_GT=1 \
+LANELOOM_TEMPORAL_GT_IMAGE_PATH="$SAMPLE" \
+python -m pytest \
+tests/test_data/test_pipelines/test_openlane_pipeline.py::test_visualize_temporal_gt_enhancement_comparison \
+-q -s
+```
+
+这些环境变量用于让默认跳过的可视化测试显式运行，并选择一个确定的真实样本。
+三个测试的输出路径已经内置，通常不需要再传 `*_OUTPUT`。
 
 
 ## 长尾 GT 表述与 Q0 覆盖审计
