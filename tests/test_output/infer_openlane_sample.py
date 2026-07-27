@@ -107,6 +107,8 @@ def _build_sample(cfg: Config, image_path: Path) -> dict:
     dataset_cfg = cfg.val_dataloader.dataset.to_dict()
     dataset_cfg["split"] = split
     dataset_cfg["test_mode"] = True
+    # A user-selected frame must not be excluded by D5 training subsampling.
+    dataset_cfg["dataset_cfg"]["load_interval"] = 1
     # A training-split frame must still use deterministic evaluation transforms.
     dataset_cfg["dataset_cfg"]["train_pipeline"] = dataset_cfg["dataset_cfg"][
         "val_pipeline"
