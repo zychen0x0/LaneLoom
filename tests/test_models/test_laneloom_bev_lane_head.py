@@ -783,6 +783,40 @@ def test_geometrically_ambiguous_unmatched_query_is_downweighted():
     assert pred_cls.grad[0, 1].abs() < pred_cls.grad[0, 2].abs() * .2
 
 
+def test_auxiliary_ambiguous_weight_defaults_to_final_weight():
+    loss_module = LaneLoss(
+        negative_objectness_weight=1.0,
+        ambiguous_negative_weight=.4,
+        aux_loss_weight=1.0)
+
+    assert loss_module.auxiliary_ambiguous_negative_weight == .4
+
+
+def test_auxiliary_ambiguous_weight_can_be_configured_independently():
+    loss_module = LaneLoss(
+        negative_objectness_weight=1.0,
+        ambiguous_negative_weight=1.0,
+        auxiliary_ambiguous_negative_weight=.1,
+        aux_loss_weight=1.0)
+    auxiliary = dict(
+        pred_x=torch.tensor([[[0., 0.], [.1, .1], [10., 10.]]]),
+        pred_z=torch.zeros(1, 3, 2),
+        pred_vis=torch.zeros(1, 3, 2),
+        pred_cls=torch.zeros(1, 3),
+        pred_category=torch.zeros(1, 3, 21))
+    predictions = dict(auxiliary)
+    predictions['aux_predictions'] = [auxiliary]
+    gt_lanes = torch.zeros(1, 1, 2, 3)
+
+    losses = loss_module(
+        predictions, gt_lanes_3d=gt_lanes,
+        gt_lanes_visibility=torch.ones(1, 1, 2),
+        gt_lanes_category=torch.zeros(1, 1, dtype=torch.long))
+
+    assert loss_module.auxiliary_ambiguous_negative_weight == .1
+    assert losses['loss_aux_0_score'] < losses['loss_score']
+
+
 def test_layer_zero_topk_recall_uses_unforced_ranking():
     loss_module = LaneLoss()
     auxiliary = dict(

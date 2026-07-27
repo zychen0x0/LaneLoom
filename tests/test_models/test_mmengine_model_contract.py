@@ -168,7 +168,8 @@ def test_config_uses_strict_q0_and_one_to_one_assignment():
     assert loss.score_loss_weight == 1.0
     assert loss.category_loss_weight == 0.25
     assert loss.negative_objectness_weight == 1.0
-    assert loss.ambiguous_negative_weight == 0.1
+    assert loss.ambiguous_negative_weight == 1.0
+    assert loss.auxiliary_ambiguous_negative_weight == 0.1
     assert loss.diagnostic_geometry_distance_threshold == 0.3
     assert loss.diagnostic_geometry_match_ratio == 0.8
     assert loss.diagnostic_score_threshold == 0.5

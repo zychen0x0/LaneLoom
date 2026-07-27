@@ -76,7 +76,8 @@ class LaneLossBase(nn.Module):
         return assignments
 
     def _prediction_losses(self, predictions, gt_lanes_3d,
-                           gt_visibility, gt_category, assignments):
+                           gt_visibility, gt_category, assignments,
+                           is_auxiliary=False):
         pred_x, pred_z = predictions['pred_x'], predictions['pred_z']
         pred_visibility = predictions['pred_vis']
         pred_logits = self._classification_logits(predictions)
@@ -226,7 +227,8 @@ class LaneLossBase(nn.Module):
                 gt_lanes_3d, gt_lanes_visibility)
             auxiliary_losses = self._prediction_losses(
                 auxiliary, gt_lanes_3d, gt_lanes_visibility,
-                gt_lanes_category, auxiliary_assignments)
+                gt_lanes_category, auxiliary_assignments,
+                is_auxiliary=True)
             for name, value in auxiliary_losses.items():
                 losses[f'loss_aux_{layer_idx}_{name.removeprefix("loss_")}'] = (
                     value * self.aux_loss_weight)
@@ -312,6 +314,7 @@ class LaneLoss(LaneLossBase):
                  category_loss_weight=.25,
                  negative_objectness_weight=.1,
                  ambiguous_negative_weight=.1,
+                 auxiliary_ambiguous_negative_weight=None,
                  ambiguous_distance_threshold=.5,
                  ambiguous_match_ratio=.75,
                  diagnostic_geometry_distance_threshold=.3,
@@ -327,6 +330,10 @@ class LaneLoss(LaneLossBase):
         self.category_loss_weight = float(category_loss_weight)
         self.negative_objectness_weight = float(negative_objectness_weight)
         self.ambiguous_negative_weight = float(ambiguous_negative_weight)
+        if auxiliary_ambiguous_negative_weight is None:
+            auxiliary_ambiguous_negative_weight = ambiguous_negative_weight
+        self.auxiliary_ambiguous_negative_weight = float(
+            auxiliary_ambiguous_negative_weight)
         self.ambiguous_distance_threshold = float(
             ambiguous_distance_threshold)
         self.ambiguous_match_ratio = float(ambiguous_match_ratio)
@@ -343,6 +350,7 @@ class LaneLoss(LaneLossBase):
                 self.category_loss_weight,
                 self.negative_objectness_weight,
                 self.ambiguous_negative_weight,
+                self.auxiliary_ambiguous_negative_weight,
                 self.tube_loss_weight) < 0:
             raise ValueError('Lane loss weights must be non-negative.')
         if self.tube_radius <= 0:
@@ -443,7 +451,8 @@ class LaneLoss(LaneLossBase):
         return diagnostics
 
     def _prediction_losses(self, predictions, gt_lanes_3d,
-                           gt_visibility, gt_category, assignments):
+                           gt_visibility, gt_category, assignments,
+                           is_auxiliary=False):
         pred_x, pred_z = predictions['pred_x'], predictions['pred_z']
         pred_visibility = predictions['pred_vis']
         pred_score = predictions['pred_cls']
@@ -459,6 +468,9 @@ class LaneLoss(LaneLossBase):
         visible_point_count = 0
         ambiguous = self._ambiguous_negative_mask(
             predictions, gt_lanes_3d, gt_visibility)
+        ambiguous_negative_weight = (
+            self.auxiliary_ambiguous_negative_weight
+            if is_auxiliary else self.ambiguous_negative_weight)
 
         for batch_idx, assignment in enumerate(assignments):
             positive_queries = torch.where(assignment >= 0)[0]
@@ -493,7 +505,7 @@ class LaneLoss(LaneLossBase):
             negative = ~positive
             negative_weight = torch.where(
                 ambiguous[batch_idx] & negative,
-                score_terms.new_tensor(self.ambiguous_negative_weight),
+                score_terms.new_tensor(ambiguous_negative_weight),
                 score_terms.new_tensor(1.0))
             negative_loss = torch.where(
                 negative, score_terms * negative_weight, 0).sum()

@@ -184,9 +184,12 @@ model = dict(
             category_loss_weight=0.25,
             # Positive/negative lane scores are normalized separately, so an
             # equal group weight cannot be amplified by the 505-query count.
-            # Near-GT unmatched candidates remain weaker ambiguous negatives.
+            # Keep near-GT layer-0 proposals available for the 64-query
+            # refinement stage, then suppress unmatched duplicates strongly
+            # after the final decoder layer.
             negative_objectness_weight=1.0,
-            ambiguous_negative_weight=0.1,
+            ambiguous_negative_weight=1.0,
+            auxiliary_ambiguous_negative_weight=0.1,
             ambiguous_distance_threshold=0.5,
             ambiguous_match_ratio=0.75,
             diagnostic_geometry_distance_threshold=0.3,
