@@ -122,6 +122,46 @@ def test_decoder_prunes_after_layer_zero_and_keeps_required_training_queries():
     assert predictions['layer0_topk_indices'].shape == (1, 4)
 
 
+def test_lane_head_only_forces_refined_queries_into_next_decoder_layer():
+    head = _head(8, 2, 2, 4, [0., 2.], 4)
+    head.loss_module = LaneLoss()
+    gt_lanes = torch.zeros(1, 1, 2, 3)
+    gt_visibility = torch.ones(1, 1, 2)
+    gt_category = torch.zeros(1, 1, dtype=torch.long)
+    anchor_prior = dict(anchor_points=torch.zeros(1, 4, 2, 3))
+    refined_required = torch.tensor([[True, False, False, False]])
+
+    with (
+        patch.object(head, '_anchor_prior', return_value=anchor_prior),
+        patch.object(head, 'forward_bev', return_value=torch.zeros(1, 8, 2, 2)),
+        patch.object(head, '_predict', return_value={}) as predict_spy,
+        patch.object(head.loss_module, 'forward', return_value={}),
+        patch.object(
+            head.loss_module, 'required_query_mask',
+            return_value=torch.tensor([[False, True, False, False]]),
+        ) as initial_required_spy,
+        patch.object(
+            head.loss_module, 'required_prediction_mask',
+            return_value=refined_required,
+        ) as refined_required_spy,
+        patch.object(head.anchor_prior, 'loss', return_value={}),
+        patch.object(head.proposal_expander, 'loss', return_value={}),
+    ):
+        head.loss(
+            None, None, None,
+            gt_lanes_3d=gt_lanes,
+            gt_lanes_visibility=gt_visibility,
+            gt_lanes_category=gt_category)
+        predict_kwargs = predict_spy.call_args.kwargs
+        refined_selector = predict_kwargs['required_query_selector']
+        selected_required = refined_selector(dict(pred_x=torch.empty(0)))
+
+    initial_required_spy.assert_not_called()
+    refined_required_spy.assert_called_once()
+    assert 'required_query_mask' not in predict_kwargs
+    assert selected_required is refined_required
+
+
 def _selection_predictions(scores, x, visibility):
     score_tensor = torch.tensor([scores])
     x_tensor = torch.tensor([x], dtype=torch.float32)

@@ -134,13 +134,6 @@ class BEVLaneHead(nn.Module):
                 and targets.get('gt_lanes_visibility_enhanced') is not None):
             prior_lanes = targets['gt_lanes_3d_enhanced']
             prior_visibility = targets['gt_lanes_visibility_enhanced']
-        required_query_mask = None
-        if (anchor_prior is not None
-                and 'anchor_points' in anchor_prior
-                and hasattr(self.loss_module, 'required_query_mask')):
-            required_query_mask = self.loss_module.required_query_mask(
-                anchor_prior['anchor_points'],
-                prior_lanes, prior_visibility)
         required_query_selector = None
         if hasattr(self.loss_module, 'required_prediction_mask'):
             def required_query_selector(predictions):
@@ -150,7 +143,6 @@ class BEVLaneHead(nn.Module):
             current_bev, anchor_prior=anchor_prior,
             query_feature_sampler=self._query_feature_sampler(
                 img_feats, current_bev, img_metas, lidar_occupancy),
-            required_query_mask=required_query_mask,
             required_query_selector=required_query_selector), **targets)
         if anchor_prior is not None:
             losses.update(self.anchor_prior.loss(
