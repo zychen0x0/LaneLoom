@@ -200,10 +200,20 @@ def test_config_uses_strict_q0_and_one_to_one_assignment():
     assert curve_nms.tube_radius == 0.5
     assert curve_nms.z_weight == 1.0
     assert curve_nms.epsilon == 1e-6
-    assert curve_nms.iou_threshold == 0.6
-    assert curve_nms.containment_threshold == 0.9
     assert cfg.model.lane_head.test_cfg.score_threshold == 0.5
     assert cfg.val_evaluator.score_threshold == 0.5
+
+
+def test_config_uses_mean_distance_only_for_final_nms():
+    config_path = (
+        Path(__file__).resolve().parents[2]
+        / 'configs/laneloom_openlane_image_lidar.py')
+    cfg = Config.fromfile(config_path)
+    curve_nms = cfg.model.lane_head.test_cfg.curve_nms
+
+    assert curve_nms.iou_threshold == 1.0
+    assert curve_nms.containment_threshold == 1.0
+    assert curve_nms.mean_distance_threshold == 0.35
 
 
 def _bare_laneloom():
