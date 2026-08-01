@@ -40,6 +40,20 @@ def test_openlane_test_configs_build_one_pass_distance_nms_scan():
     ]
 
 
+def test_distance_nms_scan_forces_a_tube_only_baseline():
+    cfg = _test_config()
+    cfg.model.lane_head.test_cfg.curve_nms = dict(
+        tube_radius=0.5, mean_distance_threshold=0.35)
+    cfg.test_evaluator.mean_distance_nms_threshold = 0.35
+
+    [(_, scan_cfg)] = build_openlane_test_configs(
+        cfg, 'validation', distance_nms_thresholds=[0.2])
+
+    assert 'mean_distance_threshold' not in (
+        scan_cfg.model.lane_head.test_cfg.curve_nms)
+    assert scan_cfg.test_evaluator[0].mean_distance_nms_threshold is None
+
+
 def test_official_metric_applies_distance_nms_after_tube_mask():
     anchors = torch.tensor([3.0, 20.0, 40.0, 60.0])
     pred_x = torch.tensor([
@@ -71,6 +85,15 @@ def test_official_metric_applies_distance_nms_after_tube_mask():
     assert values['pred_per_frame'] == 2.0
 
 
+@pytest.mark.parametrize(
+    'threshold', [0.0, float('nan'), float('inf')])
+def test_official_metric_rejects_non_finite_distance_threshold(threshold):
+    with pytest.raises(ValueError, match='finite positive'):
+        METRICS.build(dict(
+            type='OpenLaneOfficialMetric', prefix=None,
+            mean_distance_nms_threshold=threshold))
+
+
 def test_recall_safe_selection_requires_every_case_to_match_baseline_recall():
     case_results = {
         'validation': {
@@ -92,7 +115,8 @@ def test_recall_safe_selection_requires_every_case_to_match_baseline_recall():
     assert selected == 0.25
 
 
-@pytest.mark.parametrize('thresholds', [[], [0.0], [-0.1]])
+@pytest.mark.parametrize(
+    'thresholds', [[], [0.0], [-0.1], [float('nan')], [float('inf')]])
 def test_openlane_test_configs_reject_invalid_distance_nms_scan(thresholds):
     with pytest.raises(ValueError, match='distance NMS thresholds'):
         build_openlane_test_configs(

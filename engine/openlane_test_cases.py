@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from copy import deepcopy
+from math import isfinite
 
 
 OPENLANE_TEST_SPLITS = (
@@ -34,7 +35,9 @@ def normalise_distance_nms_thresholds(distance_nms_thresholds):
         return None
     thresholds = sorted(set(
         float(value) for value in distance_nms_thresholds))
-    if not thresholds or any(threshold <= 0.0 for threshold in thresholds):
+    if not thresholds or any(
+            not isfinite(threshold) or threshold <= 0.0
+            for threshold in thresholds):
         raise ValueError(
             'distance NMS thresholds must contain positive values.')
     return thresholds
@@ -121,7 +124,12 @@ def build_openlane_test_configs(
                     name, threshold, metric_prefix)
                 case_cfg.test_evaluator.append(evaluator)
         elif distance_nms_thresholds is not None:
+            curve_nms_cfg = case_cfg.model.lane_head.test_cfg.get(
+                'curve_nms')
+            if curve_nms_cfg is not None:
+                curve_nms_cfg.pop('mean_distance_threshold', None)
             base_evaluator = case_cfg.test_evaluator
+            base_evaluator.mean_distance_nms_threshold = None
             case_cfg.test_evaluator = [deepcopy(base_evaluator)]
             for threshold in distance_nms_thresholds:
                 evaluator = deepcopy(base_evaluator)

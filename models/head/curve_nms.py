@@ -1,5 +1,7 @@
 """VR-TubeIoU non-maximum suppression for sampled 3D lanes."""
 
+from math import isfinite
+
 import torch
 
 from ..valid_range_tube_iou import pairwise_valid_range_tube_overlap
@@ -45,8 +47,10 @@ def mean_distance_curve_nms(
         x, z, visibility, scores, *, distance_threshold,
         visibility_threshold=0.5, candidate_mask=None):
     """Keep the highest-score lane among close post-Tube candidates."""
-    if distance_threshold <= 0:
-        raise ValueError('distance_threshold must be positive.')
+    if (not isfinite(float(distance_threshold))
+            or distance_threshold <= 0):
+        raise ValueError(
+            'distance_threshold must be finite positive.')
     keep = torch.zeros_like(scores, dtype=torch.bool)
     if candidate_mask is None:
         candidate_mask = torch.ones_like(scores, dtype=torch.bool)

@@ -1,4 +1,5 @@
 import torch
+import pytest
 
 from LaneLoom.models.head.curve_nms import (
     curve_nms,
@@ -114,3 +115,13 @@ def test_mean_distance_curve_nms_suppresses_only_close_post_tube_candidates():
         candidate_mask=post_tube_candidates)
 
     assert keep.tolist() == [[True, False, False, True]]
+
+
+@pytest.mark.parametrize('threshold', [0.0, float('nan'), float('inf')])
+def test_mean_distance_curve_nms_requires_a_finite_positive_threshold(
+        threshold):
+    values = torch.zeros(1, 1, 2)
+    with pytest.raises(ValueError, match='finite positive'):
+        mean_distance_curve_nms(
+            values, values, values, torch.ones(1, 1),
+            distance_threshold=threshold)

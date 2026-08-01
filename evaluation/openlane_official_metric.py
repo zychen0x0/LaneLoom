@@ -38,9 +38,10 @@ class OpenLaneOfficialMetric(BaseMetric):
             None if mean_distance_nms_threshold is None
             else float(mean_distance_nms_threshold))
         if (self.mean_distance_nms_threshold is not None
-                and self.mean_distance_nms_threshold <= 0):
+                and (not np.isfinite(self.mean_distance_nms_threshold)
+                     or self.mean_distance_nms_threshold <= 0)):
             raise ValueError(
-                'mean_distance_nms_threshold must be positive.')
+                'mean_distance_nms_threshold must be finite positive.')
         self.use_temporal_gt_supplement = False
         self.evaluator = OpenLaneLaneEvaluator()
 
