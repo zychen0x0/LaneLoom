@@ -4,7 +4,7 @@ import torch.nn.functional as F
 
 from mmdet3d.registry import MODELS
 
-from .curve_nms import curve_nms
+from .curve_nms import curve_nms, mean_distance_curve_nms
 
 
 @MODELS.register_module()
@@ -188,6 +188,17 @@ class BEVLaneHead(nn.Module):
                         'containment_threshold', 0.9)),
                 candidate_mask=candidate_queries)
             valid_queries &= nms_keep_queries
+            mean_distance_threshold = self.curve_nms_cfg.get(
+                'mean_distance_threshold')
+            if mean_distance_threshold is not None:
+                distance_keep_queries = mean_distance_curve_nms(
+                    predictions['pred_x'], predictions['pred_z'], visibility,
+                    scores,
+                    distance_threshold=float(mean_distance_threshold),
+                    visibility_threshold=visibility_threshold,
+                    candidate_mask=valid_queries)
+                nms_keep_queries &= distance_keep_queries
+                valid_queries &= distance_keep_queries
         output = dict(
             x=predictions['pred_x'], z=predictions['pred_z'],
             visibility=visibility, scores=scores,

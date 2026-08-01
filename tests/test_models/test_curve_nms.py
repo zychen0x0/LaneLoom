@@ -1,6 +1,9 @@
 import torch
 
-from LaneLoom.models.head.curve_nms import curve_nms
+from LaneLoom.models.head.curve_nms import (
+    curve_nms,
+    mean_distance_curve_nms,
+)
 
 
 def _nms(x, visibility, scores, z=None):
@@ -93,3 +96,21 @@ def test_curve_nms_only_compares_score_and_visibility_candidates():
         candidate_mask=candidate_mask)
 
     assert keep.tolist() == [[True, False, False]]
+
+
+def test_mean_distance_curve_nms_suppresses_only_close_post_tube_candidates():
+    x = torch.tensor([[[0.0, 0.0, 0.0],
+                       [0.24, 0.24, 0.24],
+                       [0.10, 0.10, 0.10],
+                       [3.0, 3.0, 3.0]]])
+    z = torch.zeros_like(x)
+    visibility = torch.ones_like(x)
+    scores = torch.tensor([[0.9, 0.8, 0.95, 0.7]])
+    post_tube_candidates = torch.tensor([[True, True, False, True]])
+
+    keep = mean_distance_curve_nms(
+        x, z, visibility, scores,
+        distance_threshold=0.25,
+        candidate_mask=post_tube_candidates)
+
+    assert keep.tolist() == [[True, False, False, True]]

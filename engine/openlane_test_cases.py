@@ -29,12 +29,59 @@ def normalise_score_thresholds(score_thresholds):
     return thresholds
 
 
+def normalise_distance_nms_thresholds(distance_nms_thresholds):
+    if distance_nms_thresholds is None:
+        return None
+    thresholds = sorted(set(
+        float(value) for value in distance_nms_thresholds))
+    if not thresholds or any(threshold <= 0.0 for threshold in thresholds):
+        raise ValueError(
+            'distance NMS thresholds must contain positive values.')
+    return thresholds
+
+
 def score_threshold_metric_prefix(
         case_name, threshold, metric_prefix='OpenLaneOfficial'):
     return f'{metric_prefix}/{case_name}@{threshold:g}'
 
 
-def build_openlane_test_configs(cfg, case='all', score_thresholds=None):
+def distance_nms_metric_prefix(
+        case_name, threshold, metric_prefix='OpenLaneOfficial'):
+    return f'{metric_prefix}/{case_name}@distance={threshold:g}'
+
+
+def select_recall_safe_distance_threshold(case_results):
+    """Maximise validation F1 without lowering recall on any case."""
+    if not case_results:
+        return None
+    common_thresholds = None
+    for results in case_results.values():
+        thresholds = set(results) - {None}
+        common_thresholds = (
+            thresholds if common_thresholds is None
+            else common_thresholds & thresholds)
+    eligible = [
+        threshold for threshold in (common_thresholds or ())
+        if all(
+            results[threshold]['Recall'] + 1e-12
+            >= results[None]['Recall']
+            for results in case_results.values())
+    ]
+    if not eligible:
+        return None
+    selection_case = (
+        case_results['validation']
+        if 'validation' in case_results
+        else next(iter(case_results.values())))
+    return max(eligible, key=lambda threshold: (
+        selection_case[threshold]['F1'],
+        selection_case[threshold]['Precision'],
+        -threshold))
+
+
+def build_openlane_test_configs(
+        cfg, case='all', score_thresholds=None,
+        distance_nms_thresholds=None):
     """Return independent test configs for validation and official case splits."""
     if case not in OPENLANE_TEST_CASE_CHOICES:
         raise ValueError(
@@ -50,6 +97,11 @@ def build_openlane_test_configs(cfg, case='all', score_thresholds=None):
             item for item in OPENLANE_TEST_SPLITS if item[0] == case)
 
     score_thresholds = normalise_score_thresholds(score_thresholds)
+    distance_nms_thresholds = normalise_distance_nms_thresholds(
+        distance_nms_thresholds)
+    if score_thresholds is not None and distance_nms_thresholds is not None:
+        raise ValueError(
+            'score and distance NMS threshold scans cannot be combined.')
     case_configs = []
     for name, split in selected:
         case_cfg = deepcopy(cfg)
@@ -66,6 +118,15 @@ def build_openlane_test_configs(cfg, case='all', score_thresholds=None):
                 evaluator = deepcopy(base_evaluator)
                 evaluator.score_threshold = threshold
                 evaluator.prefix = score_threshold_metric_prefix(
+                    name, threshold, metric_prefix)
+                case_cfg.test_evaluator.append(evaluator)
+        elif distance_nms_thresholds is not None:
+            base_evaluator = case_cfg.test_evaluator
+            case_cfg.test_evaluator = [deepcopy(base_evaluator)]
+            for threshold in distance_nms_thresholds:
+                evaluator = deepcopy(base_evaluator)
+                evaluator.mean_distance_nms_threshold = threshold
+                evaluator.prefix = distance_nms_metric_prefix(
                     name, threshold, metric_prefix)
                 case_cfg.test_evaluator.append(evaluator)
         case_configs.append((name, case_cfg))

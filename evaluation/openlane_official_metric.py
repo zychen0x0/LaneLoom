@@ -9,6 +9,7 @@ import torch
 from mmengine.evaluator import BaseMetric
 from mmengine.registry import METRICS
 
+from ..models.head.curve_nms import mean_distance_curve_nms
 from .lane_evaluation import OpenLaneLaneEvaluator
 
 
@@ -21,6 +22,7 @@ class OpenLaneOfficialMetric(BaseMetric):
     def __init__(self,
                  score_threshold: float = 0.5,
                  visibility_threshold: float = 0.5,
+                 mean_distance_nms_threshold: float | None = None,
                  use_temporal_gt_supplement: bool = False,
                  collect_device: str = 'cpu',
                  prefix: str | None = None,
@@ -32,6 +34,13 @@ class OpenLaneOfficialMetric(BaseMetric):
                          collect_dir=collect_dir)
         self.score_threshold = float(score_threshold)
         self.visibility_threshold = float(visibility_threshold)
+        self.mean_distance_nms_threshold = (
+            None if mean_distance_nms_threshold is None
+            else float(mean_distance_nms_threshold))
+        if (self.mean_distance_nms_threshold is not None
+                and self.mean_distance_nms_threshold <= 0):
+            raise ValueError(
+                'mean_distance_nms_threshold must be positive.')
         self.use_temporal_gt_supplement = False
         self.evaluator = OpenLaneLaneEvaluator()
 
@@ -65,6 +74,16 @@ class OpenLaneOfficialMetric(BaseMetric):
         if sample.get('pred_nms_keep_queries') is not None:
             selected &= self._numpy(
                 sample['pred_nms_keep_queries']).astype(bool)
+        if self.mean_distance_nms_threshold is not None:
+            distance_keep = mean_distance_curve_nms(
+                torch.from_numpy(pred_x).unsqueeze(0),
+                torch.from_numpy(pred_z).unsqueeze(0),
+                torch.from_numpy(pred_visibility).unsqueeze(0),
+                torch.from_numpy(pred_scores).unsqueeze(0),
+                distance_threshold=self.mean_distance_nms_threshold,
+                visibility_threshold=self.visibility_threshold,
+                candidate_mask=torch.from_numpy(selected).unsqueeze(0))
+            selected &= distance_keep[0].numpy()
 
         lanes = []
         categories = []
@@ -141,6 +160,8 @@ class OpenLaneOfficialMetric(BaseMetric):
             num_matches=float(summary['match_count']),
             num_recall_matches=float(summary['recall_matches']),
             num_precision_matches=float(summary['precision_matches']),
+            pred_per_frame=(
+                summary['pred_count'] / max(len(results), 1)),
             num_pred_before_nms=float(summary['pred_count_before_nms']),
             num_nms_suppressed=float(summary['nms_suppressed']),
             nms_suppression_ratio=(
