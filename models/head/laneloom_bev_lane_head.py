@@ -172,22 +172,26 @@ class BEVLaneHead(nn.Module):
         valid_queries = candidate_queries
         nms_keep_queries = scores.new_ones(scores.shape, dtype=bool)
         if self.curve_nms_cfg is not None:
-            nms_keep_queries = curve_nms(
-                predictions['pred_x'], predictions['pred_z'], visibility,
-                scores,
-                tube_radius=float(
-                    self.curve_nms_cfg.get('tube_radius', 0.5)),
-                z_weight=float(
-                    self.curve_nms_cfg.get('z_weight', 1.0)),
-                epsilon=float(
-                    self.curve_nms_cfg.get('epsilon', 1e-6)),
-                iou_threshold=float(
-                    self.curve_nms_cfg.get('iou_threshold', 0.6)),
-                containment_threshold=float(
-                    self.curve_nms_cfg.get(
-                        'containment_threshold', 0.9)),
-                candidate_mask=candidate_queries)
-            valid_queries &= nms_keep_queries
+            tube_nms_enabled = any(
+                name in self.curve_nms_cfg
+                for name in ('iou_threshold', 'containment_threshold'))
+            if tube_nms_enabled:
+                nms_keep_queries = curve_nms(
+                    predictions['pred_x'], predictions['pred_z'], visibility,
+                    scores,
+                    tube_radius=float(
+                        self.curve_nms_cfg.get('tube_radius', 0.5)),
+                    z_weight=float(
+                        self.curve_nms_cfg.get('z_weight', 1.0)),
+                    epsilon=float(
+                        self.curve_nms_cfg.get('epsilon', 1e-6)),
+                    iou_threshold=float(
+                        self.curve_nms_cfg.get('iou_threshold', 0.6)),
+                    containment_threshold=float(
+                        self.curve_nms_cfg.get(
+                            'containment_threshold', 0.9)),
+                    candidate_mask=candidate_queries)
+                valid_queries &= nms_keep_queries
             mean_distance_threshold = self.curve_nms_cfg.get(
                 'mean_distance_threshold')
             if mean_distance_threshold is not None:

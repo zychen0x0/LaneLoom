@@ -223,9 +223,7 @@ model = dict(
                 tube_radius=0.5,
                 z_weight=1.0,
                 epsilon=1e-6,
-                # Disable final hard Tube-NMS; retain mean-distance NMS only.
-                iou_threshold=1.0,
-                containment_threshold=1.0,
+                # Omitted Tube thresholds skip final hard Tube-NMS.
                 mean_distance_threshold=0.35,))),
 )
 # ----------------------------------------------------model config end----------------------------------------------------

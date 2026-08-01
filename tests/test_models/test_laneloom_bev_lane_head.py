@@ -175,6 +175,32 @@ def _selection_predictions(scores, x, visibility):
             visibility_tensor.clamp(1e-4, 1 - 1e-4)))
 
 
+def test_lane_head_skips_tube_nms_when_tube_thresholds_are_omitted():
+    anchors = [0., 2., 4., 6., 8.]
+    head = _head(8, 2, 2, 2, anchors, 4)
+    head.score_threshold = .5
+    head.curve_nms_cfg = dict(
+        visibility_threshold=.5,
+        tube_radius=.5,
+        z_weight=1.,
+        epsilon=1e-6,
+        mean_distance_threshold=.35)
+    predictions = _selection_predictions(
+        scores=[.9, .8],
+        x=[[0.] * 5, [0., 0., 0., 0., 2.]],
+        visibility=[[1.] * 5] * 2)
+    predictions['pred_category'] = torch.zeros(1, 2, 2)
+
+    with (
+        patch.object(head, '_anchor_prior', return_value=None),
+        patch.object(head, 'forward_bev', return_value=torch.zeros(1, 8, 2, 2)),
+        patch.object(head, '_predict', return_value=predictions),
+    ):
+        output = head.predict(None, None, None)
+
+    assert output['valid_queries'].tolist() == [[True, True]]
+
+
 def test_decoder_soft_reranking_deprioritizes_a_contained_lower_score_query():
     decoder = LaneQueryDecoder(
         embed_dims=8,

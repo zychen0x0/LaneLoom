@@ -211,8 +211,8 @@ def test_config_uses_mean_distance_only_for_final_nms():
     cfg = Config.fromfile(config_path)
     curve_nms = cfg.model.lane_head.test_cfg.curve_nms
 
-    assert curve_nms.iou_threshold == 1.0
-    assert curve_nms.containment_threshold == 1.0
+    assert 'iou_threshold' not in curve_nms
+    assert 'containment_threshold' not in curve_nms
     assert curve_nms.mean_distance_threshold == 0.35
 
 
