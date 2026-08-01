@@ -35,6 +35,18 @@ queue_length = 3
 output_y_steps = [2.0 * i for i in range(1, 51)]
 evidence_y_steps = [5.0 * i for i in range(1, 21)]
 score_threshold = {{_base_.score_threshold}}
+temporal_gt_augmentation = {{_base_.temporal_gt_augmentation}}
+
+# Training loss consumes the temporal GT supplement whenever the dataset emits
+# it. Use the same target for validation while keeping final test evaluation on
+# the benchmark's current-frame annotations.
+validation_metric_prefix = (
+    'OpenLaneTemporal'
+    if temporal_gt_augmentation else 'OpenLaneOfficial')
+validation_best_metric = f'{validation_metric_prefix}/F1'
+val_evaluator = dict(
+    prefix=validation_metric_prefix,
+    use_temporal_gt_supplement=temporal_gt_augmentation)
 
 backbone_init = 'torchvision://resnet50'
 # ----------------------------------------------------model common config end----------------------------------------------------
@@ -188,7 +200,7 @@ model = dict(
             # refinement stage, then suppress unmatched duplicates strongly
             # after the final decoder layer.
             negative_objectness_weight=1.0,
-            ambiguous_negative_weight=1.0,
+            ambiguous_negative_weight=0.1,
             auxiliary_ambiguous_negative_weight=0.1,
             ambiguous_distance_threshold=0.5,
             ambiguous_match_ratio=0.75,
@@ -212,7 +224,8 @@ model = dict(
                 z_weight=1.0,
                 epsilon=1e-6,
                 iou_threshold=0.6,
-                containment_threshold=0.9))),
+                containment_threshold=0.9,
+                mean_distance_threshold=0.35,))),
 )
 # ----------------------------------------------------model config end----------------------------------------------------
 
@@ -225,4 +238,4 @@ default_hooks = dict(
         interval=50,
         mode='brief',
         window_size=50),
-    checkpoint=dict(save_best={{_base_.best_metric}}))
+    checkpoint=dict(save_best=validation_best_metric))

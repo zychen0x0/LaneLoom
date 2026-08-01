@@ -6,7 +6,7 @@
 ```bash
 cd /workspace/LaneLoom
 
-SAMPLE=/workspace/LaneLoom/data/openlane/images/training/segment-16534202648288984983_900_000_920_000_with_camera_labels/155934387138996700.jpg
+SAMPLE=/workspace/LaneLoom/data/openlane/images/training/segment-8603916601243187272_540_000_560_000_with_camera_labels/155250133667392400.jpg
 
 PYTHONPATH=/workspace \
 LANELOOM_VIS_INPUT=1 \
@@ -58,14 +58,26 @@ tests/test_data/test_pipelines/test_openlane_pipeline.py::test_visualize_openlan
 `random` 中第一个 `OneOf(p=1.0)` 必定选择一种颜色增强，第二个
 `OneOf(p=0.65)` 有 65% 概率再选择压缩、噪声或 ToneCurve 中的一种。
 
+
+
+时序
+data/openlane/images/training/segment-8603916601243187272_540_000_560_000_with_camera_labels/155250133667392400.jpg
+
 ## 当前帧 3D GT 投影
 
 该可视化使用原始图像，只执行 Resize 和 Normalize，不执行 Albu 或 GridMask。
 
+
+
+复杂sample:
+data/openlane/images/training/segment-3195159706851203049_2763_790_2783_790_with_camera_labels/150990953886019500.jpg
+
+
 ```bash
 cd /workspace/LaneLoom
 
-SAMPLE=/workspace/LaneLoom/data/openlane/images/training/segment-16534202648288984983_900_000_920_000_with_camera_labels/155934387138996700.jpg
+
+SAMPLE=/workspace/LaneLoom/data/openlane/images/training/segment-3195159706851203049_2763_790_2783_790_with_camera_labels/150990953886019500.jpg
 
 PYTHONPATH=/workspace \
 LANELOOM_VIS_3D_GT=1 \
@@ -82,7 +94,7 @@ tests/test_data/test_pipelines/test_openlane_pipeline.py::test_visualize_openlan
 ```bash
 cd /workspace/LaneLoom
 
-SAMPLE=/workspace/LaneLoom/data/openlane/images/training/segment-16534202648288984983_900_000_920_000_with_camera_labels/155934387138996700.jpg
+SAMPLE=/workspace/LaneLoom/data/openlane/images/training/segment-8603916601243187272_540_000_560_000_with_camera_labels/155250133667392400.jpg
 
 PYTHONPATH=/workspace \
 LANELOOM_VIS_TEMPORAL_GT=1 \

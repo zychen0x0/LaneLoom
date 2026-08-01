@@ -15,7 +15,14 @@ from .lane_evaluation import OpenLaneLaneEvaluator
 
 @METRICS.register_module()
 class OpenLaneOfficialMetric(BaseMetric):
-    """Evaluate current-frame annotations with the official OpenLane protocol."""
+    """Evaluate lane annotations with the official OpenLane protocol.
+
+    Current-frame raw annotations remain the default.  Temporal experiments
+    may instead evaluate the pose-aligned, fixed-anchor supplement emitted by
+    the dataloader.  That keeps the matching protocol identical, but the
+    resulting metric is not the official benchmark target because its GT set
+    has been augmented.
+    """
 
     default_prefix = 'OpenLaneOfficial'
 
@@ -27,9 +34,6 @@ class OpenLaneOfficialMetric(BaseMetric):
                  collect_device: str = 'cpu',
                  prefix: str | None = None,
                  collect_dir: str | None = None) -> None:
-        if use_temporal_gt_supplement:
-            raise ValueError(
-                'OpenLaneOfficialMetric only supports current-frame raw GT.')
         super().__init__(collect_device=collect_device, prefix=prefix,
                          collect_dir=collect_dir)
         self.score_threshold = float(score_threshold)
@@ -42,7 +46,8 @@ class OpenLaneOfficialMetric(BaseMetric):
                      or self.mean_distance_nms_threshold <= 0)):
             raise ValueError(
                 'mean_distance_nms_threshold must be finite positive.')
-        self.use_temporal_gt_supplement = False
+        self.use_temporal_gt_supplement = bool(
+            use_temporal_gt_supplement)
         self.evaluator = OpenLaneLaneEvaluator()
 
     @staticmethod
@@ -56,7 +61,8 @@ class OpenLaneOfficialMetric(BaseMetric):
             self.results.append(self._evaluate_sample(sample))
 
     def _evaluate_sample(self, sample):
-        if sample.get('raw_label') is None:
+        if (not self.use_temporal_gt_supplement
+                and sample.get('raw_label') is None):
             raise KeyError(
                 'OpenLaneOfficialMetric requires the current-frame raw_label.')
         pred_x = self._numpy(sample['pred_x']).astype(np.float64)
@@ -98,8 +104,37 @@ class OpenLaneOfficialMetric(BaseMetric):
             )))
             categories.append(int(pred_categories[query_index]))
 
-        official = self.evaluator.evaluate(
-            lanes, categories, sample['raw_label'])
+        if self.use_temporal_gt_supplement:
+            required_keys = (
+                'gt_lanes_3d_enhanced',
+                'gt_lanes_visibility_enhanced',
+                'gt_lanes_category_enhanced',
+            )
+            missing = [
+                key for key in required_keys if sample.get(key) is None]
+            if missing:
+                raise KeyError(
+                    'Temporal GT evaluation requires: '
+                    + ', '.join(missing))
+            gt_lanes = self._numpy(
+                sample['gt_lanes_3d_enhanced']).astype(np.float64)
+            gt_visibility = self._numpy(
+                sample['gt_lanes_visibility_enhanced']).astype(np.float64)
+            gt_categories = self._numpy(
+                sample['gt_lanes_category_enhanced']).astype(np.int64)
+            official = self.evaluator.evaluate_ground_lanes(
+                lanes,
+                categories,
+                list(gt_lanes),
+                [
+                    (visibility >= self.visibility_threshold).astype(
+                        np.float64)
+                    for visibility in gt_visibility
+                ],
+                gt_categories.tolist())
+        else:
+            official = self.evaluator.evaluate(
+                lanes, categories, sample['raw_label'])
         compact = {
             name: int(official[name])
             for name in (

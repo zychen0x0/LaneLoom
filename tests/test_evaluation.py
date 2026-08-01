@@ -128,6 +128,33 @@ def test_official_metric_uses_current_raw_label_and_ignores_enhanced_gt():
     assert values['Precision'] == 1.0
 
 
+def test_official_metric_can_evaluate_temporal_supplement():
+    ground_lane = _official_ground_lane()
+    sample = _sample()
+    sample.update(
+        pred_x=torch.from_numpy(ground_lane[:, 0]).unsqueeze(0),
+        pred_z=torch.from_numpy(ground_lane[:, 2]).unsqueeze(0),
+        pred_visibility=torch.ones(1, len(ground_lane)),
+        pred_scores=torch.tensor([0.9]),
+        pred_category=torch.tensor([2]),
+        anchor_y_steps=torch.from_numpy(ground_lane[:, 1]),
+        raw_label=_official_raw_label(ground_lane),
+        gt_lanes_3d_enhanced=torch.from_numpy(
+            _official_ground_lane(x_offset=8.0)).unsqueeze(0),
+        gt_lanes_visibility_enhanced=torch.ones(1, len(ground_lane)),
+        gt_lanes_category_enhanced=torch.tensor([2]),
+    )
+    metric = METRICS.build(dict(
+        type='OpenLaneOfficialMetric', prefix=None, score_threshold=0.5,
+        use_temporal_gt_supplement=True))
+
+    metric.process(None, [sample])
+    values = metric.compute_metrics(metric.results)
+
+    assert values['F1'] == 0.0
+    assert values['num_gt'] == 1.0
+
+
 def test_evaluation_samples_expose_current_raw_label_to_official_metric():
     ground_lane = _official_ground_lane()
     raw_label = _official_raw_label(ground_lane)
@@ -305,21 +332,22 @@ def test_config_enables_mmengine_validation_and_test_evaluators():
     source = config_path.read_text()
 
     assert "'./_base_/evaluators/openlane_official.py'" in source
-    assert 'if evaluation_protocol' not in source
     assert 'dv3dlane_evaluator = dict(' not in source
     assert cfg.val_cfg.type == 'ValLoop'
     assert cfg.test_cfg.type == 'TestLoop'
     assert cfg.val_dataloader is not None
     assert cfg.test_dataloader is not None
     assert cfg.evaluation_protocol in ('dv3dlane', 'official')
+    assert cfg.temporal_gt_augmentation is True
     assert cfg.val_evaluator.type == 'OpenLaneOfficialMetric'
-    assert cfg.val_evaluator.prefix == 'OpenLaneOfficial'
+    assert cfg.val_evaluator.prefix == 'OpenLaneTemporal'
+    assert cfg.val_evaluator.use_temporal_gt_supplement is True
     assert cfg.test_evaluator.type == 'OpenLaneOfficialMetric'
     assert cfg.test_evaluator.prefix == 'OpenLaneOfficial'
-    assert cfg.val_evaluator.use_temporal_gt_supplement is False
+    assert cfg.test_evaluator.use_temporal_gt_supplement is False
     assert cfg.test_dataloader.dataset.split == 'test'
     assert cfg.test_dataloader.dataset.dataset_cfg.load_interval == 1
-    assert cfg.default_hooks.checkpoint.save_best == 'OpenLaneOfficial/F1'
+    assert cfg.default_hooks.checkpoint.save_best == 'OpenLaneTemporal/F1'
     assert cfg.default_hooks.checkpoint.rule == 'greater'
 
 
@@ -344,9 +372,10 @@ def test_config_can_select_dv3dlane_validation_but_keeps_official_test():
     cfg = Config.fromstring(source, '.py')
 
     assert cfg.val_evaluator.type == 'OpenLaneAnchorMetric'
-    assert cfg.val_evaluator.prefix == 'DV3DLane'
+    assert cfg.val_evaluator.prefix == 'OpenLaneTemporal'
+    assert cfg.val_evaluator.use_temporal_gt_supplement is True
     assert cfg.test_evaluator.type == 'OpenLaneOfficialMetric'
-    assert cfg.default_hooks.checkpoint.save_best == 'DV3DLane/F1'
+    assert cfg.default_hooks.checkpoint.save_best == 'OpenLaneTemporal/F1'
 
 
 def test_openlane_test_configs_select_validation_and_each_official_case():
