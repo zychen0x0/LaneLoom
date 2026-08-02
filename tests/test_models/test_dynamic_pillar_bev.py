@@ -95,8 +95,12 @@ def test_dynamic_pillar_paints_points_from_their_temporal_normalized_images():
     painted = encoder.paint_points(points, images, metas)
 
     assert painted[0].shape == (2, 9)
-    assert torch.equal(painted[0][0, 6:], torch.tensor([10., 20., 30.]))
-    assert torch.equal(painted[0][1, 6:], torch.tensor([41., 51., 61.]))
+    assert torch.equal(
+        painted[0][0],
+        torch.tensor([1., 0., 1., 1., 0., 10., 20., 30., 0.]))
+    assert torch.equal(
+        painted[0][1],
+        torch.tensor([0., 1., 1., 1., 0., 41., 51., 61., 1.]))
 
 
 def test_dynamic_pillar_uses_zero_rgb_for_invalid_image_projections():
@@ -109,7 +113,7 @@ def test_dynamic_pillar_uses_zero_rgb_for_invalid_image_projections():
 
     painted = encoder.paint_points(points, images, metas)
 
-    assert torch.equal(painted[0][0, 6:], torch.zeros(3))
+    assert torch.equal(painted[0][0, 5:8], torch.zeros(3))
 
 
 def test_dynamic_pillar_loads_pre_painting_point_encoder_weights():
@@ -122,8 +126,38 @@ def test_dynamic_pillar_loads_pre_painting_point_encoder_weights():
         {'point_mlp.0.weight': old_weight}, strict=False)
 
     loaded = encoder.point_mlp[0].weight.detach()
-    assert torch.equal(loaded[:, :12], old_weight)
-    assert torch.equal(loaded[:, 12:], torch.zeros_like(loaded[:, 12:]))
+    assert torch.equal(loaded[:, :5], old_weight[:, :5])
+    assert torch.equal(loaded[:, 5:8], torch.zeros_like(loaded[:, 5:8]))
+    assert torch.equal(loaded[:, 8], old_weight[:, 5])
+    assert torch.equal(loaded[:, 9:], old_weight[:, 6:])
+
+
+def test_dynamic_pillar_migrates_rgb_at_tail_point_encoder_weights():
+    encoder = _encoder()
+    old_weight = torch.arange(
+        encoder.pfe_channels * 15, dtype=torch.float32
+    ).reshape(encoder.pfe_channels, 15)
+
+    encoder.load_state_dict(
+        {'point_mlp.0.weight': old_weight}, strict=False)
+
+    loaded = encoder.point_mlp[0].weight.detach()
+    assert torch.equal(loaded[:, :5], old_weight[:, :5])
+    assert torch.equal(loaded[:, 5:8], old_weight[:, 12:15])
+    assert torch.equal(loaded[:, 8], old_weight[:, 5])
+    assert torch.equal(loaded[:, 9:12], old_weight[:, 6:9])
+    assert torch.equal(loaded[:, 12:15], old_weight[:, 9:12])
+
+
+def test_dynamic_pillar_keeps_current_point_encoder_layout_when_loading():
+    source = _encoder()
+    expected = torch.randn_like(source.point_mlp[0].weight)
+    source.point_mlp[0].weight.data.copy_(expected)
+    target = _encoder()
+
+    target.load_state_dict(source.state_dict())
+
+    assert torch.equal(target.point_mlp[0].weight, expected)
 
 
 def test_lane_neck_updates_batch_norm_once_per_training_step():

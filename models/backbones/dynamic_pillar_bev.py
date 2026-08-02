@@ -16,9 +16,12 @@ Y = 1
 Z = 2
 INTENSITY = 3
 ELONGATION = 4
-QUEUE_INDEX = 5
-BASE_POINT_CHANNELS = 6
+RAW_QUEUE_INDEX = 5
+QUEUE_INDEX = 8
+RAW_POINT_CHANNELS = 6
 PAINTED_RGB_CHANNELS = 3
+PAINTED_POINT_CHANNELS = 9
+POINT_FEATURE_LAYOUT_VERSION = 2
 GROUND_TO_VEHICLE_AXES = (
     (0., 1., 0.),
     (-1., 0., 0.),
@@ -173,6 +176,9 @@ class DynamicPillarBEVEncoder(nn.Module):
         self.out_channels = int(out_channels)
         self.queue_length = int(queue_length)
         self.pfe_channels = int(base_channels)
+        self.register_buffer(
+            'point_feature_layout_version',
+            torch.tensor(POINT_FEATURE_LAYOUT_VERSION, dtype=torch.int64))
         self.pillar_feature_channels = (
             self.pfe_channels * 2 + self.pillar_statistic_channels)
         if len(self.point_cloud_range) != 6:
@@ -215,15 +221,32 @@ class DynamicPillarBEVEncoder(nn.Module):
             self, state_dict, prefix, local_metadata, strict,
             missing_keys, unexpected_keys, error_msgs):
         point_weight_key = prefix + 'point_mlp.0.weight'
+        layout_version_key = prefix + 'point_feature_layout_version'
         point_weight = state_dict.get(point_weight_key)
+        layout_version = state_dict.get(layout_version_key)
+        current_layout = (
+            layout_version is not None
+            and int(layout_version.item()) == POINT_FEATURE_LAYOUT_VERSION)
         expected_weight = self.point_mlp[0].weight
         if (point_weight is not None
                 and point_weight.shape[0] == expected_weight.shape[0]
-                and point_weight.shape[1] == (
-                    expected_weight.shape[1] - PAINTED_RGB_CHANNELS)):
+                and (point_weight.shape[1] == (
+                    expected_weight.shape[1] - PAINTED_RGB_CHANNELS)
+                     or (point_weight.shape == expected_weight.shape
+                         and not current_layout))):
             expanded_weight = point_weight.new_zeros(expected_weight.shape)
-            expanded_weight[:, :point_weight.shape[1]] = point_weight
+            expanded_weight[:, :5] = point_weight[:, :5]
+            expanded_weight[:, QUEUE_INDEX] = point_weight[:, RAW_QUEUE_INDEX]
+            if point_weight.shape[1] == expected_weight.shape[1]:
+                expanded_weight[:, 5:8] = point_weight[:, 12:15]
+                expanded_weight[:, 9:12] = point_weight[:, 6:9]
+                expanded_weight[:, 12:15] = point_weight[:, 9:12]
+            else:
+                expanded_weight[:, 9:] = point_weight[:, 6:]
             state_dict[point_weight_key] = expanded_weight
+        if layout_version is None:
+            state_dict[layout_version_key] = (
+                self.point_feature_layout_version.detach().clone())
         super()._load_from_state_dict(
             state_dict, prefix, local_metadata, strict,
             missing_keys, unexpected_keys, error_msgs)
@@ -250,22 +273,22 @@ class DynamicPillarBEVEncoder(nn.Module):
         all_flat_indices = []
         cells = self.grid_h * self.grid_w
         for batch_index, sample in enumerate(points):
-            if sample.ndim != 2 or sample.size(-1) < 6:
+            if sample.ndim != 2 or sample.size(-1) < RAW_POINT_CHANNELS:
                 raise ValueError(
                     'Dynamic pillar points must contain '
                     'xyz/intensity/elongation/queue_index.')
             if sample.numel() == 0:
                 continue
-            if sample.size(-1) == BASE_POINT_CHANNELS:
+            if sample.size(-1) == RAW_POINT_CHANNELS:
                 sample = torch.cat((
-                    sample,
+                    sample[:, :RAW_QUEUE_INDEX],
                     sample.new_zeros(sample.size(0), PAINTED_RGB_CHANNELS),
+                    sample[:, RAW_QUEUE_INDEX:],
                 ), dim=-1)
-            elif sample.size(-1) < (
-                    BASE_POINT_CHANNELS + PAINTED_RGB_CHANNELS):
+            elif sample.size(-1) < PAINTED_POINT_CHANNELS:
                 raise ValueError(
                     'Painted dynamic pillar points must append three RGB '
-                    'channels after queue_index.')
+                    'channels before queue_index.')
             x_index = torch.floor(
                 (sample[:, X] - self.point_cloud_range[0])
                 / self.pillar_size[0]).long()
@@ -281,8 +304,7 @@ class DynamicPillarBEVEncoder(nn.Module):
                 & (sample[:, Z] <= self.point_cloud_range[5]))
             if not valid.any():
                 continue
-            sample = sample[
-                valid, :BASE_POINT_CHANNELS + PAINTED_RGB_CHANNELS]
+            sample = sample[valid, :PAINTED_POINT_CHANNELS]
             flat_index = (
                 y_index[valid].clamp(0, self.grid_h - 1) * self.grid_w
                 + x_index[valid].clamp(0, self.grid_w - 1)
@@ -293,7 +315,7 @@ class DynamicPillarBEVEncoder(nn.Module):
             reference = points[0]
             return (
                 reference.new_zeros((
-                    0, BASE_POINT_CHANNELS + PAINTED_RGB_CHANNELS)),
+                    0, PAINTED_POINT_CHANNELS)),
                 torch.zeros(0, dtype=torch.long, device=reference.device))
         return torch.cat(all_points), torch.cat(all_flat_indices)
 
@@ -314,7 +336,7 @@ class DynamicPillarBEVEncoder(nn.Module):
         return sample_meta.get('current', sample_meta)
 
     def paint_points(self, points, images=None, img_metas=None):
-        """Append normalized RGB sampled from each point's temporal image."""
+        """Return xyz/intensity/elongation/RGB/queue painted points."""
         if not isinstance(points, (list, tuple)):
             points = [points]
         if images is not None and images.ndim == 5:
@@ -329,19 +351,21 @@ class DynamicPillarBEVEncoder(nn.Module):
 
         painted_batch = []
         for batch_index, sample in enumerate(points):
-            if sample.ndim != 2 or sample.size(-1) < BASE_POINT_CHANNELS:
+            if sample.ndim != 2 or sample.size(-1) < RAW_POINT_CHANNELS:
                 raise ValueError(
                     'Dynamic pillar points must contain '
                     'xyz/intensity/elongation/queue_index.')
-            base = sample[:, :BASE_POINT_CHANNELS]
-            rgb = base.new_zeros(sample.size(0), PAINTED_RGB_CHANNELS)
+            lidar_features = sample[:, :RAW_QUEUE_INDEX]
+            queue = sample[:, RAW_QUEUE_INDEX:RAW_QUEUE_INDEX + 1]
+            rgb = sample.new_zeros(sample.size(0), PAINTED_RGB_CHANNELS)
             if images is None or img_metas is None or sample.numel() == 0:
-                painted_batch.append(torch.cat((base, rgb), dim=-1))
+                painted_batch.append(torch.cat(
+                    (lidar_features, rgb, queue), dim=-1))
                 continue
 
             time_steps = images.size(1)
-            queue_indices = base[:, QUEUE_INDEX].round().long()
-            ground_to_vehicle = base.new_tensor(GROUND_TO_VEHICLE_AXES)
+            queue_indices = queue[:, 0].round().long()
+            ground_to_vehicle = sample.new_tensor(GROUND_TO_VEHICLE_AXES)
             for time_index in queue_indices.unique().tolist():
                 if not 0 <= time_index < time_steps:
                     continue
@@ -362,8 +386,8 @@ class DynamicPillarBEVEncoder(nn.Module):
 
                 point_indices = torch.where(queue_indices == time_index)[0]
                 homogeneous = torch.cat((
-                    base[point_indices, XYZ],
-                    base.new_ones(point_indices.numel(), 1),
+                    lidar_features[point_indices, XYZ],
+                    sample.new_ones(point_indices.numel(), 1),
                 ), dim=-1)
                 history_points = torch.linalg.solve(
                     history_to_current, homogeneous.transpose(0, 1)
@@ -391,7 +415,8 @@ class DynamicPillarBEVEncoder(nn.Module):
                     align_corners=True).view(PAINTED_RGB_CHANNELS, -1).T
                 rgb[point_indices] = torch.where(
                     valid.unsqueeze(-1), sampled, torch.zeros_like(sampled))
-            painted_batch.append(torch.cat((base, rgb), dim=-1))
+            painted_batch.append(torch.cat(
+                (lidar_features, rgb, queue), dim=-1))
         return painted_batch
 
     def _pillar_statistics(
@@ -476,11 +501,7 @@ class DynamicPillarBEVEncoder(nn.Module):
             normalized_raw[:, QUEUE_INDEX]
             / max(self.queue_length - 1, 1))
         point_inputs = torch.cat((
-            normalized_raw[:, :BASE_POINT_CHANNELS],
-            point_cluster_offset,
-            point_center_offset,
-            normalized_raw[:, BASE_POINT_CHANNELS:],
-        ), dim=-1)
+            normalized_raw, point_cluster_offset, point_center_offset), dim=-1)
         learned_points = self.point_mlp(point_inputs)
         learned_max = self._scatter_extreme(
             learned_points, inverse, pillar_count, 'amax')
