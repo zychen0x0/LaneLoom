@@ -165,7 +165,8 @@ class LaneLoom(BaseModel):
         """Extract image and optional LiDAR features."""
         img_feats = self.extract_img_feat(
             img, img_metas=img_metas)
-        pts_feats = self.extract_pts_feat(points, img_feats, img_metas)
+        pts_feats = self.extract_pts_feat(
+            points, img_feats, img_metas, images=img)
         return img_feats, pts_feats
 
     def extract_temporal_img_feat(self, img, img_metas=None):
@@ -213,14 +214,16 @@ class LaneLoom(BaseModel):
             torch.cat(num_points, dim=0),
             torch.cat(coors, dim=0))
 
-    def extract_pts_feat(self, points, img_feats=None, img_metas=None):
+    def extract_pts_feat(self, points, img_feats=None, img_metas=None,
+                         images=None):
         """Extract LiDAR BEV features from variable-length points."""
         if points is None or not self.with_pts_branch:
             return None
         if not isinstance(points, (list, tuple)):
             points = [points]
         if self.pts_bev_encoder is not None:
-            return self.pts_bev_encoder(points, img_feats, img_metas)
+            return self.pts_bev_encoder(
+                points, img_feats, img_metas, images=images)
 
         voxels, num_points, coors = self.voxelize(points)
         if voxels is None:
@@ -254,7 +257,8 @@ class LaneLoom(BaseModel):
             current_points = [current_points]
         img_feats = self.extract_temporal_img_feat(img, img_metas)
         pts_feats = self.extract_pts_feat(
-            current_points, img_feats=img_feats, img_metas=img_metas)
+            current_points, img_feats=img_feats, img_metas=img_metas,
+            images=img)
         return img_feats, pts_feats, img_metas, current_points, None
 
     def loss(self, batch):

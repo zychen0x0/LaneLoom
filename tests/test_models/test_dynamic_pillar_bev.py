@@ -50,11 +50,80 @@ def test_dynamic_pfe_aggregates_point_features_once_per_pillar():
 
     pillars = encoder.pillarize(points)
 
-    assert encoder.point_input_channels == 12
+    assert encoder.point_input_channels == 15
     assert encoder.pillar_statistic_channels == 10
     assert pillars['coordinates'].shape == (1, 3)
     assert pillars['features'].shape == (1, encoder.pillar_feature_channels)
     assert pillars['statistics'].shape == (1, 10)
+
+
+def test_dynamic_pillar_paints_points_from_their_temporal_normalized_images():
+    encoder = _encoder()
+    points = [torch.tensor([
+        [1., 0., 1., 1., 0., 0.],
+        [0., 1., 1., 1., 0., 1.],
+    ])]
+    images = torch.tensor([[
+        [[
+            [[10., 11.], [12., 13.]],
+            [[20., 21.], [22., 23.]],
+            [[30., 31.], [32., 33.]],
+        ]],
+        [[
+            [[40., 41.], [42., 43.]],
+            [[50., 51.], [52., 53.]],
+            [[60., 61.], [62., 63.]],
+        ]],
+    ]])
+    projection = torch.tensor([
+        [1., 0., 0., 0.],
+        [0., 1., 0., 0.],
+        [0., 0., 1., 0.],
+        [0., 0., 0., 1.],
+    ])
+    history_to_current = torch.eye(4)
+    history_to_current[0, 3] = 1.
+    metas = [dict(queue={
+        0: dict(
+            lidar2img=[projection],
+            lidaradj2lidarcurr=history_to_current),
+        1: dict(
+            lidar2img=[projection],
+            lidaradj2lidarcurr=torch.eye(4)),
+    })]
+
+    painted = encoder.paint_points(points, images, metas)
+
+    assert painted[0].shape == (2, 9)
+    assert torch.equal(painted[0][0, 6:], torch.tensor([10., 20., 30.]))
+    assert torch.equal(painted[0][1, 6:], torch.tensor([41., 51., 61.]))
+
+
+def test_dynamic_pillar_uses_zero_rgb_for_invalid_image_projections():
+    encoder = _encoder()
+    points = [torch.tensor([[0., 0., -1., 1., 0., 0.]])]
+    images = torch.ones(1, 1, 1, 3, 2, 2)
+    metas = [dict(queue={0: dict(
+        lidar2img=[torch.eye(4)],
+        lidaradj2lidarcurr=torch.eye(4))})]
+
+    painted = encoder.paint_points(points, images, metas)
+
+    assert torch.equal(painted[0][0, 6:], torch.zeros(3))
+
+
+def test_dynamic_pillar_loads_pre_painting_point_encoder_weights():
+    encoder = _encoder()
+    old_weight = torch.arange(
+        encoder.pfe_channels * 12, dtype=torch.float32
+    ).reshape(encoder.pfe_channels, 12)
+
+    encoder.load_state_dict(
+        {'point_mlp.0.weight': old_weight}, strict=False)
+
+    loaded = encoder.point_mlp[0].weight.detach()
+    assert torch.equal(loaded[:, :12], old_weight)
+    assert torch.equal(loaded[:, 12:], torch.zeros_like(loaded[:, 12:]))
 
 
 def test_lane_neck_updates_batch_norm_once_per_training_step():

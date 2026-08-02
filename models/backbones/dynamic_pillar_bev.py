@@ -17,6 +17,13 @@ Z = 2
 INTENSITY = 3
 ELONGATION = 4
 QUEUE_INDEX = 5
+BASE_POINT_CHANNELS = 6
+PAINTED_RGB_CHANNELS = 3
+GROUND_TO_VEHICLE_AXES = (
+    (0., 1., 0.),
+    (-1., 0., 0.),
+    (0., 0., 1.),
+)
 
 
 class _SparseBasicBlock(spconv.SparseModule):
@@ -153,7 +160,7 @@ class DynamicPillarBEVEncoder(nn.Module):
     once per non-empty pillar; statistics are never copied back to points.
     """
 
-    point_input_channels = 12
+    point_input_channels = 15
     pillar_statistic_channels = 10
     statistic_channels = pillar_statistic_channels
 
@@ -204,6 +211,23 @@ class DynamicPillarBEVEncoder(nn.Module):
             base_channels, base_channels, self.out_channels)
         self.lane_neck = _ASPPNeck(self.out_channels)
 
+    def _load_from_state_dict(
+            self, state_dict, prefix, local_metadata, strict,
+            missing_keys, unexpected_keys, error_msgs):
+        point_weight_key = prefix + 'point_mlp.0.weight'
+        point_weight = state_dict.get(point_weight_key)
+        expected_weight = self.point_mlp[0].weight
+        if (point_weight is not None
+                and point_weight.shape[0] == expected_weight.shape[0]
+                and point_weight.shape[1] == (
+                    expected_weight.shape[1] - PAINTED_RGB_CHANNELS)):
+            expanded_weight = point_weight.new_zeros(expected_weight.shape)
+            expanded_weight[:, :point_weight.shape[1]] = point_weight
+            state_dict[point_weight_key] = expanded_weight
+        super()._load_from_state_dict(
+            state_dict, prefix, local_metadata, strict,
+            missing_keys, unexpected_keys, error_msgs)
+
     @staticmethod
     def _scatter_sum(values, indices, size):
         output = values.new_zeros((size,) + values.shape[1:])
@@ -232,6 +256,16 @@ class DynamicPillarBEVEncoder(nn.Module):
                     'xyz/intensity/elongation/queue_index.')
             if sample.numel() == 0:
                 continue
+            if sample.size(-1) == BASE_POINT_CHANNELS:
+                sample = torch.cat((
+                    sample,
+                    sample.new_zeros(sample.size(0), PAINTED_RGB_CHANNELS),
+                ), dim=-1)
+            elif sample.size(-1) < (
+                    BASE_POINT_CHANNELS + PAINTED_RGB_CHANNELS):
+                raise ValueError(
+                    'Painted dynamic pillar points must append three RGB '
+                    'channels after queue_index.')
             x_index = torch.floor(
                 (sample[:, X] - self.point_cloud_range[0])
                 / self.pillar_size[0]).long()
@@ -247,7 +281,8 @@ class DynamicPillarBEVEncoder(nn.Module):
                 & (sample[:, Z] <= self.point_cloud_range[5]))
             if not valid.any():
                 continue
-            sample = sample[valid, :6]
+            sample = sample[
+                valid, :BASE_POINT_CHANNELS + PAINTED_RGB_CHANNELS]
             flat_index = (
                 y_index[valid].clamp(0, self.grid_h - 1) * self.grid_w
                 + x_index[valid].clamp(0, self.grid_w - 1)
@@ -257,9 +292,107 @@ class DynamicPillarBEVEncoder(nn.Module):
         if not all_points:
             reference = points[0]
             return (
-                reference.new_zeros((0, 6)),
+                reference.new_zeros((
+                    0, BASE_POINT_CHANNELS + PAINTED_RGB_CHANNELS)),
                 torch.zeros(0, dtype=torch.long, device=reference.device))
         return torch.cat(all_points), torch.cat(all_flat_indices)
+
+    @staticmethod
+    def _frame_meta(img_metas, batch_index, time_index):
+        if img_metas is None:
+            return None
+        sample_meta = (
+            img_metas[batch_index]
+            if isinstance(img_metas, (list, tuple)) else img_metas)
+        if not isinstance(sample_meta, dict):
+            return None
+        queue = sample_meta.get('queue')
+        if isinstance(queue, dict):
+            return queue.get(time_index, queue.get(str(time_index)))
+        if isinstance(queue, (list, tuple)) and time_index < len(queue):
+            return queue[time_index]
+        return sample_meta.get('current', sample_meta)
+
+    def paint_points(self, points, images=None, img_metas=None):
+        """Append normalized RGB sampled from each point's temporal image."""
+        if not isinstance(points, (list, tuple)):
+            points = [points]
+        if images is not None and images.ndim == 5:
+            images = images.unsqueeze(1)
+        if images is not None and images.ndim != 6:
+            raise ValueError(
+                'Point painting images must have shape [B,T,N,3,H,W] or '
+                f'[B,N,3,H,W], got {tuple(images.shape)}.')
+        if images is not None and images.size(0) != len(points):
+            raise ValueError(
+                'Point painting image batch must match the point batch.')
+
+        painted_batch = []
+        for batch_index, sample in enumerate(points):
+            if sample.ndim != 2 or sample.size(-1) < BASE_POINT_CHANNELS:
+                raise ValueError(
+                    'Dynamic pillar points must contain '
+                    'xyz/intensity/elongation/queue_index.')
+            base = sample[:, :BASE_POINT_CHANNELS]
+            rgb = base.new_zeros(sample.size(0), PAINTED_RGB_CHANNELS)
+            if images is None or img_metas is None or sample.numel() == 0:
+                painted_batch.append(torch.cat((base, rgb), dim=-1))
+                continue
+
+            time_steps = images.size(1)
+            queue_indices = base[:, QUEUE_INDEX].round().long()
+            ground_to_vehicle = base.new_tensor(GROUND_TO_VEHICLE_AXES)
+            for time_index in queue_indices.unique().tolist():
+                if not 0 <= time_index < time_steps:
+                    continue
+                frame_meta = self._frame_meta(
+                    img_metas, batch_index, time_index)
+                if not isinstance(frame_meta, dict):
+                    continue
+                lidar_to_image_matrices = frame_meta.get('lidar2img')
+                if (lidar_to_image_matrices is None
+                        or len(lidar_to_image_matrices) == 0):
+                    continue
+                lidar_to_image = torch.as_tensor(
+                    lidar_to_image_matrices[0],
+                    device=sample.device, dtype=sample.dtype)
+                history_to_current = torch.as_tensor(
+                    frame_meta.get('lidaradj2lidarcurr', torch.eye(4)),
+                    device=sample.device, dtype=sample.dtype)
+
+                point_indices = torch.where(queue_indices == time_index)[0]
+                homogeneous = torch.cat((
+                    base[point_indices, XYZ],
+                    base.new_ones(point_indices.numel(), 1),
+                ), dim=-1)
+                history_points = torch.linalg.solve(
+                    history_to_current, homogeneous.transpose(0, 1)
+                ).transpose(0, 1)
+                vehicle_points = torch.cat((
+                    history_points[:, :3] @ ground_to_vehicle.transpose(0, 1),
+                    history_points[:, 3:],
+                ), dim=-1)
+                projected = vehicle_points @ lidar_to_image.transpose(0, 1)
+                depth = projected[:, 2]
+                normalized_image = images[batch_index, time_index, 0]
+                height, width = normalized_image.shape[-2:]
+                grid = torch.stack((
+                    projected[:, 0] / depth.clamp_min(1e-5)
+                    / max(width - 1, 1) * 2 - 1,
+                    projected[:, 1] / depth.clamp_min(1e-5)
+                    / max(height - 1, 1) * 2 - 1,
+                ), dim=-1)
+                valid = (
+                    (depth > 1e-5)
+                    & (grid[:, 0].abs() <= 1)
+                    & (grid[:, 1].abs() <= 1))
+                sampled = F.grid_sample(
+                    normalized_image.unsqueeze(0), grid.view(1, 1, -1, 2),
+                    align_corners=True).view(PAINTED_RGB_CHANNELS, -1).T
+                rgb[point_indices] = torch.where(
+                    valid.unsqueeze(-1), sampled, torch.zeros_like(sampled))
+            painted_batch.append(torch.cat((base, rgb), dim=-1))
+        return painted_batch
 
     def _pillar_statistics(
             self, points, inverse, pillar_count, count, denominator):
@@ -343,7 +476,11 @@ class DynamicPillarBEVEncoder(nn.Module):
             normalized_raw[:, QUEUE_INDEX]
             / max(self.queue_length - 1, 1))
         point_inputs = torch.cat((
-            normalized_raw, point_cluster_offset, point_center_offset), dim=-1)
+            normalized_raw[:, :BASE_POINT_CHANNELS],
+            point_cluster_offset,
+            point_center_offset,
+            normalized_raw[:, BASE_POINT_CHANNELS:],
+        ), dim=-1)
         learned_points = self.point_mlp(point_inputs)
         learned_max = self._scatter_extreme(
             learned_points, inverse, pillar_count, 'amax')
@@ -399,9 +536,10 @@ class DynamicPillarBEVEncoder(nn.Module):
             occupancy, size=(self.grid_h // 2, self.grid_w // 2),
             mode='nearest') > 0
 
-    def forward(self, points, img_feats=None, img_metas=None):
-        del img_feats, img_metas
-        pillars = self.pillarize(points)
+    def forward(self, points, img_feats=None, img_metas=None, images=None):
+        del img_feats
+        pillars = self.pillarize(
+            self.paint_points(points, images=images, img_metas=img_metas))
         batch_size = pillars['batch_size']
         occupancy = self._occupancy(
             pillars['coordinates'], batch_size, pillars['features'].device)

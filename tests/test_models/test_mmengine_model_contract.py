@@ -254,5 +254,6 @@ def test_current_lidar_backbone_receives_the_complete_aligned_point_queue():
 
     passed_points = model.extract_pts_feat.call_args.args[0]
     assert passed_points[0].size(0) == 3
+    assert model.extract_pts_feat.call_args.kwargs['images'] is batch['img']
     assert encoded[3][0].size(0) == 3
     assert len(encoded) == 5
