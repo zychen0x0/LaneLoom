@@ -168,13 +168,15 @@ class DynamicPillarBEVEncoder(nn.Module):
     statistic_channels = pillar_statistic_channels
 
     def __init__(self, point_cloud_range, pillar_size, out_channels=128,
-                 queue_length=3, base_channels=64, **kwargs):
+                 queue_length=3, base_channels=64,
+                 use_rgb_pointpainting=True, **kwargs):
         super().__init__()
         self.point_cloud_range = tuple(float(value)
                                        for value in point_cloud_range)
         self.pillar_size = tuple(float(value) for value in pillar_size)
         self.out_channels = int(out_channels)
         self.queue_length = int(queue_length)
+        self.use_rgb_pointpainting = bool(use_rgb_pointpainting)
         self.pfe_channels = int(base_channels)
         self.register_buffer(
             'point_feature_layout_version',
@@ -339,6 +341,9 @@ class DynamicPillarBEVEncoder(nn.Module):
         """Return xyz/intensity/elongation/RGB/queue painted points."""
         if not isinstance(points, (list, tuple)):
             points = [points]
+        if not self.use_rgb_pointpainting:
+            images = None
+            img_metas = None
         if images is not None and images.ndim == 5:
             images = images.unsqueeze(1)
         if images is not None and images.ndim != 6:

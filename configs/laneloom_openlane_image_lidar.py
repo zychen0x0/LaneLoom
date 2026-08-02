@@ -27,8 +27,9 @@ _dim_ = 256
 _lidar_dim_ = 128
 _ffn_dim_ = _dim_ * 2
 _num_levels_ = 1
-# The sparse backbone downsamples the 0.25 m pillar grid by four, then the
-# lane neck upsamples once. The resulting LiDAR sampling field is 0.5 m.
+# The sparse backbone downsamples the 0.1 m pillar grid by four, then the lane
+# neck upsamples once to 0.2 m. BEVEncoder resamples it onto the shared 0.5 m
+# lane-query grid below.
 bev_h_ = 200
 bev_w_ = 100
 queue_length = 3
@@ -84,11 +85,12 @@ model = dict(
     pts_bev_encoder=dict(
         type='DynamicPillarBEVEncoder',
         point_cloud_range=point_cloud_range,
-        pillar_size=[0.25, 0.25],
+        pillar_size=[0.1, 0.1],
         out_channels=_lidar_dim_,
         # PillarNeXt-T style sparse widths: 32 -> 64 -> 128.
         base_channels=32,
-        queue_length=queue_length),
+        queue_length=queue_length,
+        use_rgb_pointpainting=True),
     # ----------------------------------------------------lidar branch end----------------------------------------------------
 
     # ---------------------------------------------------lane head start---------------------------------------------------
