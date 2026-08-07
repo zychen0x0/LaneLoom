@@ -6,7 +6,7 @@
 ```bash
 cd /workspace/LaneLoom
 
-SAMPLE=/workspace/LaneLoom/data/openlane/images/training/segment-8603916601243187272_540_000_560_000_with_camera_labels/155250133667392400.jpg
+SAMPLE=/workspace/LaneLoom/data/openlane/images/training/segment-16625429321676352815_1543_860_1563_860_with_camera_labels/150809235044180100.jpg
 
 PYTHONPATH=/workspace \
 LANELOOM_VIS_INPUT=1 \
@@ -77,7 +77,7 @@ data/openlane/images/training/segment-3195159706851203049_2763_790_2783_790_with
 cd /workspace/LaneLoom
 
 
-SAMPLE=/workspace/LaneLoom/data/openlane/images/training/segment-3195159706851203049_2763_790_2783_790_with_camera_labels/150990953886019500.jpg
+SAMPLE=/workspace/LaneLoom/data/openlane/images/training/segment-16625429321676352815_1543_860_1563_860_with_camera_labels/150809235044180100.jpg
 
 PYTHONPATH=/workspace \
 LANELOOM_VIS_3D_GT=1 \
@@ -94,7 +94,7 @@ tests/test_data/test_pipelines/test_openlane_pipeline.py::test_visualize_openlan
 ```bash
 cd /workspace/LaneLoom
 
-SAMPLE=/workspace/LaneLoom/data/openlane/images/training/segment-8603916601243187272_540_000_560_000_with_camera_labels/155250133667392400.jpg
+SAMPLE=/workspace/LaneLoom/data/openlane/images/training/segment-16625429321676352815_1543_860_1563_860_with_camera_labels/150809235044180100.jpg
 
 PYTHONPATH=/workspace \
 LANELOOM_VIS_TEMPORAL_GT=1 \

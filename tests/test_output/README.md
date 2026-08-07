@@ -7,8 +7,8 @@ cd /workspace/LaneLoom
 PYTHONPATH=/workspace CUDA_VISIBLE_DEVICES=0 \
 python tests/test_output/infer_openlane_sample.py \
   --image data/openlane/images/training/segment-3195159706851203049_2763_790_2783_790_with_camera_labels/150990953886019500.jpg \
-  --checkpoint work_dirs/laneloom_openlane_image_lidar/exp_date_20260729_161015/checkpoints/best_OpenLaneTemporal_F1_epoch_23.pth \
-  --output-dir tests/test_output/vis_output/fuza
+  --checkpoint work_dirs/laneloom_openlane_image_lidar/exp_date_20260802_141230/checkpoints/best_OpenLaneTemporal_F1_epoch_17.pth \
+  --output-dir tests/test_output/vis_output/fuza1
 
 '''
 

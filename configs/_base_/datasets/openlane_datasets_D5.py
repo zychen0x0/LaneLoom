@@ -5,7 +5,7 @@ _base_ = ['./openlane_datasets.py']
 
 # ---------------------------------------------------D5 subset start---------------------------------------------------
 # D5 means using one frame every five samples for quick experiments.
-load_interval = 5
+load_interval = 1
 dataset_name = 'openlane_D5'
 
 dataset_cfg = dict(
