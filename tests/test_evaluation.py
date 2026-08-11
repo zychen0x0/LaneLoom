@@ -389,9 +389,9 @@ def test_openlane_test_configs_select_validation_and_each_official_case():
         'up_down_case',
         'curve_case',
         'extreme_weather_case',
+        'night_case',
         'intersection_case',
         'merge_split_case',
-        'night_case',
     ]
     for name, case_cfg in case_configs:
         expected_split = 'validation' if name == 'validation' else f'test/{name}'
@@ -410,7 +410,7 @@ def test_openlane_test_configs_select_validation_and_each_official_case():
         ('validation', ['validation']),
         ('test', [
             'up_down_case', 'curve_case', 'extreme_weather_case',
-            'intersection_case', 'merge_split_case', 'night_case']),
+            'night_case', 'intersection_case', 'merge_split_case']),
         ('curve_case', ['curve_case']),
     ])
 def test_openlane_test_configs_filter_requested_cases(selection, expected):
@@ -699,6 +699,26 @@ def test_logger_reports_complete_test_case_metrics():
     assert scalars == [({
         f'test/{name}': value for name, value in metrics.items()
     }, 0)]
+
+
+def test_logger_does_not_present_threshold_scan_as_one_test_result():
+    messages = []
+    runner = SimpleNamespace(
+        rank=0,
+        iter=0,
+        logger=SimpleNamespace(info=messages.append),
+        visualizer=SimpleNamespace(add_scalars=lambda *_args, **_kwargs: None),
+    )
+    metrics = {
+        'OpenLaneOfficial/curve_case@0.3/F1': 0.6,
+        'OpenLaneOfficial/curve_case@0.3/Recall': 0.7,
+        'OpenLaneOfficial/curve_case@0.5/F1': 0.65,
+        'OpenLaneOfficial/curve_case@0.5/Recall': 0.6,
+    }
+
+    TrainingLoggerHook().after_test_epoch(runner, metrics)
+
+    assert messages == []
 
 
 def test_train_experiment_layout_uses_a_dated_laneloom_directory(tmp_path):

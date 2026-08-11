@@ -227,4 +227,5 @@ class TrainingLoggerHook(Hook):
         runner.visualizer.add_scalars(
             {f'test/{name}': self._as_float(value)
              for name, value in metrics.items()}, step=runner.iter)
-        self._log_evaluation_summary(runner, metrics)
+        if sum(name.endswith('/F1') for name in metrics) == 1:
+            self._log_evaluation_summary(runner, metrics)

@@ -13,6 +13,7 @@ from LaneLoom.engine import (
     remove_runtime_config_artifacts,
 )
 from LaneLoom.engine.openlane_test_cases import (
+    OPENLANE_TEST_CASE_LABELS,
     OPENLANE_TEST_CASE_CHOICES,
     distance_nms_metric_prefix,
     normalise_distance_nms_thresholds,
@@ -20,17 +21,6 @@ from LaneLoom.engine.openlane_test_cases import (
     score_threshold_metric_prefix,
     select_recall_safe_distance_threshold,
 )
-
-
-CASE_DISPLAY_NAMES = {
-    'validation': 'All',
-    'up_down_case': 'Up&Down',
-    'curve_case': 'Curve',
-    'extreme_weather_case': 'Extreme Weather',
-    'night_case': 'Night',
-    'intersection_case': 'Intersection',
-    'merge_split_case': 'Merge&Split',
-}
 
 
 def parse_args():
@@ -83,11 +73,11 @@ def write_evaluation_summary(output_dir, checkpoint, case_results):
             existing_results = existing.get('F1_percent', {})
 
     for case_name, f1 in case_results.items():
-        existing_results[CASE_DISPLAY_NAMES[case_name]] = round(
+        existing_results[OPENLANE_TEST_CASE_LABELS[case_name]] = round(
             float(f1) * 100., 4)
     ordered_results = {
         display_name: existing_results[display_name]
-        for display_name in CASE_DISPLAY_NAMES.values()
+        for display_name in OPENLANE_TEST_CASE_LABELS.values()
         if display_name in existing_results
     }
     payload = {

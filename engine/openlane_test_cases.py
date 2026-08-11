@@ -6,17 +6,21 @@ from math import isfinite
 
 
 OPENLANE_TEST_SPLITS = (
-    ('validation', 'validation'),
-    ('up_down_case', 'test/up_down_case'),
-    ('curve_case', 'test/curve_case'),
-    ('extreme_weather_case', 'test/extreme_weather_case'),
-    ('intersection_case', 'test/intersection_case'),
-    ('merge_split_case', 'test/merge_split_case'),
-    ('night_case', 'test/night_case'),
+    ('validation', 'validation', 'All'),
+    ('up_down_case', 'test/up_down_case', 'Up&Down'),
+    ('curve_case', 'test/curve_case', 'Curve'),
+    ('extreme_weather_case', 'test/extreme_weather_case', 'Extreme Weather'),
+    ('night_case', 'test/night_case', 'Night'),
+    ('intersection_case', 'test/intersection_case', 'Intersection'),
+    ('merge_split_case', 'test/merge_split_case', 'Merge&Split'),
 )
+OPENLANE_TEST_CASE_LABELS = {
+    name: display_name
+    for name, _, display_name in OPENLANE_TEST_SPLITS
+}
 OPENLANE_TEST_CASE_CHOICES = (
     'all', 'validation', 'test',
-    *(name for name, _ in OPENLANE_TEST_SPLITS if name != 'validation'),
+    *(name for name, _, _ in OPENLANE_TEST_SPLITS if name != 'validation'),
 )
 
 
@@ -106,7 +110,7 @@ def build_openlane_test_configs(
         raise ValueError(
             'score and distance NMS threshold scans cannot be combined.')
     case_configs = []
-    for name, split in selected:
+    for name, split, _ in selected:
         case_cfg = deepcopy(cfg)
         case_cfg.test_dataloader.dataset.split = 'val'
         case_cfg.test_dataloader.dataset.dataset_cfg.val_split = split
