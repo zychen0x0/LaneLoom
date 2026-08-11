@@ -190,6 +190,9 @@ class TrainingLoggerHook(Hook):
         runner.visualizer.add_scalars(
             {f'val/{name}': self._as_float(value)
              for name, value in metrics.items()}, step=runner.iter)
+        self._log_evaluation_summary(runner, metrics)
+
+    def _log_evaluation_summary(self, runner, metrics):
         runner.logger.info(
             '===> Evaluation laneline F1: {:.8f}\n'
             '===> Evaluation laneline Recall: {:.8f}\n'
@@ -218,9 +221,10 @@ class TrainingLoggerHook(Hook):
                 self._metric_value(metrics, 'z_error_far')))
 
     def after_test_epoch(self, runner, metrics=None):
-        """Keep final test metrics next to training curves in TensorBoard."""
+        """Write and print final per-case test metrics."""
         if runner.rank != 0 or not metrics:
             return
         runner.visualizer.add_scalars(
             {f'test/{name}': self._as_float(value)
              for name, value in metrics.items()}, step=runner.iter)
+        self._log_evaluation_summary(runner, metrics)

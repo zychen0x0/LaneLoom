@@ -659,6 +659,48 @@ def test_logger_reports_test_case_progress_eta_and_final_batch(monkeypatch):
     assert 'ETA 00:00:00' in messages[1]
 
 
+def test_logger_reports_complete_test_case_metrics():
+    messages = []
+    scalars = []
+    runner = SimpleNamespace(
+        rank=0,
+        iter=0,
+        logger=SimpleNamespace(info=messages.append),
+        visualizer=SimpleNamespace(
+            add_scalars=lambda values, step: scalars.append((values, step))),
+    )
+    metrics = {
+        'OpenLaneOfficial/curve_case/F1': 0.70423734,
+        'OpenLaneOfficial/curve_case/Recall': 0.65300149,
+        'OpenLaneOfficial/curve_case/Precision': 0.76419789,
+        'OpenLaneOfficial/curve_case/Category Accuracy': 0.95413834,
+        'OpenLaneOfficial/curve_case/num_gt': 32784.0,
+        'OpenLaneOfficial/curve_case/num_pred': 25127.0,
+        'OpenLaneOfficial/curve_case/num_tp': 24116.0,
+        'OpenLaneOfficial/curve_case/num_pred_before_nms': 180000.0,
+        'OpenLaneOfficial/curve_case/num_nms_suppressed': 154873.0,
+        'OpenLaneOfficial/curve_case/nms_suppression_ratio': 0.86040556,
+        'OpenLaneOfficial/curve_case/x_error_near': 0.12943050,
+        'OpenLaneOfficial/curve_case/x_error_far': 0.16741155,
+        'OpenLaneOfficial/curve_case/z_error_near': 0.03810635,
+        'OpenLaneOfficial/curve_case/z_error_far': 0.06069867,
+    }
+
+    TrainingLoggerHook().after_test_epoch(runner, metrics)
+
+    assert len(messages) == 1
+    summary = messages[0]
+    assert 'Evaluation laneline F1: 0.70423734' in summary
+    assert 'Recall: 0.65300149' in summary
+    assert 'Precision: 0.76419789' in summary
+    assert 'Category Accuracy: 0.95413834' in summary
+    assert 'GT / Pred / TP: 32784 / 25127 / 24116' in summary
+    assert 'x error (close): 0.12943050 m' in summary
+    assert scalars == [({
+        f'test/{name}': value for name, value in metrics.items()
+    }, 0)]
+
+
 def test_train_experiment_layout_uses_a_dated_laneloom_directory(tmp_path):
     cfg = Config(dict(
         work_dir=str(tmp_path / 'work_dirs' / 'laneloom'),

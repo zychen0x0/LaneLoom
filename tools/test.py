@@ -1,5 +1,6 @@
 """Evaluate a LaneLoom checkpoint with MMEngine's standard TestLoop."""
 import argparse
+import json
 from pathlib import Path
 
 from mmengine.config import Config
@@ -21,13 +22,25 @@ from LaneLoom.engine.openlane_test_cases import (
 )
 
 
+CASE_DISPLAY_NAMES = {
+    'validation': 'All',
+    'up_down_case': 'Up&Down',
+    'curve_case': 'Curve',
+    'extreme_weather_case': 'Extreme Weather',
+    'night_case': 'Night',
+    'intersection_case': 'Intersection',
+    'merge_split_case': 'Merge&Split',
+}
+
+
 def parse_args():
     parser = argparse.ArgumentParser(description='Evaluate LaneLoom.')
     parser.add_argument('config', help='Path to the MMEngine config.')
     parser.add_argument('checkpoint', help='Checkpoint to evaluate.')
     parser.add_argument(
         '--work-dir', default=None,
-        help='Experiment directory for test logs; defaults to checkpoint parent.')
+        help=('Evaluation directory for test logs; defaults to an evaluation '
+              'directory beside the checkpoint directory.'))
     parser.add_argument(
         '--case', choices=OPENLANE_TEST_CASE_CHOICES, default='all',
         help=('Evaluation selection: all runs validation plus every official '
@@ -47,6 +60,52 @@ def parse_args():
     return parser.parse_args()
 
 
+def resolve_evaluation_dir(checkpoint, work_dir):
+    if work_dir is not None:
+        return Path(work_dir).resolve()
+    checkpoint_path = Path(checkpoint).resolve()
+    experiment_dir = (
+        checkpoint_path.parent.parent
+        if checkpoint_path.parent.name == 'checkpoints'
+        else checkpoint_path.parent)
+    return experiment_dir / 'evaluation'
+
+
+def write_evaluation_summary(output_dir, checkpoint, case_results):
+    output_dir = Path(output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+    checkpoint = str(Path(checkpoint).resolve())
+    json_path = output_dir / 'evaluation_results.json'
+    existing_results = {}
+    if json_path.is_file():
+        existing = json.loads(json_path.read_text(encoding='utf-8'))
+        if existing.get('checkpoint') == checkpoint:
+            existing_results = existing.get('F1_percent', {})
+
+    for case_name, f1 in case_results.items():
+        existing_results[CASE_DISPLAY_NAMES[case_name]] = round(
+            float(f1) * 100., 4)
+    ordered_results = {
+        display_name: existing_results[display_name]
+        for display_name in CASE_DISPLAY_NAMES.values()
+        if display_name in existing_results
+    }
+    payload = {
+        'checkpoint': checkpoint,
+        'F1_percent': ordered_results,
+    }
+    json_path.write_text(
+        json.dumps(payload, indent=2, ensure_ascii=False) + '\n',
+        encoding='utf-8')
+
+    lines = [f'Checkpoint: {checkpoint}', '']
+    lines.extend(
+        f'{display_name:<17}{f1:.4f}'
+        for display_name, f1 in ordered_results.items())
+    (output_dir / 'evaluation_results.txt').write_text(
+        '\n'.join(lines) + '\n', encoding='utf-8')
+
+
 def main():
     args = parse_args()
     score_thresholds = normalise_score_thresholds(args.score_thresholds)
@@ -55,10 +114,7 @@ def main():
     config_path = Path(args.config).resolve()
     base_cfg = Config.fromfile(config_path)
     checkpoint = str(Path(args.checkpoint).resolve())
-    base_work_dir = (
-        Path(args.work_dir).resolve()
-        if args.work_dir else Path(checkpoint).parent.parent / 'test_cases'
-    )
+    base_work_dir = resolve_evaluation_dir(checkpoint, args.work_dir)
     distance_case_results = {}
     last_rank = 0
     for case_name, cfg in build_openlane_test_configs(
@@ -73,6 +129,13 @@ def main():
         remove_runtime_config_artifacts(experiment_dir, config_path)
         metrics = runner.test()
         last_rank = runner.rank
+        if runner.rank == 0:
+            metric_key = (
+                f'{base_cfg.test_evaluator.prefix}/{case_name}/F1')
+            if metric_key in metrics:
+                write_evaluation_summary(
+                    base_work_dir, checkpoint,
+                    {case_name: metrics[metric_key]})
         if runner.rank == 0 and score_thresholds is not None:
             print(f'\n===== Score threshold summary: {case_name} =====')
             for threshold in score_thresholds:
