@@ -32,6 +32,8 @@ def test_explicit_work_dir_overrides_checkpoint_default(tmp_path):
 def test_evaluation_summary_writes_and_merges_table3_f1_results(tmp_path):
     checkpoint = tmp_path / 'experiment' / 'checkpoints' / 'best.pth'
     output_dir = tmp_path / 'experiment' / 'evaluation'
+    output_dir.mkdir(parents=True)
+    (output_dir / 'evaluation_results.txt').write_text('legacy summary\n')
 
     TEST_MODULE.write_evaluation_summary(
         output_dir,
@@ -52,9 +54,4 @@ def test_evaluation_summary_writes_and_merges_table3_f1_results(tmp_path):
             'Night': 61.6516,
         },
     }
-    assert (output_dir / 'evaluation_results.txt').read_text() == (
-        f'Checkpoint: {checkpoint.resolve()}\n'
-        '\n'
-        'Up&Down          56.5332\n'
-        'Curve            70.4237\n'
-        'Night            61.6516\n')
+    assert not (output_dir / 'evaluation_results.txt').exists()

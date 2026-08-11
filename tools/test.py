@@ -87,13 +87,7 @@ def write_evaluation_summary(output_dir, checkpoint, case_results):
     json_path.write_text(
         json.dumps(payload, indent=2, ensure_ascii=False) + '\n',
         encoding='utf-8')
-
-    lines = [f'Checkpoint: {checkpoint}', '']
-    lines.extend(
-        f'{display_name:<17}{f1:.4f}'
-        for display_name, f1 in ordered_results.items())
-    (output_dir / 'evaluation_results.txt').write_text(
-        '\n'.join(lines) + '\n', encoding='utf-8')
+    (output_dir / 'evaluation_results.txt').unlink(missing_ok=True)
 
 
 def main():
