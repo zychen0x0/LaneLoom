@@ -504,7 +504,7 @@ def test_openlane_getitem_loads_multimodal_temporal_sample():
 
     dataset, cfg = _build_train_dataset(max_samples=1)
     data = dataset[0]
-    len_queue = len(cfg.frames)
+    len_queue = dataset.history_num_frames + 1
     img_h, img_w = dataset.resize_h, dataset.resize_w
 
     # img: [T, num_views, C, H, W]. num_views 是同一前视图像的多增强视图数量。
@@ -523,7 +523,7 @@ def test_openlane_getitem_loads_multimodal_temporal_sample():
     assert data['gt_lanes_uv'].shape == (cfg.max_lanes, cfg.num_y_steps, 2)
     assert data['gt_lanes_visibility'].shape == (cfg.max_lanes, cfg.num_y_steps)
     assert data['gt_lanes_category'].shape == (cfg.max_lanes,)
-    if cfg.temporal_gt_augmentation:
+    if dataset.temporal_gt_augmentation:
         assert data['gt_lanes_category_enhanced'].shape == (cfg.max_lanes,)
     assert data['ground_lanes'].shape[0] == cfg.max_lanes
     assert dataset.metainfo['dataset_name'] == 'OpenLane'
@@ -532,7 +532,8 @@ def test_openlane_getitem_loads_multimodal_temporal_sample():
 
     img_metas = data['img_metas']
     assert img_metas['num_history_frames'] == len_queue - 1
-    assert img_metas['sampling_mode'] in {'distance', 'neighbor'}
+    assert img_metas['sampling_mode'] in {
+        'distance', 'distance_fallback_offsets', 'neighbor'}
     assert len(img_metas['frame_keys']) == len_queue
     assert len(img_metas['queue']) == len_queue
     assert img_metas['num_views'] == cfg.num_views
@@ -578,7 +579,7 @@ def test_openlane_first_segment_frame_without_history_is_padded():
         if label_is_first and lidar_has_no_earlier_frame:
             data = dataset[idx]
             frame_keys = data['img_metas']['frame_keys']
-            len_queue = len(cfg.frames)
+            len_queue = dataset.history_num_frames + 1
 
             assert len(frame_keys) == len_queue
             assert frame_keys[-1] == current_key
@@ -607,8 +608,10 @@ def test_openlane_dataloader_collates_points_as_list():
         collate_fn=openlane_collate)
     batch = next(iter(dataloader))
 
-    assert batch['img'].shape == (1, len(cfg.frames), cfg.num_views, 3, img_h, img_w)
-    assert batch['view_mask'].shape == (1, len(cfg.frames), cfg.num_views)
+    assert batch['img'].shape == (
+        1, dataset.history_num_frames + 1, cfg.num_views, 3, img_h, img_w)
+    assert batch['view_mask'].shape == (
+        1, dataset.history_num_frames + 1, cfg.num_views)
     assert batch['view_mask'].dtype == torch.bool
     assert isinstance(batch['lidar'], list)
     assert len(batch['lidar']) == 1
@@ -684,7 +687,8 @@ def test_openlane_none_augmentation_mode_repeats_raw_views():
         ))
     data = dataset[0]
 
-    assert data['img_metas']['view_mask'].shape == (len(cfg.frames), dataset.num_views)
+    assert data['img_metas']['view_mask'].shape == (
+        dataset.history_num_frames + 1, dataset.num_views)
     assert torch.all(data['img_metas']['view_mask'])
     for view_idx in range(1, dataset.num_views):
         assert torch.allclose(data['img'][:, 0], data['img'][:, view_idx])
@@ -714,12 +718,13 @@ def test_openlane_history_frames_have_relative_transform_when_available():
             continue
 
         queue = data['img_metas']['queue']
-        current_transform = queue[len(cfg.frames) - 1]['lidaradj2lidarcurr']
+        current_transform = queue[dataset.history_num_frames][
+            'lidaradj2lidarcurr']
         assert np.allclose(current_transform, np.eye(4, dtype=np.float32), atol=1e-4)
 
         history_transforms = [
             queue[queue_idx]['lidaradj2lidarcurr']
-            for queue_idx in range(len(cfg.frames) - 1)
+            for queue_idx in range(dataset.history_num_frames)
         ]
         assert any(
             not np.allclose(transform, np.eye(4, dtype=np.float32), atol=1e-4)

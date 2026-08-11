@@ -9,6 +9,8 @@ import torch.nn.functional as F
 
 from mmdet3d.registry import MODELS
 
+from LaneLoom.temporal_sampling import resolve_temporal_sampling
+
 
 XYZ = slice(0, 3)
 X = 0
@@ -167,15 +169,17 @@ class DynamicPillarBEVEncoder(nn.Module):
     pillar_statistic_channels = 10
     statistic_channels = pillar_statistic_channels
 
-    def __init__(self, point_cloud_range, pillar_size, out_channels=128,
-                 queue_length=3, base_channels=64,
+    def __init__(self, point_cloud_range, pillar_size,
+                 temporal_sampling_distance, out_channels=128,
+                 base_channels=64,
                  use_rgb_pointpainting=True, **kwargs):
         super().__init__()
         self.point_cloud_range = tuple(float(value)
                                        for value in point_cloud_range)
         self.pillar_size = tuple(float(value) for value in pillar_size)
         self.out_channels = int(out_channels)
-        self.queue_length = int(queue_length)
+        self.queue_length = resolve_temporal_sampling(
+            temporal_sampling_distance).queue_length
         self.use_rgb_pointpainting = bool(use_rgb_pointpainting)
         self.pfe_channels = int(base_channels)
         self.register_buffer(

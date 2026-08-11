@@ -338,7 +338,7 @@ def test_config_enables_mmengine_validation_and_test_evaluators():
     assert cfg.val_dataloader is not None
     assert cfg.test_dataloader is not None
     assert cfg.evaluation_protocol in ('dv3dlane', 'official')
-    assert cfg.temporal_gt_augmentation is True
+    assert cfg.temporal_sampling_distance == (10.0, 5.0)
     assert cfg.val_evaluator.type == 'OpenLaneOfficialMetric'
     assert cfg.val_evaluator.prefix == 'OpenLaneTemporal'
     assert cfg.val_evaluator.use_temporal_gt_supplement is True

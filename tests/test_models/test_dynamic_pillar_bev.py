@@ -6,16 +6,28 @@ from LaneLoom.models.backbones.dynamic_pillar_bev import (
 )
 
 
-def _encoder(use_rgb_pointpainting=True):
+def _encoder(use_rgb_pointpainting=True, temporal_sampling_distance=(1,)):
     encoder = DynamicPillarBEVEncoder(
         point_cloud_range=[-1., 0., -2., 1., 2., 2.],
         pillar_size=[.5, .5],
         out_channels=16,
-        queue_length=2,
+        temporal_sampling_distance=temporal_sampling_distance,
         use_rgb_pointpainting=use_rgb_pointpainting,
     )
     encoder.eval()
     return encoder
+
+
+@pytest.mark.parametrize(
+    ('temporal_sampling_distance', 'expected_queue_length'),
+    [(False, 1), ((2, 1), 3)],
+)
+def test_dynamic_pillar_derives_queue_length_from_temporal_sampling(
+        temporal_sampling_distance, expected_queue_length):
+    encoder = _encoder(
+        temporal_sampling_distance=temporal_sampling_distance)
+
+    assert encoder.queue_length == expected_queue_length
 
 
 def test_dynamic_pillar_raster_preserves_height_statistics():
@@ -212,7 +224,7 @@ def test_configured_sparse_lane_grid_densifies_at_half_pillar_resolution():
         pillar_size=[.1, .1],
         out_channels=128,
         base_channels=32,
-        queue_length=3,
+        temporal_sampling_distance=(10.0, 5.0),
     ).cuda().eval()
     points = [torch.tensor(
         [[0., 10., 0., 1., 0., 2.]], device='cuda')]

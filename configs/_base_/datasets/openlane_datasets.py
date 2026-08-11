@@ -186,23 +186,14 @@ use_dim = 6
 
 
 # ------------------------------------------------temporal sampling start-------------------------------------------------
-# Temporal queue labels: oldest history, newest history, current.
-# Selection remains distance-first (5m / 10m); these labels match the explicit
-# fallback offsets used when those distance targets are unavailable.
-frames = (-10, -5, 0)
-history_num_frames = len([frame for frame in frames if frame < 0])
-
-# If both distance values are positive, OpenLaneDataset samples history at
-# approximately 5m and 10m behind the current ego pose.
-history_distance_m = 10.0
-history_distance_step_m = 5.0
-# A distance slot that cannot be satisfied falls back to these *frame offsets*
-# (oldest to newest): t-10 and t-5.  Every modality is still loaded using the
-# selected fallback frame key; no current-frame metadata is reused.
-history_fallback_frame_offsets = (10, 5)
-# Preserve the current-frame GT tensors and additionally emit a separately
-# gated temporal supplement target for temporal-GT experiments.
-temporal_gt_augmentation = True
+# 多帧：距离须为正整数且从远到近；N 米找不到时回退到 t-N。
+# t-N 缺失时使用最近可用的真实历史帧补齐，不混用不同帧的模态。
+# 单帧：改为 False；队列长度和时序 GT 自动关闭。
+temporal_sampling_distance = (10.0, 5.0)
+temporal_sampling_enabled = temporal_sampling_distance is not False
+temporal_validation_prefix = (
+    'OpenLaneTemporal' if temporal_sampling_enabled else 'OpenLaneOfficial')
+temporal_validation_best_metric = f'{temporal_validation_prefix}/F1'
 # Fit every full lane with one robust cubic Bezier x(y), z(y) curve before
 # fixed-y anchoring. Raw JSON geometry remains available for auditing.
 smooth_3d_gt = True
@@ -314,12 +305,7 @@ train_dataloader = dict(
     dataset=dict(
         type=dataset_type,
         split='train',
-        frames=frames,
-        history_num_frames=history_num_frames,
-        history_distance_m=history_distance_m,
-        history_distance_step_m=history_distance_step_m,
-        history_fallback_frame_offsets=history_fallback_frame_offsets,
-        temporal_gt_augmentation=temporal_gt_augmentation,
+        temporal_sampling_distance=temporal_sampling_distance,
         smooth_3d_gt=smooth_3d_gt,
         gt_outlier_residual=gt_outlier_residual,
         dataset_cfg=dataset_cfg,
@@ -336,12 +322,7 @@ val_dataloader = dict(
     dataset=dict(
         type=dataset_type,
         split='val',
-        frames=frames,
-        history_num_frames=history_num_frames,
-        history_distance_m=history_distance_m,
-        history_distance_step_m=history_distance_step_m,
-        history_fallback_frame_offsets=history_fallback_frame_offsets,
-        temporal_gt_augmentation=temporal_gt_augmentation,
+        temporal_sampling_distance=temporal_sampling_distance,
         smooth_3d_gt=smooth_3d_gt,
         gt_outlier_residual=gt_outlier_residual,
         dataset_cfg=dataset_cfg,
@@ -359,12 +340,7 @@ test_dataloader = dict(
         type=dataset_type,
         # Do not reuse validation here: lane3d_1000/test has its own labels.
         split='test',
-        frames=frames,
-        history_num_frames=history_num_frames,
-        history_distance_m=history_distance_m,
-        history_distance_step_m=history_distance_step_m,
-        history_fallback_frame_offsets=history_fallback_frame_offsets,
-        temporal_gt_augmentation=temporal_gt_augmentation,
+        temporal_sampling_distance=temporal_sampling_distance,
         smooth_3d_gt=smooth_3d_gt,
         gt_outlier_residual=gt_outlier_residual,
         dataset_cfg=dataset_cfg,

@@ -32,22 +32,17 @@ _num_levels_ = 1
 # lane-query grid below.
 bev_h_ = 200
 bev_w_ = 100
-queue_length = 3
 output_y_steps = [2.0 * i for i in range(1, 51)]
 evidence_y_steps = [5.0 * i for i in range(1, 21)]
 score_threshold = {{_base_.score_threshold}}
-temporal_gt_augmentation = {{_base_.temporal_gt_augmentation}}
+temporal_sampling_distance = {{_base_.temporal_sampling_distance}}
 
-# Training loss consumes the temporal GT supplement whenever the dataset emits
-# it. Use the same target for validation while keeping final test evaluation on
-# the benchmark's current-frame annotations.
-validation_metric_prefix = (
-    'OpenLaneTemporal'
-    if temporal_gt_augmentation else 'OpenLaneOfficial')
-validation_best_metric = f'{validation_metric_prefix}/F1'
+# 有历史帧时自动启用时序 GT；False 时验证也自动切换为当前帧官方 GT。
+validation_metric_prefix = {{_base_.temporal_validation_prefix}}
+validation_best_metric = {{_base_.temporal_validation_best_metric}}
 val_evaluator = dict(
     prefix=validation_metric_prefix,
-    use_temporal_gt_supplement=temporal_gt_augmentation)
+    use_temporal_gt_supplement={{_base_.temporal_sampling_enabled}})
 
 backbone_init = 'torchvision://resnet50'
 # ----------------------------------------------------model common config end----------------------------------------------------
@@ -60,7 +55,7 @@ model = dict(
     num_levels=_num_levels_,
 
     # ---------------------------------------------------image branch start---------------------------------------------------
-    # Shared image encoder for t-10/t-5/t: one high-resolution P3 feature.
+    # Shared image encoder for all inferred history frames and the current frame.
     img_backbone=dict(
         type='mmdet.ResNet',
         depth=50,
@@ -89,7 +84,7 @@ model = dict(
         out_channels=_lidar_dim_,
         # PillarNeXt-T style sparse widths: 32 -> 64 -> 128.
         base_channels=32,
-        queue_length=queue_length,
+        temporal_sampling_distance=temporal_sampling_distance,
         use_rgb_pointpainting=True),
     # ----------------------------------------------------lidar branch end----------------------------------------------------
 

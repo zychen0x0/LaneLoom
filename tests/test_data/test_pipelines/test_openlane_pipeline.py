@@ -1275,7 +1275,7 @@ def test_visualize_temporal_gt_enhancement_comparison():
     cfg = _load_cfg()
     _require_openlane_data(cfg)
     dataset_cfg = _without_image_augmentation(cfg.train_dataloader['dataset'])
-    dataset_cfg['temporal_gt_augmentation'] = True
+    dataset_cfg['temporal_sampling_distance'] = (10.0, 5.0)
     image_path = os.getenv('LANELOOM_TEMPORAL_GT_IMAGE_PATH') or _default_openlane_image(
         cfg, '155250133677391100.jpg')
     dataset_cfg['dataset_cfg']['load_interval'] = 1

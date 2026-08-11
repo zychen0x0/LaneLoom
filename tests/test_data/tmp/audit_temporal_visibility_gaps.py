@@ -112,7 +112,7 @@ def main():
     config = Config.fromfile(
         "configs/laneloom_openlane_image_lidar.py")
     dataset_config = dict(config.train_dataloader.dataset)
-    dataset_config["temporal_gt_augmentation"] = True
+    dataset_config["temporal_sampling_distance"] = (10.0, 5.0)
     _DATASET = DATASETS.build(dataset_config)
 
     if args.sample_index:

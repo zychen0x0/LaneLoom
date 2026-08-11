@@ -14,6 +14,8 @@ from torch.utils.data import Dataset
 from mmengine.registry import FUNCTIONS
 from mmdet3d.registry import DATASETS
 
+from LaneLoom.temporal_sampling import resolve_temporal_sampling
+
 from .pipelines import GridMask
 
 try:
@@ -195,12 +197,7 @@ class OpenLaneDataset(Dataset):
     # ---------------------------------------------------init start---------------------------------------------------
     def __init__(self,
                  dataset_cfg,
-                 frames,
-                 history_num_frames,
-                 history_distance_m,
-                 history_distance_step_m,
-                 history_fallback_frame_offsets,
-                 temporal_gt_augmentation,
+                 temporal_sampling_distance,
                  smooth_3d_gt,
                  gt_outlier_residual,
                  modality,
@@ -258,20 +255,15 @@ class OpenLaneDataset(Dataset):
             dataset_cfg.get('std', image_normalize_cfg['std']),
             dtype=np.float32).reshape(3, 1, 1)
 
-        self.frames = tuple(frames)
-        self.history_num_frames = int(history_num_frames)
+        temporal_sampling = resolve_temporal_sampling(
+            temporal_sampling_distance)
+        self.history_num_frames = temporal_sampling.history_num_frames
         self.history_frame_step = 1
-        self.history_distance_m = float(history_distance_m)
-        self.history_distance_step_m = float(history_distance_step_m)
-        self.history_fallback_frame_offsets = tuple(
-            int(offset) for offset in history_fallback_frame_offsets)
-        if len(self.history_fallback_frame_offsets) != self.history_num_frames:
-            raise ValueError(
-                'history_fallback_frame_offsets must contain exactly '
-                'history_num_frames offsets.')
-        if any(offset <= 0 for offset in self.history_fallback_frame_offsets):
-            raise ValueError('history fallback offsets must be positive.')
-        self.temporal_gt_augmentation = bool(temporal_gt_augmentation)
+        self.history_distance_targets_m = temporal_sampling.distance_targets_m
+        self.history_fallback_frame_offsets = (
+            temporal_sampling.fallback_frame_offsets)
+        self.temporal_gt_augmentation = (
+            temporal_sampling.temporal_gt_augmentation)
         self.smooth_3d_gt = bool(smooth_3d_gt)
         self.gt_outlier_residual = float(gt_outlier_residual)
         self.load_dim = int(dataset_cfg.get(
@@ -537,7 +529,7 @@ class OpenLaneDataset(Dataset):
 
     # ------------------------------------------------temporal sampling start-------------------------------------------------
     def _distance_sampling_enabled(self):
-        return self.history_distance_m > 0 and self.history_distance_step_m > 0
+        return bool(self.history_distance_targets_m)
 
     def _pose_distance(self, current_pose, history_pose):
         # Vehicle poses are vehicle-to-global. This gives history->current motion in meters.
@@ -548,7 +540,7 @@ class OpenLaneDataset(Dataset):
         keys = scene['keys']
         current_pos = bisect.bisect_left(keys, current_key)
         if current_pos <= 0 or current_key not in scene['frames']:
-            return self._trim_history_to_config(scene, current_key, [])
+            return [None] * self.history_num_frames
 
         current_pose = scene['frames'][current_key]['pose']
         candidates = []
@@ -558,33 +550,34 @@ class OpenLaneDataset(Dataset):
 
         selected = []
         used = set()
-        target = self.history_distance_step_m
-        while target <= self.history_distance_m + 1e-6:
+        for target in self.history_distance_targets_m:
+            matched_key = None
             for key, dist in candidates:
                 if key not in used and dist >= target:
-                    selected.append(key)
+                    matched_key = key
                     used.add(key)
                     break
-            target += self.history_distance_step_m
+            selected.append(matched_key)
 
-        # Do not fill here: the caller must distinguish a successful distance
-        # queue from one that needs the explicit t-10/t-5 fallback policy.
-        return sorted(selected, key=keys.index)
+        # Keep one slot per target so only an unsatisfied target falls back.
+        return selected
 
-    def _sample_history_by_frame_offsets(self, scene, current_key):
-        """Return t-10/t-5-style fallback keys in chronological order."""
+    def _sample_history_by_frame_offsets(
+            self, scene, current_key, available_keys=None):
+        """Return inferred t-N fallback keys in chronological order."""
         keys = scene['keys']
         current_pos = bisect.bisect_left(keys, current_key)
-        if current_pos <= 0:
-            return self._trim_history_to_config(scene, current_key, [])
+        available_keys = (
+            set(keys) if available_keys is None else set(available_keys))
 
         selected = []
         for offset in self.history_fallback_frame_offsets:
-            # At sequence start the oldest available history is repeated only
-            # as a real frame key, so image, pose, calibration and LiDAR stay
-            # mutually consistent.
-            selected.append(keys[max(0, current_pos - offset)])
-        return self._trim_history_to_config(scene, current_key, selected)
+            # Resolve t-N on the original label timeline, not on a filtered
+            # list of jointly available image/LiDAR frames.
+            fallback_key = keys[max(0, current_pos - offset)]
+            selected.append(
+                fallback_key if fallback_key in available_keys else None)
+        return selected
 
     def _sample_history_by_neighbor(self, scene, current_key):
         keys = scene['keys']
@@ -641,17 +634,29 @@ class OpenLaneDataset(Dataset):
         else:
             scene = label_scene
 
-        if (
-            self._distance_sampling_enabled()
-            and lidar_scene is not None
-            and current_key in scene['frames']
-        ):
-            history_keys = self._sample_history_by_distance(scene, current_key)
-            if len(history_keys) < self.history_num_frames:
-                history_keys = self._sample_history_by_frame_offsets(scene, current_key)
-                sampling_mode = 'distance_fallback_offsets'
+        if self._distance_sampling_enabled():
+            if lidar_scene is not None and current_key in scene['frames']:
+                distance_keys = self._sample_history_by_distance(
+                    scene, current_key)
+                fallback_keys = self._sample_history_by_frame_offsets(
+                    label_scene, current_key, available_keys=scene['keys'])
+                used_fallback = any(key is None for key in distance_keys)
+                history_keys = [
+                    fallback_key if distance_key is None else distance_key
+                    for distance_key, fallback_key in zip(
+                        distance_keys, fallback_keys)
+                ]
+                history_keys = self._trim_history_to_config(
+                    scene, current_key, history_keys)
+                sampling_mode = (
+                    'distance_fallback_offsets'
+                    if used_fallback else 'distance')
             else:
-                sampling_mode = 'distance'
+                history_keys = self._sample_history_by_frame_offsets(
+                    label_scene, current_key)
+                history_keys = self._trim_history_to_config(
+                    label_scene, current_key, history_keys)
+                sampling_mode = 'distance_fallback_offsets'
         else:
             history_keys = self._sample_history_by_neighbor(label_scene, current_key)
             sampling_mode = 'neighbor'
