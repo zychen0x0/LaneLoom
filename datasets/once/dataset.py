@@ -75,12 +75,14 @@ class ONCEDataset(OpenLaneDataset):
                  test_mode=False, split=None, max_samples=None):
         if temporal_sampling_distance is not False:
             raise ValueError(
-                'ONCEDataset currently requires temporal_sampling_distance=False; '
-                'ONCE lane labels have no track IDs for temporal GT augmentation.')
+                'ONCEDataset currently requires '
+                'temporal_sampling_distance=False; ONCE lane labels have no '
+                'track IDs for temporal GT augmentation.')
 
         original_cfg = dict(dataset_cfg)
         self.info_root = Path(original_cfg['info_dir']).expanduser().resolve()
-        self.split_root = Path(original_cfg['split_dir']).expanduser().resolve()
+        self.split_root = (
+            Path(original_cfg['split_dir']).expanduser().resolve())
 
         parent_cfg = dict(original_cfg)
         for pipeline_name in ('train_pipeline', 'val_pipeline'):
@@ -124,7 +126,8 @@ class ONCEDataset(OpenLaneDataset):
         if not split_file.is_file():
             split_file = self.label_root / 'list' / f'{self.split}.txt'
         if not split_file.is_file():
-            raise FileNotFoundError(f'ONCE split file does not exist: {split_file}')
+            raise FileNotFoundError(
+                f'ONCE split file does not exist: {split_file}')
 
         annotation_split = self._annotation_split()
         label_files = []
@@ -191,6 +194,17 @@ class ONCEDataset(OpenLaneDataset):
         scene = dict(keys=sorted(frames), frames=frames)
         self._lidar_scene_cache[scene_name] = scene
         return scene
+
+    def _current_frame_context(self, index):
+        current_path = self.label_files[index]
+        scene_name = self._sequence_name(current_path)
+        current_key = self._frame_key(current_path)
+        lidar_scene = self._load_lidar_scene(scene_name)
+        current_pose = (
+            lidar_scene['frames'][current_key]['pose']
+            if lidar_scene is not None and current_key in lidar_scene['frames']
+            else np.eye(4, dtype=np.float32))
+        return current_path, scene_name, current_key, lidar_scene, current_pose
     # End index construction.
 
     # Calibration and ground truth.
@@ -216,7 +230,8 @@ class ONCEDataset(OpenLaneDataset):
         )
 
     def _find_image_path(self, label_info, scene_name, frame_key):
-        image_path = self.image_root / scene_name / 'cam01' / f'{frame_key}.jpg'
+        image_path = (
+            self.image_root / scene_name / 'cam01' / f'{frame_key}.jpg')
         if not image_path.is_file():
             raise FileNotFoundError(f'No ONCE image found: {image_path}')
         return image_path
@@ -296,16 +311,10 @@ class ONCEDataset(OpenLaneDataset):
 
     # Sample construction.
     def get_data_info(self, index):
-        current_path = self.label_files[index]
-        scene_name = self._sequence_name(current_path)
-        current_key = self._frame_key(current_path)
+        (current_path, scene_name, current_key,
+         lidar_scene, current_pose) = self._current_frame_context(index)
         label_info = self._read_json(current_path)
         image_path = self._find_image_path(label_info, scene_name, current_key)
-        lidar_scene = self._load_lidar_scene(scene_name)
-        current_pose = (
-            lidar_scene['frames'][current_key]['pose']
-            if lidar_scene is not None and current_key in lidar_scene['frames']
-            else np.eye(4, dtype=np.float32))
         frame_meta = self._build_frame_meta(
             scene_name, current_key, label_info, image_path,
             lidar_scene, current_pose)
@@ -315,18 +324,12 @@ class ONCEDataset(OpenLaneDataset):
         return input_dict
 
     def __getitem__(self, idx):
-        current_path = self.label_files[idx]
-        scene_name = self._sequence_name(current_path)
-        current_key = self._frame_key(current_path)
+        (current_path, scene_name, current_key,
+         lidar_scene, current_pose) = self._current_frame_context(idx)
         label_scene = self._load_label_scene(scene_name, current_path.parent)
-        queue_keys, sampling_mode, lidar_scene, label_scene = (
+        queue_keys, sampling_mode, _, label_scene = (
             self._sample_frame_queue_keys(
                 scene_name, current_key, label_scene=label_scene))
-
-        current_pose = (
-            lidar_scene['frames'][current_key]['pose']
-            if lidar_scene is not None and current_key in lidar_scene['frames']
-            else np.eye(4, dtype=np.float32))
         img_tensors = []
         view_masks = []
         label_infos = []

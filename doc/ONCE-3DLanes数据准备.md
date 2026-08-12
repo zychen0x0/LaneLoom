@@ -38,7 +38,53 @@ tools/test_once.py
 lane track ID，因此配置明确设置 `temporal_sampling_distance=False`，不会把
 OpenLane 的时序 GT 补全逻辑错误地套到 ONCE 上。
 
-## 2. 本机数据状态
+## 2. 数据准备
+
+先按 ONCE-3DLanes 官方仓库的下载说明获取标注、`cam01` 图像、
+`lidar_roof` 点云和 info 压缩包。将原始文件放成下面的形式：
+
+```text
+once_3dlanes/
+├── ONCE_3DLanes.zip
+├── 3D_images/
+│   ├── raw_cam01_p0.tar
+│   ├── raw_cam01_p1.tar
+│   ├── val_cam01.tar
+│   └── test_cam01.tar
+├── 3D_lidars/
+│   ├── raw_lidar_p0.tar.partaa ...
+│   ├── raw_lidar_p1.tar.partaa ...
+│   ├── val_lidar.tar
+│   └── test_lidar.tar
+└── 3D_infos/
+    ├── raw_small_infos.tar
+    ├── raw_medium_infos.tar
+    ├── val_infos.tar
+    └── test_infos.tar
+```
+
+然后执行：
+
+```bash
+cd /workspace/LaneLoom
+
+python tools/prepare_once_laneloom.py \
+  --once-root /path/to/once_3dlanes
+```
+
+脚本会：
+
+- 解压官方标注；
+- 直接流式读取 LiDAR 分卷，无需先合并出一个巨大 tar；
+- 只展开 p0+p1 训练帧以及完整 `val`/`test`；
+- 生成 `LaneLoom_splits/{train_p0p1,val,test}.txt`；
+- 核对每张图像、点云、info 和可用标注是否存在。
+
+已完成的大压缩包会通过
+`LaneLoom_splits/.prepare_markers/` 记录，中断后可重新执行。
+`--overwrite` 会强制重新扫描和替换已展开文件，一般不需要使用。
+
+### 本机已准备的数据
 
 当前数据根目录为：
 
@@ -84,9 +130,14 @@ info:  3D_infos/data/000027/000027.json
 标签:  ONCE_3DLanes/val/000027/cam01/1616100800400.json
 ```
 
-旧版文档曾引用 `tools/prepare_once_laneloom.py`，但该脚本并未进入当前仓库，
-不能作为可执行命令使用。本机上述 51,546 个图像/点云样本已经展开完成，当前
-训练不需要再次解压。
+本机上述 51,546 个图像/点云样本已经展开完成，当前训练不需要
+再次解压。可只做完整性检查：
+
+```bash
+python tools/prepare_once_laneloom.py \
+  --once-root /workspace/LaneLoom/data/once_3dlanes \
+  --verify-only
+```
 
 ## 3. 训练
 

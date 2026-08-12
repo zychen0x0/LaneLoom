@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import Any, Sequence
+from typing import Any, NamedTuple, Sequence
 
 import cv2
 import numpy as np
@@ -18,6 +18,13 @@ from shapely.geometry import LineString
 def _camera_lane_from_ground(x, forward, height):
     """LaneLoom (x, forward, height) -> ONCE camera (x, y, z)."""
     return np.column_stack((x, -height, forward)).astype(np.float64)
+
+
+class _EvaluationCounts(NamedTuple):
+    gt_count: int
+    pred_count: int
+    true_positive: int
+    distance_sum: float
 
 
 class _ReleasedONCEProtocol:
@@ -105,13 +112,13 @@ class _ReleasedONCEProtocol:
         selected = np.flatnonzero(result['pred_scores'] > threshold)
         pred_count = int(selected.size)
         if gt_count == 0 or pred_count == 0:
-            return gt_count, pred_count, 0, 0.0
+            return _EvaluationCounts(gt_count, pred_count, 0, 0.0)
         costs = 1.0 - result['iou_matrix'][:, selected]
         gt_indices, selected_indices = linear_sum_assignment(costs)
         pred_indices = selected[selected_indices]
         matched_distances = result['distance_matrix'][gt_indices, pred_indices]
         true_positive = matched_distances < self.distance_threshold
-        return (
+        return _EvaluationCounts(
             gt_count,
             pred_count,
             int(true_positive.sum()),
@@ -207,10 +214,10 @@ class ONCEOfficialMetric(BaseMetric):
 
     @staticmethod
     def _summarize(counts):
-        gt_count = sum(item[0] for item in counts)
-        pred_count = sum(item[1] for item in counts)
-        true_positive = sum(item[2] for item in counts)
-        distance_sum = sum(item[3] for item in counts)
+        gt_count = sum(item.gt_count for item in counts)
+        pred_count = sum(item.pred_count for item in counts)
+        true_positive = sum(item.true_positive for item in counts)
+        distance_sum = sum(item.distance_sum for item in counts)
         precision = true_positive / pred_count if pred_count else 0.0
         recall = true_positive / gt_count if gt_count else 0.0
         f1 = (
@@ -230,6 +237,7 @@ class ONCEOfficialMetric(BaseMetric):
     def _write_predictions(self, results):
         if self.prediction_dir is None:
             return
+        export_threshold = min(self.score_thresholds)
         for result in results:
             output_path = (
                 self.prediction_dir / result['scene_name'] / 'cam01'
@@ -238,7 +246,7 @@ class ONCEOfficialMetric(BaseMetric):
             lanes = []
             for lane, score in zip(
                     result['pred_lanes'], result['pred_scores']):
-                if score <= self.score_threshold:
+                if score <= export_threshold:
                     continue
                 lanes.append(dict(
                     points=np.asarray(lane).tolist(),

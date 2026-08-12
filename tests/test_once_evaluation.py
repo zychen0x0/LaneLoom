@@ -67,13 +67,15 @@ def test_once_official_metric_scans_scores_without_hiding_primary_threshold():
 def test_once_official_metric_exports_benchmark_json(tmp_path):
     metric = METRICS.build(dict(
         type='ONCEOfficialMetric', prefix=None, score_threshold=0.5,
-        prediction_dir=str(tmp_path)))
-    metric.process(None, [_sample()])
+        score_thresholds=[0.1, 0.5], prediction_dir=str(tmp_path)))
+    sample = _sample()
+    sample['pred_scores'][0] = 0.2
+    metric.process(None, [sample])
     metric.compute_metrics(metric.results)
 
     output = tmp_path / '000001/cam01/100.json'
     payload = json.loads(output.read_text(encoding='utf-8'))
-    assert payload['lanes'][0]['score'] == 0.9
+    assert payload['lanes'][0]['score'] == 0.2
     np.testing.assert_allclose(
         payload['lanes'][0]['points'],
         [[-1.0, 1.0, 1.0], [-1.0, 1.0, 5.0], [-1.0, 1.0, 9.0]])

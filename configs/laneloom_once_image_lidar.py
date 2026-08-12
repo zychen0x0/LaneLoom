@@ -13,18 +13,18 @@ model_wrapper_cfg = dict(
     type='MMDistributedDataParallel',
     find_unused_parameters=True)
 
-point_cloud_range = [-10.0, 0.0, -5.0, 10.0, 50.0, 5.0]
+point_cloud_range = {{_base_.point_cloud_range}}
 _dim_ = 256
 _lidar_dim_ = 128
 _ffn_dim_ = _dim_ * 2
 _num_levels_ = 1
 bev_h_ = 100
 bev_w_ = 40
-output_y_steps = [float(index) for index in range(1, 51)]
+output_y_steps = {{_base_.anchor_y_steps}}
 evidence_y_steps = [2.5 * index for index in range(1, 21)]
 evaluation_score_threshold = {{_base_.score_threshold}}
 model_score_threshold = 0.10
-temporal_sampling_distance = False
+temporal_sampling_distance = {{_base_.temporal_sampling_distance}}
 validation_best_metric = {{_base_.best_metric}}
 
 backbone_init = 'torchvision://resnet50'
