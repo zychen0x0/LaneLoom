@@ -10,4 +10,6 @@ scipy
 ortools==9.3.10497
 Pillow
 albumentations
+opencv-python-headless
+shapely
 spconv-cu118
