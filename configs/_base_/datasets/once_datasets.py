@@ -24,10 +24,10 @@ input_modality = dict(
     use_map=False,
     use_external=False)
 
-# Match the larger ONCE resolution used by the R50 result in Table IV.
+# Preserve the native cam01 aspect ratio at a 960-pixel input width.
 org_h = 1020
 org_w = 1920
-resize_h = 720
+resize_h = 510
 resize_w = 960
 img_norm_cfg = dict(
     mean=[123.675, 116.28, 103.53],

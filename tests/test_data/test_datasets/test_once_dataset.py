@@ -3,6 +3,7 @@ from pathlib import Path
 
 import numpy as np
 import pytest
+from mmengine.config import Config
 from PIL import Image
 
 import LaneLoom  # noqa: F401 - register project datasets.
@@ -131,6 +132,37 @@ def test_once_dataset_aligns_camera_lanes_and_lidar_in_ground_axes(tmp_path):
     assert sample['gt_lanes_category'][0].item() == 0
     assert sample['img_metas']['scene_name'] == '000001'
     assert sample['img_metas']['current_key'] == '100'
+
+
+def test_once_config_preserves_cam01_aspect_ratio_in_network_input(tmp_path):
+    root = _build_once_fixture(tmp_path)
+    config_path = (
+        Path(__file__).resolve().parents[3]
+        / 'configs/laneloom_once_image_lidar.py')
+    cfg = Config.fromfile(config_path)
+    dataset_cfg = _dataset_cfg(root)
+    dataset_cfg.update(
+        org_h=cfg.org_h,
+        org_w=cfg.org_w,
+        resize_h=cfg.resize_h,
+        resize_w=cfg.resize_w,
+    )
+    dataset = DATASETS.build(dict(
+        type='ONCEDataset',
+        split='val',
+        temporal_sampling_distance=False,
+        smooth_3d_gt=False,
+        gt_outlier_residual=0.75,
+        dataset_cfg=dataset_cfg,
+        modality=dict(use_camera=True, use_lidar=True),
+        test_mode=True,
+    ))
+
+    sample = dataset[0]
+
+    assert (cfg.org_h, cfg.org_w) == (1020, 1920)
+    assert (cfg.resize_h, cfg.resize_w) == (510, 960)
+    assert sample['img'].shape[-2:] == (510, 960)
 
 
 def test_once_dataset_rejects_temporal_gt_augmentation(tmp_path):
