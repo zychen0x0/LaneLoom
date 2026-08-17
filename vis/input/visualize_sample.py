@@ -194,20 +194,17 @@ def _make_augmentation_grid(image, dataset_name, cfg, recipes, seed):
         if transform is not None:
             augmented = builder._apply_transform_with_seed(
                 transform, augmented, seed + recipe_index)
-        panels.append((recipe['name'], Image.fromarray(augmented)))
+        panels.append(Image.fromarray(augmented))
 
     columns = 3
     rows = (len(panels) + columns - 1) // columns
-    panel_width, panel_height = panels[0][1].size
+    panel_width, panel_height = panels[0].size
     canvas = Image.new(
         'RGB', (columns * panel_width, rows * panel_height), (255, 255, 255))
-    draw = ImageDraw.Draw(canvas)
-    for index, (name, panel) in enumerate(panels):
+    for index, panel in enumerate(panels):
         x0 = index % columns * panel_width
         y0 = index // columns * panel_height
         canvas.paste(panel, (x0, y0))
-        draw.rectangle((x0, y0, x0 + panel_width, y0 + 30), fill=(8, 8, 10))
-        draw.text((x0 + 8, y0 + 7), name, fill=(245, 245, 245))
     return canvas
 
 

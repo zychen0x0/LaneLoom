@@ -145,6 +145,11 @@ def test_cli_visualizes_once_image_gt_augmentations_and_point_cloud(tmp_path):
         np.asarray(Image.open(expected_files[0])),
         np.asarray(Image.open(expected_files[1])),
     )
+    augmentations = np.asarray(Image.open(expected_files[2]))
+    np.testing.assert_allclose(
+        augmentations[15, 40],
+        [30, 60, 90],
+        atol=5)
     ply_header = expected_files[3].read_bytes()[:256]
     assert b'element vertex 1' in ply_header
     ply_bytes = expected_files[3].read_bytes()
