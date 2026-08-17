@@ -181,7 +181,9 @@ image_augmentation_recipes = [
 # x: left/right [-50m, 50m], y: forward [0m, 100m], z: height [-5m, 5m].
 point_cloud_range = [-25.0, 0.0, -5.0, 25.0, 100.0, 5.0]
 load_dim = 6
-use_dim = 6
+point_features = [
+    'x', 'y', 'z', 'intensity', 'elongation', 'queue_index']
+use_dim = len(point_features)
 # ----------------------------------------------------bev/lidar settings end----------------------------------------------------
 
 

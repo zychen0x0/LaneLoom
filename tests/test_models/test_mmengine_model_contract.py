@@ -80,6 +80,8 @@ def test_config_uses_single_level_temporal_fv_and_dynamic_pillar_bev():
         'DynamicPillarBEVEncoder')
     assert cfg.model.pts_bev_encoder.pillar_size == [0.1, 0.1]
     assert cfg.model.pts_bev_encoder.use_rgb_pointpainting is True
+    assert cfg.model.pts_bev_encoder.point_features == [
+        'x', 'y', 'z', 'intensity', 'elongation', 'queue_index']
     assert cfg.model.pts_bev_encoder.out_channels == 128
     assert cfg.model.pts_bev_encoder.base_channels == 32
     assert 'pts_voxel_layer' not in cfg.model

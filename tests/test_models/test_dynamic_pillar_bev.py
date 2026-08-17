@@ -6,16 +6,56 @@ from LaneLoom.models.backbones.dynamic_pillar_bev import (
 )
 
 
-def _encoder(use_rgb_pointpainting=True, temporal_sampling_distance=(1,)):
+def _encoder(use_rgb_pointpainting=True, temporal_sampling_distance=(1,),
+             point_features=None):
+    if point_features is None:
+        point_features = [
+            'x', 'y', 'z', 'intensity', 'elongation', 'queue_index']
     encoder = DynamicPillarBEVEncoder(
         point_cloud_range=[-1., 0., -2., 1., 2., 2.],
         pillar_size=[.5, .5],
         out_channels=16,
         temporal_sampling_distance=temporal_sampling_distance,
         use_rgb_pointpainting=use_rgb_pointpainting,
+        point_features=point_features,
     )
     encoder.eval()
     return encoder
+
+
+def test_dynamic_pillar_uses_native_once_point_features():
+    encoder = _encoder(
+        temporal_sampling_distance=False,
+        point_features=['x', 'y', 'z', 'intensity'])
+    points = [torch.tensor([
+        [-.75, .25, -1., 2.],
+        [-.70, .20, 1., 6.],
+    ])]
+
+    images = torch.tensor([[[[[
+        [10., 11.], [12., 13.]],
+        [[20., 21.], [22., 23.]],
+        [[30., 31.], [32., 33.]],
+    ]]]])
+    metas = [dict(queue={0: dict(
+        lidar2img=[torch.eye(4)],
+        lidaradj2lidarcurr=torch.eye(4))})]
+    painted = encoder.paint_points(points, images, metas)
+    pillars = encoder.pillarize(points)
+
+    assert painted[0].shape == (2, 7)
+    assert torch.equal(painted[0][:, :4], points[0])
+    assert torch.equal(painted[0][0, 4:], torch.zeros(3))
+    assert torch.allclose(
+        painted[0][1, 4:], torch.tensor([11.6, 21.6, 31.6]))
+    assert encoder.point_input_channels == 13
+    assert encoder.pillar_statistic_channels == 7
+    assert pillars['statistics'].shape == (1, 7)
+    expected_intensity = torch.log1p(torch.tensor([2., 6.]))
+    assert torch.allclose(pillars['statistics'][0], torch.tensor([
+        torch.log(torch.tensor(3.)).item(), -1., 1., 0., 1.,
+        expected_intensity.mean(), expected_intensity.max(),
+    ]), atol=1e-6)
 
 
 @pytest.mark.parametrize(

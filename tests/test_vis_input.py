@@ -152,11 +152,12 @@ def test_cli_visualizes_once_image_gt_augmentations_and_point_cloud(tmp_path):
         atol=5)
     ply_header = expected_files[3].read_bytes()[:256]
     assert b'element vertex 1' in ply_header
+    assert b'property float elongation' not in ply_header
     ply_bytes = expected_files[3].read_bytes()
     vertex_offset = ply_bytes.index(b'end_header\n') + len(b'end_header\n')
     vertex_dtype = np.dtype([
         ('x', '<f4'), ('y', '<f4'), ('z', '<f4'),
-        ('intensity', '<f4'), ('elongation', '<f4'),
+        ('intensity', '<f4'),
         ('red', 'u1'), ('green', 'u1'), ('blue', 'u1'),
     ])
     vertex = np.frombuffer(

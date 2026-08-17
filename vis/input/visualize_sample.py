@@ -262,8 +262,7 @@ def _load_once_points(cfg, scene_name, frame_key):
         points[:, :3], np.ones((points.shape[0], 1), dtype=np.float32)
     ], axis=1)
     xyz = (lidar_to_ground @ xyz_h.T).T[:, :3]
-    features = np.column_stack((
-        points[:, 3], np.zeros(points.shape[0], dtype=np.float32)))
+    features = points[:, 3:4]
     return xyz.astype(np.float32), features.astype(np.float32)
 
 
@@ -272,18 +271,25 @@ def _write_binary_ply(path, xyz, features):
     low, high = np.percentile(intensity, [1, 99])
     scale = max(float(high - low), 1e-6)
     gray = np.clip((intensity - low) / scale * 255, 0, 255).astype(np.uint8)
-    vertices = np.empty(xyz.shape[0], dtype=[
+    has_elongation = features.shape[1] > 1
+    vertex_fields = [
         ('x', '<f4'), ('y', '<f4'), ('z', '<f4'),
-        ('intensity', '<f4'), ('elongation', '<f4'),
+        ('intensity', '<f4'),
+    ]
+    if has_elongation:
+        vertex_fields.append(('elongation', '<f4'))
+    vertex_fields.extend([
         ('red', 'u1'), ('green', 'u1'), ('blue', 'u1'),
     ])
+    vertices = np.empty(xyz.shape[0], dtype=vertex_fields)
     vertices['x'], vertices['y'], vertices['z'] = xyz.T
     vertices['intensity'] = features[:, 0]
-    vertices['elongation'] = features[:, 1]
+    if has_elongation:
+        vertices['elongation'] = features[:, 1]
     vertices['red'] = gray
     vertices['green'] = gray
     vertices['blue'] = gray
-    header = '\n'.join([
+    header_lines = [
         'ply',
         'format binary_little_endian 1.0',
         f'element vertex {len(vertices)}',
@@ -291,13 +297,17 @@ def _write_binary_ply(path, xyz, features):
         'property float y',
         'property float z',
         'property float intensity',
-        'property float elongation',
+    ]
+    if has_elongation:
+        header_lines.append('property float elongation')
+    header_lines.extend([
         'property uchar red',
         'property uchar green',
         'property uchar blue',
         'end_header',
         '',
-    ]).encode('ascii')
+    ])
+    header = '\n'.join(header_lines).encode('ascii')
     with open(path, 'wb') as handle:
         handle.write(header)
         vertices.tofile(handle)

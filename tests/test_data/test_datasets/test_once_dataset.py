@@ -72,7 +72,7 @@ def _dataset_cfg(root):
         dict(type='ResizeONCEImages', keep_ratio=True),
         dict(type='NormalizeONCEImages', mean=[0.0, 0.0, 0.0],
              std=[1.0, 1.0, 1.0], to_rgb=True),
-        dict(type='LoadONCEPoints', load_dim=4, use_dim=6),
+        dict(type='LoadONCEPoints', load_dim=4, use_dim=4),
         dict(type='PointsRangeFilter',
              point_cloud_range=[-10.0, 0.0, -5.0, 10.0, 50.0, 5.0]),
         dict(type='LoadONCEAnnotations'),
@@ -119,10 +119,10 @@ def test_once_dataset_aligns_camera_lanes_and_lidar_in_ground_axes(tmp_path):
 
     sample = dataset[0]
     assert sample['img'].shape == (1, 1, 3, 72, 96)
-    assert sample['lidar'].shape == (1, 6)
+    assert sample['lidar'].shape == (1, 4)
     np.testing.assert_allclose(
         sample['lidar'][0].numpy(),
-        [1.0, 5.0, -2.0, 0.5, 0.0, 0.0], atol=1e-6)
+        [1.0, 5.0, -2.0, 0.5], atol=1e-6)
 
     visible = sample['gt_lanes_visibility'][0].bool().numpy()
     np.testing.assert_array_equal(visible, [True, True])
@@ -140,6 +140,10 @@ def test_once_config_preserves_cam01_aspect_ratio_in_network_input(tmp_path):
         Path(__file__).resolve().parents[3]
         / 'configs/laneloom_once_image_lidar.py')
     cfg = Config.fromfile(config_path)
+    assert cfg.load_dim == 4
+    assert cfg.use_dim == 4
+    assert cfg.point_features == ['x', 'y', 'z', 'intensity']
+    assert cfg.model.pts_bev_encoder.point_features == cfg.point_features
     dataset_cfg = _dataset_cfg(root)
     dataset_cfg.update(
         org_h=cfg.org_h,

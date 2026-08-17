@@ -38,7 +38,8 @@ img_norm_cfg = dict(
 # in [0, 50] m.  LaneLoom uses x=lateral, y=forward, z=height.
 point_cloud_range = [-10.0, 0.0, -5.0, 10.0, 50.0, 5.0]
 load_dim = 4
-use_dim = 6  # xyz, intensity, zero-filled elongation, queue index
+point_features = ['x', 'y', 'z', 'intensity']
+use_dim = len(point_features)
 
 # ONCE lane labels have no track IDs.  Keep the first integration single-frame
 # rather than applying OpenLane's track-aware temporal-GT supplementation.

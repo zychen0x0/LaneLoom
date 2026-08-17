@@ -285,6 +285,7 @@ class ONCEDataset(OpenLaneDataset):
 
     # LiDAR loading.
     def _load_lidar_points(self, info, current_pose, queue_index):
+        del queue_index
         raw = np.fromfile(info['lidar_file'], dtype=np.float32)
         if raw.size == 0 or raw.size % 4:
             return np.zeros((0, self.num_lidar_feat), dtype=np.float32)
@@ -301,11 +302,8 @@ class ONCEDataset(OpenLaneDataset):
         ground_xyz = (
             np.asarray(info['lidar_to_ground'], dtype=np.float32)
             @ current_xyz.T).T[:, :3]
-        elongation = np.zeros((raw.shape[0], 1), dtype=np.float32)
-        queue = np.full(
-            (raw.shape[0], 1), float(queue_index), dtype=np.float32)
         return np.concatenate(
-            [ground_xyz, raw[:, 3:4], elongation, queue], axis=1
+            [ground_xyz, raw[:, 3:4]], axis=1
         ).astype(np.float32)
     # End LiDAR loading.
 

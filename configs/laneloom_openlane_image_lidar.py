@@ -23,6 +23,7 @@ model_wrapper_cfg = dict(
 # Keep dataset filtering, Dynamic Pillar, query references and fusion range
 # in the same metric space.
 point_cloud_range = [-25.0, 0.0, -5.0, 25.0, 100.0, 5.0]
+point_features = {{_base_.point_features}}
 _dim_ = 256
 _lidar_dim_ = 128
 _ffn_dim_ = _dim_ * 2
@@ -85,7 +86,8 @@ model = dict(
         # PillarNeXt-T style sparse widths: 32 -> 64 -> 128.
         base_channels=32,
         temporal_sampling_distance=temporal_sampling_distance,
-        use_rgb_pointpainting=True),
+        use_rgb_pointpainting=True,
+        point_features=point_features),
     # ----------------------------------------------------lidar branch end----------------------------------------------------
 
     # ---------------------------------------------------lane head start---------------------------------------------------

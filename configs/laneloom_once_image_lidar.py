@@ -14,6 +14,7 @@ model_wrapper_cfg = dict(
     find_unused_parameters=True)
 
 point_cloud_range = {{_base_.point_cloud_range}}
+point_features = {{_base_.point_features}}
 _dim_ = 256
 _lidar_dim_ = 128
 _ffn_dim_ = _dim_ * 2
@@ -56,7 +57,8 @@ model = dict(
         out_channels=_lidar_dim_,
         base_channels=32,
         temporal_sampling_distance=temporal_sampling_distance,
-        use_rgb_pointpainting=True),
+        use_rgb_pointpainting=True,
+        point_features=point_features),
     lane_head=dict(
         type='BEVLaneHead',
         anchor_prior=dict(
