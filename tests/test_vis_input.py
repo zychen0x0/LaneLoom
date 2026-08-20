@@ -47,7 +47,10 @@ def _build_once_sample(data_root):
         once_root / '3D_lidars/data' / scene_name / 'lidar_roof'
         / f'{frame_key}.bin')
     lidar_path.parent.mkdir(parents=True)
-    np.asarray([[1.0, 2.0, 5.0, 0.5]], dtype=np.float32).tofile(lidar_path)
+    np.asarray([
+        [1.0, 2.0, 5.0, 0.5],
+        [10.0, 2.0, 5.0, 0.7],
+    ], dtype=np.float32).tofile(lidar_path)
 
     _write_json(
         once_root / '3D_infos/data' / scene_name / f'{scene_name}.json',
@@ -72,6 +75,8 @@ def _build_openlane_sample(data_root):
         / f'{timestamp}.jpg')
     image_path.parent.mkdir(parents=True)
     Image.new('RGB', (192, 128), color=(30, 60, 90)).save(image_path)
+    extrinsic = np.eye(4)
+    extrinsic[1, 3] = 3.0
 
     _write_json(
         data_root / 'openlane/lane3d_1000/training' / scene_name
@@ -82,7 +87,7 @@ def _build_openlane_sample(data_root):
                 [0.0, 100.0, 64.0],
                 [0.0, 0.0, 1.0],
             ],
-            'extrinsic': np.eye(4).tolist(),
+            'extrinsic': extrinsic.tolist(),
             'pose': np.eye(4).tolist(),
             'lane_lines': [{
                 'xyz': [[5.0, 10.0], [1.0, 1.0], [-2.0, -2.0]],
@@ -95,7 +100,11 @@ def _build_openlane_sample(data_root):
     lidar_dir.mkdir(parents=True)
     np.save(
         lidar_dir / '0000.npy',
-        np.asarray([[1.0, 2.0, 3.0, 0.5, 0.25, -1.0]], dtype=np.float32))
+        np.asarray([
+            [5.0, 0.0, 0.0, 0.5, 0.25, -1.0],
+            [1.0, 2.0, 3.0, 0.7, 0.35, -1.0],
+            [2.0, 0.0, 0.0, 0.9, 0.45, -1.0],
+        ], dtype=np.float32))
     with open(lidar_dir / f'{scene_name}.pkl', 'wb') as handle:
         pickle.dump([{
             'metadata': {'timestamp_micros': timestamp},
@@ -166,6 +175,10 @@ def test_cli_visualizes_once_image_gt_augmentations_and_point_cloud(tmp_path):
         [vertex['x'], vertex['y'], vertex['z']],
         [1.0, 5.0, -2.0],
         atol=1e-6)
+    np.testing.assert_allclose(
+        [vertex['red'], vertex['green'], vertex['blue']],
+        [30, 60, 90],
+        atol=5)
 
 
 def test_cli_auto_detects_and_visualizes_openlane_sample(tmp_path):
@@ -206,6 +219,7 @@ def test_cli_auto_detects_and_visualizes_openlane_sample(tmp_path):
     points_path = sample_dir / '04_points.ply'
     assert points_path.is_file()
     ply_bytes = points_path.read_bytes()
+    assert b'element vertex 1' in ply_bytes[:256]
     vertex_offset = ply_bytes.index(b'end_header\n') + len(b'end_header\n')
     vertex_dtype = np.dtype([
         ('x', '<f4'), ('y', '<f4'), ('z', '<f4'),
@@ -216,5 +230,9 @@ def test_cli_auto_detects_and_visualizes_openlane_sample(tmp_path):
         ply_bytes, dtype=vertex_dtype, count=1, offset=vertex_offset)[0]
     np.testing.assert_allclose(
         [vertex['x'], vertex['y'], vertex['z']],
-        [-2.0, 1.0, 3.0],
+        [0.0, 5.0, 0.0],
         atol=1e-6)
+    np.testing.assert_allclose(
+        [vertex['red'], vertex['green'], vertex['blue']],
+        [30, 60, 90],
+        atol=5)

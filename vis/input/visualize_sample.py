@@ -266,11 +266,53 @@ def _load_once_points(cfg, scene_name, frame_key):
     return xyz.astype(np.float32), features.astype(np.float32)
 
 
-def _write_binary_ply(path, xyz, features):
-    intensity = features[:, 0]
-    low, high = np.percentile(intensity, [1, 99])
-    scale = max(float(high - low), 1e-6)
-    gray = np.clip((intensity - low) / scale * 255, 0, 255).astype(np.uint8)
+def _ground_to_raw_image(label, dataset_name):
+    if dataset_name == 'openlane':
+        parser = OpenLaneDataset.__new__(OpenLaneDataset)
+        calibration = parser._build_calib(label)
+        ground_to_vehicle = np.eye(4, dtype=np.float32)
+        ground_to_vehicle[:3, :3] = WAYMO_VEHICLE_TO_GROUND_AXES.T
+        return calibration['vehicle_to_raw_img'] @ ground_to_vehicle
+    camera_projection = np.asarray(
+        label['calibration'], dtype=np.float32).reshape(3, 4)
+    return camera_projection @ np.linalg.inv(CAMERA_TO_GROUND)
+
+
+def _filter_and_paint_points(image, xyz, projection):
+    homogeneous = np.concatenate([
+        xyz, np.ones((xyz.shape[0], 1), dtype=np.float32)
+    ], axis=1)
+    projected = homogeneous @ np.asarray(projection, dtype=np.float32).T
+    depth = projected[:, 2]
+    uv = projected[:, :2] / np.maximum(depth[:, None], 1e-5)
+    width, height = image.size
+    valid = (
+        (depth > 1e-5)
+        & np.isfinite(uv).all(axis=1)
+        & (uv[:, 0] >= 0)
+        & (uv[:, 0] <= width - 1)
+        & (uv[:, 1] >= 0)
+        & (uv[:, 1] <= height - 1)
+    )
+    uv = uv[valid]
+    pixels = np.asarray(image, dtype=np.float32)
+    x0 = np.floor(uv[:, 0]).astype(np.int64)
+    y0 = np.floor(uv[:, 1]).astype(np.int64)
+    x1 = np.minimum(x0 + 1, width - 1)
+    y1 = np.minimum(y0 + 1, height - 1)
+    wx = uv[:, 0] - x0
+    wy = uv[:, 1] - y0
+    colors = (
+        pixels[y0, x0] * ((1.0 - wx) * (1.0 - wy))[:, None]
+        + pixels[y0, x1] * (wx * (1.0 - wy))[:, None]
+        + pixels[y1, x0] * ((1.0 - wx) * wy)[:, None]
+        + pixels[y1, x1] * (wx * wy)[:, None]
+    )
+    colors = np.clip(np.rint(colors), 0, 255).astype(np.uint8)
+    return valid, colors
+
+
+def _write_binary_ply(path, xyz, features, colors):
     has_elongation = features.shape[1] > 1
     vertex_fields = [
         ('x', '<f4'), ('y', '<f4'), ('z', '<f4'),
@@ -286,9 +328,7 @@ def _write_binary_ply(path, xyz, features):
     vertices['intensity'] = features[:, 0]
     if has_elongation:
         vertices['elongation'] = features[:, 1]
-    vertices['red'] = gray
-    vertices['green'] = gray
-    vertices['blue'] = gray
+    vertices['red'], vertices['green'], vertices['blue'] = colors.T
     header_lines = [
         'ply',
         'format binary_little_endian 1.0',
@@ -350,12 +390,18 @@ def visualize_sample(
         xyz, features = _load_openlane_points(cfg, scene_name, frame_key)
     else:
         xyz, features = _load_once_points(cfg, scene_name, frame_key)
-    _write_binary_ply(points_path, xyz, features)
+    source_point_count = xyz.shape[0]
+    fov_mask, colors = _filter_and_paint_points(
+        image, xyz, _ground_to_raw_image(label, dataset_name))
+    xyz = xyz[fov_mask]
+    features = features[fov_mask]
+    _write_binary_ply(points_path, xyz, features, colors)
 
     report = {
         'dataset': dataset_name,
         'source_image': str(image_path),
         'source_label': str(label_path),
+        'source_point_count': int(source_point_count),
         'point_count': int(xyz.shape[0]),
         'output_dir': str(output_dir),
         'outputs': {
