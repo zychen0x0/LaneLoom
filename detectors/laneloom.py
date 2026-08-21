@@ -29,6 +29,7 @@ class LaneLoom(BaseModel):
                  img_backbone=None,
                  pts_backbone=None,
                  img_neck=None,
+                 img_ms2one=None,
                  pts_neck=None,
                  lane_head=None,
                  num_levels=None,
@@ -47,6 +48,7 @@ class LaneLoom(BaseModel):
 
         self.img_backbone = _build_module(img_backbone)
         self.img_neck = _build_module(img_neck)
+        self.img_ms2one = _build_module(img_ms2one)
         self.lane_head = _build_module(lane_head)
 
         self.fp16_enabled = False
@@ -64,6 +66,7 @@ class LaneLoom(BaseModel):
         init_pairs = [
             (self.img_backbone, None),
             (self.img_neck, None),
+            (self.img_ms2one, None),
             (self.pts_voxel_encoder, None),
             (self.pts_middle_encoder, None),
             (self.pts_bev_encoder, None),
@@ -80,12 +83,17 @@ class LaneLoom(BaseModel):
     def _freeze_img_branch(self):
         if not self.freeze_img:
             return
-        for module in (self.img_backbone, self.img_neck):
+        for module in (self.img_backbone, self.img_neck, self.img_ms2one):
             if module is None:
                 continue
             module.eval()
             for param in module.parameters():
                 param.requires_grad = False
+
+    def train(self, mode=True):
+        super().train(mode)
+        self._freeze_img_branch()
+        return self
     # ----------------------------------------------------init weights end----------------------------------------------------
 
     # ---------------------------------------------------properties start---------------------------------------------------
@@ -96,6 +104,10 @@ class LaneLoom(BaseModel):
     @property
     def with_img_neck(self):
         return self.img_neck is not None
+
+    @property
+    def with_img_ms2one(self):
+        return self.img_ms2one is not None
 
     @property
     def with_pts_backbone(self):
@@ -152,6 +164,10 @@ class LaneLoom(BaseModel):
 
         if self.with_img_neck:
             img_feats = self.img_neck(img_feats)
+        if self.with_img_ms2one:
+            img_feats = self.img_ms2one(img_feats)
+        if not isinstance(img_feats, (list, tuple)):
+            img_feats = [img_feats]
 
         img_feats_reshaped = []
         for img_feat in img_feats:

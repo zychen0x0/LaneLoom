@@ -61,7 +61,9 @@ model = dict(
         type='mmdet.ResNet',
         depth=50,
         num_stages=4,
-        out_indices=(1,),
+        # Return layer2/3/4 (standard C3/C4/C5) so the single FV level can
+        # carry both fine spatial detail and deep semantic context.
+        out_indices=(1, 2, 3),
         frozen_stages=1,
         norm_cfg=dict(type='BN', requires_grad=False),
         norm_eval=True,
@@ -69,10 +71,18 @@ model = dict(
         init_cfg=dict(type='Pretrained', checkpoint=backbone_init)),
     img_neck=dict(
         type='mmdet.FPN',
-        in_channels=[512],
+        in_channels=[512, 1024, 2048],
         out_channels=_dim_,
         start_level=0,
-        num_outs=_num_levels_),
+        num_outs=3),
+    # DV-3DLane-style multi-scale-to-one fusion. The decoder still samples
+    # one 1/8-resolution FV map; C4/C5 context is merged into that map here.
+    img_ms2one=dict(
+        type='DilatedMultiScaleFusion',
+        in_channels=_dim_,
+        out_channels=_dim_,
+        num_scales=3,
+        dilations=(1, 2, 5)),
     # ----------------------------------------------------image branch end----------------------------------------------------
 
     # ---------------------------------------------------lidar branch start---------------------------------------------------

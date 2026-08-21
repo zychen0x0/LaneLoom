@@ -75,7 +75,14 @@ def test_config_uses_single_level_temporal_fv_and_dynamic_pillar_bev():
     cfg = Config.fromfile(config_path)
 
     assert cfg.model.num_levels == 1
-    assert cfg.model.img_backbone.out_indices == (1,)
+    assert cfg.model.img_backbone.out_indices == (1, 2, 3)
+    assert cfg.model.img_neck.in_channels == [512, 1024, 2048]
+    assert cfg.model.img_neck.num_outs == 3
+    assert cfg.model.img_ms2one.type == 'DilatedMultiScaleFusion'
+    assert cfg.model.img_ms2one.in_channels == 256
+    assert cfg.model.img_ms2one.out_channels == 256
+    assert cfg.model.img_ms2one.num_scales == 3
+    assert cfg.model.img_ms2one.dilations == (1, 2, 5)
     assert cfg.model.pts_bev_encoder.type == (
         'DynamicPillarBEVEncoder')
     assert cfg.model.pts_bev_encoder.pillar_size == [0.1, 0.1]
@@ -224,6 +231,63 @@ def _bare_laneloom():
     nn.Module.__init__(model)
     model.num_levels = None
     return model
+
+
+def test_image_extractor_fuses_pyramid_before_restoring_camera_dimension():
+    class PyramidBackbone(nn.Module):
+        def forward(self, images):
+            return (
+                images,
+                images[..., ::2, ::2],
+                images[..., ::4, ::4],
+            )
+
+    class IdentityNeck(nn.Module):
+        def forward(self, features):
+            return features
+
+    class RecordingFusion(nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.input_shapes = None
+
+        def forward(self, features):
+            self.input_shapes = [tuple(feature.shape) for feature in features]
+            return features[0]
+
+    model = _bare_laneloom()
+    model.img_backbone = PyramidBackbone()
+    model.img_neck = IdentityNeck()
+    model.img_ms2one = RecordingFusion()
+
+    features = model.extract_img_feat(torch.randn(2, 1, 3, 16, 24))
+
+    assert model.img_ms2one.input_shapes == [
+        (2, 3, 16, 24),
+        (2, 3, 8, 12),
+        (2, 3, 4, 6),
+    ]
+    assert len(features) == 1
+    assert features[0].shape == (2, 1, 3, 16, 24)
+
+
+def test_frozen_image_branch_stays_in_eval_mode_during_training():
+    modules = [nn.Sequential(nn.BatchNorm2d(3)) for _ in range(3)]
+    model = LaneLoomModel(
+        img_backbone=modules[0],
+        img_neck=modules[1],
+        img_ms2one=modules[2],
+        freeze_img=True,
+    )
+
+    model.train()
+
+    assert all(not module.training for module in modules)
+    assert all(
+        not parameter.requires_grad
+        for module in modules
+        for parameter in module.parameters()
+    )
 
 
 def test_temporal_image_features_keep_every_frame_for_curve_sampling():
