@@ -48,7 +48,7 @@ def test_temporal_sampling_rejects_ambiguous_values(value):
 
 def test_openlane_config_uses_one_temporal_sampling_value():
     cfg = Config.fromfile(
-        '/workspace/LaneLoom/configs/laneloom_openlane_image_lidar.py')
+        '/workspace/LaneLoom/configs/main/laneloom_openlane_image_lidar.py')
 
     assert cfg.temporal_sampling_distance == (10.0, 5.0)
     assert cfg.train_dataloader.dataset.temporal_sampling_distance == (
@@ -80,7 +80,8 @@ def test_false_switches_the_entire_openlane_config_to_single_frame(tmp_path):
         'temporal_sampling_distance = (10.0, 5.0)',
         'temporal_sampling_distance = False'))
 
-    cfg = Config.fromfile(copied_root / 'laneloom_openlane_image_lidar.py')
+    cfg = Config.fromfile(
+        copied_root / 'main/laneloom_openlane_image_lidar.py')
 
     assert cfg.temporal_sampling_distance is False
     assert cfg.train_dataloader.dataset.temporal_sampling_distance is False

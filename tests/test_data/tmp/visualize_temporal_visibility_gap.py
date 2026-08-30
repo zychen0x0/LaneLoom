@@ -199,7 +199,7 @@ def main():
     report = json.loads(Path(args.audit).read_text())
     hit = report["hits"][args.hit]
     config = Config.fromfile(
-        "configs/laneloom_openlane_image_lidar.py")
+        "configs/main/laneloom_openlane_image_lidar.py")
     dataset_config = dict(config.train_dataloader.dataset)
     dataset_config["temporal_sampling_distance"] = (10.0, 5.0)
     dataset = DATASETS.build(dataset_config)

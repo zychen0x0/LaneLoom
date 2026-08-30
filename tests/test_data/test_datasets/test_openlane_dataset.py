@@ -18,6 +18,7 @@ def _load_cfg():
     config_path = (
         Path(__file__).resolve().parents[3]
         / 'configs'
+        / 'main'
         / 'laneloom_openlane_image_lidar.py'
     )
     return Config.fromfile(str(config_path))

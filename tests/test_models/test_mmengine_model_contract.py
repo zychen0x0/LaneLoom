@@ -32,14 +32,14 @@ def test_laneloom_forward_accepts_ddp_keyword_batches():
 
 
 def test_config_enables_unused_parameter_detection_for_dynamic_bev_branches():
-    config_path = Path(__file__).resolve().parents[2] / 'configs/laneloom_openlane_image_lidar.py'
+    config_path = Path(__file__).resolve().parents[2] / 'configs/main/laneloom_openlane_image_lidar.py'
     cfg = Config.fromfile(config_path)
     assert cfg.model_wrapper_cfg.type == 'MMDistributedDataParallel'
     assert cfg.model_wrapper_cfg.find_unused_parameters is True
 
 
 def test_config_uses_brief_console_logging_by_default():
-    config_path = Path(__file__).resolve().parents[2] / 'configs/laneloom_openlane_image_lidar.py'
+    config_path = Path(__file__).resolve().parents[2] / 'configs/main/laneloom_openlane_image_lidar.py'
     cfg = Config.fromfile(config_path)
 
     assert cfg.default_hooks.logger.type == 'TrainingLoggerHook'
@@ -48,7 +48,7 @@ def test_config_uses_brief_console_logging_by_default():
 
 
 def test_config_expands_five_lidar_shapes_into_505_decoder_queries():
-    config_path = Path(__file__).resolve().parents[2] / 'configs/laneloom_openlane_image_lidar.py'
+    config_path = Path(__file__).resolve().parents[2] / 'configs/main/laneloom_openlane_image_lidar.py'
     cfg = Config.fromfile(config_path)
     prior = cfg.model.lane_head.anchor_prior
     expander = cfg.model.lane_head.proposal_expander
@@ -71,18 +71,14 @@ def test_config_expands_five_lidar_shapes_into_505_decoder_queries():
 
 
 def test_config_uses_single_level_temporal_fv_and_dynamic_pillar_bev():
-    config_path = Path(__file__).resolve().parents[2] / 'configs/laneloom_openlane_image_lidar.py'
+    config_path = Path(__file__).resolve().parents[2] / 'configs/main/laneloom_openlane_image_lidar.py'
     cfg = Config.fromfile(config_path)
 
     assert cfg.model.num_levels == 1
-    assert cfg.model.img_backbone.out_indices == (1, 2, 3)
-    assert cfg.model.img_neck.in_channels == [512, 1024, 2048]
-    assert cfg.model.img_neck.num_outs == 3
-    assert cfg.model.img_ms2one.type == 'DilatedMultiScaleFusion'
-    assert cfg.model.img_ms2one.in_channels == 256
-    assert cfg.model.img_ms2one.out_channels == 256
-    assert cfg.model.img_ms2one.num_scales == 3
-    assert cfg.model.img_ms2one.dilations == (1, 2, 5)
+    assert cfg.model.img_backbone.out_indices == (1,)
+    assert cfg.model.img_neck.in_channels == [512]
+    assert cfg.model.img_neck.num_outs == 1
+    assert 'img_ms2one' not in cfg.model
     assert cfg.model.pts_bev_encoder.type == (
         'DynamicPillarBEVEncoder')
     assert cfg.model.pts_bev_encoder.pillar_size == [0.1, 0.1]
@@ -117,8 +113,25 @@ def test_config_uses_single_level_temporal_fv_and_dynamic_pillar_bev():
     assert 'temporal_self_attn' not in cfg.model.lane_head.bev_encoder
 
 
+def test_ms2one_ablation_is_isolated_from_the_main_config():
+    config_path = (
+        Path(__file__).resolve().parents[2]
+        / 'configs/ablations/laneloom_openlane_image_lidar_ms2one.py')
+    cfg = Config.fromfile(config_path)
+
+    assert cfg.work_dir == './work_dirs/laneloom_openlane_image_lidar_ms2one'
+    assert cfg.model.img_backbone.out_indices == (1, 2, 3)
+    assert cfg.model.img_neck.in_channels == [512, 1024, 2048]
+    assert cfg.model.img_neck.num_outs == 3
+    assert cfg.model.img_ms2one.type == 'DilatedMultiScaleFusion'
+    assert cfg.model.img_ms2one.in_channels == 256
+    assert cfg.model.img_ms2one.out_channels == 256
+    assert cfg.model.img_ms2one.num_scales == 3
+    assert cfg.model.img_ms2one.dilations == (1, 2, 5)
+
+
 def test_config_uses_named_augmentation_recipes_for_training_only():
-    config_path = Path(__file__).resolve().parents[2] / 'configs/laneloom_openlane_image_lidar.py'
+    config_path = Path(__file__).resolve().parents[2] / 'configs/main/laneloom_openlane_image_lidar.py'
     cfg = Config.fromfile(config_path)
 
     assert cfg.num_views == 1
@@ -170,7 +183,7 @@ def test_grid_mask_ablation_switch_builds_training_only_stage():
 
 
 def test_config_uses_strict_q0_and_one_to_one_assignment():
-    config_path = Path(__file__).resolve().parents[2] / 'configs/laneloom_openlane_image_lidar.py'
+    config_path = Path(__file__).resolve().parents[2] / 'configs/main/laneloom_openlane_image_lidar.py'
     cfg = Config.fromfile(config_path)
     loss = cfg.model.lane_head.loss_module
 
@@ -217,7 +230,7 @@ def test_config_uses_strict_q0_and_one_to_one_assignment():
 def test_config_uses_mean_distance_only_for_final_nms():
     config_path = (
         Path(__file__).resolve().parents[2]
-        / 'configs/laneloom_openlane_image_lidar.py')
+        / 'configs/main/laneloom_openlane_image_lidar.py')
     cfg = Config.fromfile(config_path)
     curve_nms = cfg.model.lane_head.test_cfg.curve_nms
 

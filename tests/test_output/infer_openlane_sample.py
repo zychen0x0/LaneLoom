@@ -43,7 +43,7 @@ DEFAULT_IMAGE = (
     / "segment-8603916601243187272_540_000_560_000_with_camera_labels"
     / "155250133427389900.jpg"
 )
-DEFAULT_CONFIG = REPO_ROOT / "configs/laneloom_openlane_image_lidar.py"
+DEFAULT_CONFIG = REPO_ROOT / "configs/main/laneloom_openlane_image_lidar.py"
 DEFAULT_CHECKPOINT = (
     REPO_ROOT
     / "work_dirs/laneloom_openlane_image_lidar"

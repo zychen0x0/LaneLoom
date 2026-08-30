@@ -24,7 +24,8 @@ tools/test_once.py
 ```
 
 现有 `OpenLaneDataset`、`openlane_datasets.py`、
-`laneloom_openlane_image_lidar.py` 和 `tools/test.py` 的训练评估路径不变。
+OpenLane 主配置现位于 `configs/main/laneloom_openlane_image_lidar.py`；
+`tools/test.py` 的训练评估方式不变。
 
 当前 ONCE 实现支持：
 

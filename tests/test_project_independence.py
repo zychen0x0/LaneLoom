@@ -41,7 +41,7 @@ def test_source_and_configs_do_not_reference_other_project_code():
 
 def test_config_owns_its_default_data_root(monkeypatch):
     monkeypatch.delenv('LANELOOM_DATA_ROOT', raising=False)
-    cfg = Config.fromfile(PROJECT_ROOT / 'configs/laneloom_openlane_image_lidar.py')
+    cfg = Config.fromfile(PROJECT_ROOT / 'configs/main/laneloom_openlane_image_lidar.py')
     assert Path(cfg.data_root) == PROJECT_ROOT / 'data'
 
 
