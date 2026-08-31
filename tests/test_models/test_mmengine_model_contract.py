@@ -8,7 +8,7 @@ from mmengine.config import Config
 from mmengine.model import BaseModel
 from mmdet3d.registry import MODELS
 
-import LaneLoom  # noqa: F401 - register the project model.
+import LaneLoom.models  # noqa: F401 - register model components.
 from LaneLoom.detectors import LaneLoom as LaneLoomModel
 
 

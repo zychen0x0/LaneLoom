@@ -2,7 +2,7 @@ import json
 
 import numpy as np
 
-import LaneLoom  # noqa: F401 - register project metrics.
+import LaneLoom.evaluation  # noqa: F401 - register project metrics.
 from mmdet3d.registry import METRICS
 
 

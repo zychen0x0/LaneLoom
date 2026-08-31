@@ -14,7 +14,7 @@ from torch.utils.data import Dataset
 from mmengine.registry import FUNCTIONS
 from mmdet3d.registry import DATASETS
 
-from LaneLoom.temporal_sampling import resolve_temporal_sampling
+from LaneLoom.utils.temporal_sampling import resolve_temporal_sampling
 
 from .pipelines import GridMask
 

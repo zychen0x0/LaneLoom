@@ -6,7 +6,7 @@ import pytest
 from mmengine.config import Config
 
 from LaneLoom.datasets.openlane.dataset import OpenLaneDataset
-from LaneLoom.temporal_sampling import resolve_temporal_sampling
+from LaneLoom.utils.temporal_sampling import resolve_temporal_sampling
 
 
 @pytest.mark.parametrize(

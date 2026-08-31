@@ -7,6 +7,7 @@ from .experiment import (
     remove_runtime_config_artifacts,
 )
 from .openlane_test_cases import build_openlane_test_configs
+from .registration import register_all_modules
 from .runner import ExperimentRunner
 
 __all__ = [
@@ -15,5 +16,6 @@ __all__ = [
     'configure_train_experiment',
     'remove_runtime_config_artifacts',
     'build_openlane_test_configs',
+    'register_all_modules',
     'ExperimentRunner',
 ]

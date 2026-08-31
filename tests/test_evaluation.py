@@ -5,7 +5,7 @@ from datetime import datetime
 from pathlib import Path
 from types import SimpleNamespace
 
-import LaneLoom  # noqa: F401 - register the project metric.
+import LaneLoom.evaluation  # noqa: F401 - register project metrics.
 import LaneLoom.engine.hooks.laneloom_logger_hook as logger_module
 from mmengine.config import Config
 from mmengine.registry import METRICS

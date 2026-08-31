@@ -32,9 +32,12 @@ WORKSPACE_ROOT = REPO_ROOT.parent
 if str(WORKSPACE_ROOT) not in sys.path:
     sys.path.insert(0, str(WORKSPACE_ROOT))
 
-import LaneLoom  # noqa: E402,F401 - register project components
 from LaneLoom.datasets.openlane.dataset import openlane_collate  # noqa: E402
+from LaneLoom.engine import register_all_modules  # noqa: E402
 from mmdet3d.registry import DATASETS, MODELS  # noqa: E402
+
+
+register_all_modules()
 
 
 DEFAULT_IMAGE = (

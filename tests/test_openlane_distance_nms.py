@@ -3,7 +3,7 @@ import pytest
 import torch
 from mmengine.config import Config
 
-import LaneLoom  # noqa: F401 - register project metrics.
+import LaneLoom.evaluation  # noqa: F401 - register project metrics.
 from LaneLoom.engine.openlane_test_cases import (
     build_openlane_test_configs,
     select_recall_safe_distance_threshold,

@@ -9,7 +9,7 @@ import torch.nn.functional as F
 
 from mmdet3d.registry import MODELS
 
-from LaneLoom.temporal_sampling import resolve_temporal_sampling
+from LaneLoom.utils.temporal_sampling import resolve_temporal_sampling
 
 
 XYZ = slice(0, 3)

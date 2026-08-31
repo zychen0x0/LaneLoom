@@ -6,7 +6,7 @@ import pytest
 from mmengine.config import Config
 from PIL import Image
 
-import LaneLoom  # noqa: F401 - register project datasets.
+import LaneLoom.datasets  # noqa: F401 - register project datasets.
 from mmdet3d.registry import DATASETS
 
 

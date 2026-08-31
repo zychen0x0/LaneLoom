@@ -6,12 +6,15 @@ from pathlib import Path
 
 from mmengine.config import Config
 
-import LaneLoom  # noqa: F401 - register project components.
 from LaneLoom.engine import (
     ExperimentRunner,
     configure_test_experiment,
+    register_all_modules,
     remove_runtime_config_artifacts,
 )
+
+
+register_all_modules()
 
 
 def parse_args():
