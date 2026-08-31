@@ -70,6 +70,28 @@ def test_openlane_config_uses_one_temporal_sampling_value():
     assert legacy_fields.isdisjoint(cfg.keys())
 
 
+def test_openlane_single_frame_config_uses_full_official_protocol():
+    config_path = (
+        Path(__file__).resolve().parents[1]
+        / 'configs/main/laneloom_openlane_image_lidar.py')
+    cfg = Config.fromfile(config_path)
+
+    assert cfg.temporal_sampling_distance is False
+    assert cfg.train_dataloader.dataset.temporal_sampling_distance is False
+    assert cfg.val_dataloader.dataset.temporal_sampling_distance is False
+    assert cfg.test_dataloader.dataset.temporal_sampling_distance is False
+    assert cfg.model.pts_bev_encoder.temporal_sampling_distance is False
+    assert cfg.train_dataloader.dataset.dataset_cfg.load_interval == 1
+    assert cfg.val_dataloader.dataset.dataset_cfg.load_interval == 1
+    assert cfg.test_dataloader.dataset.dataset_cfg.load_interval == 1
+    assert cfg.val_evaluator.prefix == 'OpenLaneOfficial'
+    assert cfg.val_evaluator.use_temporal_gt_supplement is False
+    assert cfg.test_evaluator.prefix == 'OpenLaneOfficial'
+    assert cfg.test_evaluator.use_temporal_gt_supplement is False
+    assert cfg.default_hooks.checkpoint.save_best == 'OpenLaneOfficial/F1'
+    assert cfg.work_dir == './work_dirs/laneloom_openlane_image_lidar_single_frame'
+
+
 def test_false_switches_the_entire_openlane_config_to_single_frame(tmp_path):
     config_root = Path(__file__).resolve().parents[1] / 'configs'
     copied_root = tmp_path / 'configs'
