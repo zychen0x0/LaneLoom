@@ -1,9 +1,9 @@
 """LaneLoom image + LiDAR training on ONCE-3DLanes p0+p1."""
 
 _base_ = [
-    './_base_/datasets/once_datasets.py',
-    './_base_/evaluators/once_official.py',
-    './_base_/schedules/schedule_24e_adamw_cosine.py',
+    '../_base_/datasets/once_datasets.py',
+    '../_base_/evaluators/once_official.py',
+    '../_base_/schedules/schedule_24e_adamw_cosine.py',
 ]
 
 default_scope = 'mmdet3d'

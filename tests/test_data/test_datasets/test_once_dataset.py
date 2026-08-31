@@ -138,7 +138,7 @@ def test_once_config_preserves_cam01_aspect_ratio_in_network_input(tmp_path):
     root = _build_once_fixture(tmp_path)
     config_path = (
         Path(__file__).resolve().parents[3]
-        / 'configs/laneloom_once_image_lidar.py')
+        / 'configs/main/laneloom_once_image_lidar_Temporal.py')
     cfg = Config.fromfile(config_path)
     assert cfg.load_dim == 4
     assert cfg.use_dim == 4

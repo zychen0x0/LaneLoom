@@ -18,13 +18,13 @@ ONCE 与 OpenLane 使用完全独立的配置和数据集模块：
 datasets/once/dataset.py
 configs/_base_/datasets/once_datasets.py
 configs/_base_/evaluators/once_official.py
-configs/laneloom_once_image_lidar.py
+configs/main/laneloom_once_image_lidar_Temporal.py
 evaluation/once_official_metric.py
 tools/test_once.py
 ```
 
 现有 `OpenLaneDataset`、`openlane_datasets.py`、
-OpenLane 主配置现位于 `configs/main/laneloom_openlane_image_lidar.py`；
+OpenLane 主配置现位于 `configs/main/laneloom_openlane_image_lidar_Temporal.py`；
 `tools/test.py` 的训练评估方式不变。
 
 当前 ONCE 实现支持：
@@ -149,7 +149,7 @@ cd /workspace/LaneLoom
 
 PYTHONPATH=/workspace CUDA_VISIBLE_DEVICES=0 \
 python tools/train.py \
-  configs/laneloom_once_image_lidar.py \
+  configs/main/laneloom_once_image_lidar_Temporal.py \
   --max-epochs 1
 ```
 
@@ -161,7 +161,7 @@ cd /workspace/LaneLoom
 PYTHONPATH=/workspace CUDA_VISIBLE_DEVICES=0,1 \
 torchrun --nproc_per_node=2 --master_port=29503 \
   tools/train.py \
-  configs/laneloom_once_image_lidar.py \
+  configs/main/laneloom_once_image_lidar_Temporal.py \
   --launcher pytorch
 ```
 
@@ -183,7 +183,7 @@ cd /workspace/LaneLoom
 PYTHONPATH=/workspace CUDA_VISIBLE_DEVICES=0,1 \
 torchrun --nproc_per_node=2 --master_port=29504 \
   tools/test_once.py \
-  configs/laneloom_once_image_lidar.py \
+  configs/main/laneloom_once_image_lidar_Temporal.py \
   work_dirs/laneloom_once_image_lidar/exp_date_YYYYMMDD_HHMMSS/checkpoints/best_ONCEOfficial_F1_epoch_XX.pth \
   --launcher pytorch
 ```

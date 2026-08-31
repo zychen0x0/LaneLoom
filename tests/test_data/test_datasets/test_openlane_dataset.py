@@ -19,7 +19,7 @@ def _load_cfg():
         Path(__file__).resolve().parents[3]
         / 'configs'
         / 'main'
-        / 'laneloom_openlane_image_lidar.py'
+        / 'laneloom_openlane_image_lidar_Temporal.py'
     )
     return Config.fromfile(str(config_path))
 

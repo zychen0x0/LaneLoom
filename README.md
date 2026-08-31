@@ -14,7 +14,7 @@ cd /workspace/LaneLoom
 PYTHONPATH=/workspace CUDA_VISIBLE_DEVICES=0,1 \
 torchrun --nproc_per_node=2 --master_port=29501 \
 tools/train.py \
-configs/main/laneloom_openlane_image_lidar.py \
+configs/main/laneloom_openlane_image_lidar_Temporal.py \
 --launcher pytorch
 
 ```
@@ -27,7 +27,7 @@ cd /workspace/LaneLoom
 PYTHONPATH=/workspace CUDA_VISIBLE_DEVICES=0,1 \
 torchrun --nproc_per_node=2 --master_port=29501 \
 tools/train.py \
-configs/main/laneloom_openlane_image_lidar.py \
+configs/main/laneloom_openlane_image_lidar_Temporal.py \
 --launcher pytorch \
 --load-from "work_dirs/laneloom_openlane_image_lidar/exp_date_20260725_163203/checkpoints/epoch_24.pth"
 
@@ -41,7 +41,7 @@ cd /workspace/LaneLoom
 PYTHONPATH=/workspace CUDA_VISIBLE_DEVICES=0,1 \
 torchrun --nproc_per_node=2 --master_port=29502 \
 tools/test.py \
-configs/main/laneloom_openlane_image_lidar.py \
+configs/main/laneloom_openlane_image_lidar_Temporal.py \
 work_dirs/laneloom_openlane_image_lidar/exp_date_20260715_191319/checkpoints/best_OpenLane_F1_epoch_22.pth \
 --work-dir work_dirs/laneloom_openlane_image_lidar/nms_evaluation \
 --case validation \

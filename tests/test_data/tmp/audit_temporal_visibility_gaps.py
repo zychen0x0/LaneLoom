@@ -110,7 +110,7 @@ def main():
 
     global _DATASET
     config = Config.fromfile(
-        "configs/main/laneloom_openlane_image_lidar.py")
+        "configs/main/laneloom_openlane_image_lidar_Temporal.py")
     dataset_config = dict(config.train_dataloader.dataset)
     dataset_config["temporal_sampling_distance"] = (10.0, 5.0)
     _DATASET = DATASETS.build(dataset_config)

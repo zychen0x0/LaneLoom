@@ -327,7 +327,7 @@ def test_anchor_metric_uses_temporal_supplement_category():
 
 def test_config_enables_mmengine_validation_and_test_evaluators():
     config_path = Path(
-        '/workspace/LaneLoom/configs/main/laneloom_openlane_image_lidar.py')
+        '/workspace/LaneLoom/configs/main/laneloom_openlane_image_lidar_Temporal.py')
     cfg = Config.fromfile(config_path)
     source = config_path.read_text()
 
@@ -353,7 +353,7 @@ def test_config_enables_mmengine_validation_and_test_evaluators():
 
 def test_config_can_select_dv3dlane_validation_but_keeps_official_test():
     config_path = Path(
-        '/workspace/LaneLoom/configs/main/laneloom_openlane_image_lidar.py')
+        '/workspace/LaneLoom/configs/main/laneloom_openlane_image_lidar_Temporal.py')
     source = config_path.read_text()
     source = source.replace(
         "'../_base_/datasets/openlane_datasets_D5.py'",
@@ -382,7 +382,7 @@ def test_config_can_select_dv3dlane_validation_but_keeps_official_test():
 
 def test_openlane_test_configs_select_validation_and_each_official_case():
     cfg = Config.fromfile(
-        '/workspace/LaneLoom/configs/main/laneloom_openlane_image_lidar.py')
+        '/workspace/LaneLoom/configs/main/laneloom_openlane_image_lidar_Temporal.py')
 
     case_configs = build_openlane_test_configs(cfg)
 
@@ -417,7 +417,7 @@ def test_openlane_test_configs_select_validation_and_each_official_case():
     ])
 def test_openlane_test_configs_filter_requested_cases(selection, expected):
     cfg = Config.fromfile(
-        '/workspace/LaneLoom/configs/main/laneloom_openlane_image_lidar.py')
+        '/workspace/LaneLoom/configs/main/laneloom_openlane_image_lidar_Temporal.py')
 
     case_configs = build_openlane_test_configs(cfg, selection)
 
@@ -426,7 +426,7 @@ def test_openlane_test_configs_filter_requested_cases(selection, expected):
 
 def test_openlane_test_configs_reject_unknown_case():
     cfg = Config.fromfile(
-        '/workspace/LaneLoom/configs/main/laneloom_openlane_image_lidar.py')
+        '/workspace/LaneLoom/configs/main/laneloom_openlane_image_lidar_Temporal.py')
 
     with pytest.raises(ValueError, match='Unknown OpenLane test case'):
         build_openlane_test_configs(cfg, 'unknown')
@@ -434,7 +434,7 @@ def test_openlane_test_configs_reject_unknown_case():
 
 def test_openlane_test_configs_build_one_pass_score_threshold_scan():
     cfg = Config.fromfile(
-        '/workspace/LaneLoom/configs/main/laneloom_openlane_image_lidar.py')
+        '/workspace/LaneLoom/configs/main/laneloom_openlane_image_lidar_Temporal.py')
 
     cases = build_openlane_test_configs(
         cfg, 'validation', score_thresholds=[0.8, 0.3, 0.5, 0.5])
@@ -454,7 +454,7 @@ def test_openlane_test_configs_build_one_pass_score_threshold_scan():
 @pytest.mark.parametrize('thresholds', [[], [0.0], [1.0], [-0.1], [1.1]])
 def test_openlane_test_configs_reject_invalid_score_threshold_scan(thresholds):
     cfg = Config.fromfile(
-        '/workspace/LaneLoom/configs/main/laneloom_openlane_image_lidar.py')
+        '/workspace/LaneLoom/configs/main/laneloom_openlane_image_lidar_Temporal.py')
 
     with pytest.raises(ValueError, match='score thresholds'):
         build_openlane_test_configs(

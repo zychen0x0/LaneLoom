@@ -1,4 +1,4 @@
-_base_ = ['../main/laneloom_openlane_image_lidar.py']
+_base_ = ['../main/laneloom_openlane_image_lidar_Temporal.py']
 
 # Keep ablation outputs separate from the checkpoint-compatible main run.
 work_dir = './work_dirs/laneloom_openlane_image_lidar_ms2one'
