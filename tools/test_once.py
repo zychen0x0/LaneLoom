@@ -87,24 +87,7 @@ def main():
     if runner.rank != 0:
         return
 
-    payload = write_summary(output_dir, checkpoint, metrics)
-    values = payload['metrics']
-    print('\n===== ONCE-3DLanes validation =====')
-    if values:
-        print(
-            f"threshold={values['score_threshold']:g} "
-            f"F1={100.0 * values['F1']:.2f}% "
-            f"P={100.0 * values['Precision']:.2f}% "
-            f"R={100.0 * values['Recall']:.2f}% "
-            f"CDE={values['CDE']:.4f}m")
-        print(
-            f"best threshold={values['best_score_threshold']:g} "
-            f"F1={100.0 * values['best_F1']:.2f}% "
-            f"P={100.0 * values['best_Precision']:.2f}% "
-            f"R={100.0 * values['best_Recall']:.2f}% "
-            f"CDE={values['best_CDE']:.4f}m")
-    print(f'Predictions: {prediction_dir}')
-    print(f'Summary: {output_dir / "once_evaluation_results.json"}')
+    write_summary(output_dir, checkpoint, metrics)
 
 
 if __name__ == '__main__':

@@ -193,6 +193,23 @@ class TrainingLoggerHook(Hook):
         self._log_evaluation_summary(runner, metrics)
 
     def _log_evaluation_summary(self, runner, metrics):
+        if any(key.startswith('ONCEOfficial/') for key in metrics):
+            self._log_once_evaluation_summary(runner, metrics)
+            return
+        self._log_openlane_evaluation_summary(runner, metrics)
+
+    def _log_once_evaluation_summary(self, runner, metrics):
+        runner.logger.info(
+            'F1 = {:.4f}%\n'
+            'Precision = {:.4f}%\n'
+            'Recall = {:.4f}%\n'
+            'CDE = {:.4f} cm'.format(
+                100.0 * self._metric_value(metrics, 'best_F1'),
+                100.0 * self._metric_value(metrics, 'best_Precision'),
+                100.0 * self._metric_value(metrics, 'best_Recall'),
+                100.0 * self._metric_value(metrics, 'best_CDE')))
+
+    def _log_openlane_evaluation_summary(self, runner, metrics):
         runner.logger.info(
             '===> Evaluation laneline F1: {:.8f}\n'
             '===> Evaluation laneline Recall: {:.8f}\n'

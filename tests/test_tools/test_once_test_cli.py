@@ -1,6 +1,7 @@
 from importlib.util import module_from_spec, spec_from_file_location
 import json
 from pathlib import Path
+from types import SimpleNamespace
 
 
 TEST_PATH = Path(__file__).resolve().parents[2] / 'tools/test_once.py'
@@ -35,3 +36,35 @@ def test_once_summary_keeps_primary_and_best_threshold_results(tmp_path):
     assert payload['metrics']['best_score_threshold'] == 0.6
     assert json.loads(
         (tmp_path / 'once_evaluation_results.json').read_text()) == payload
+
+
+def test_once_main_does_not_duplicate_runner_metric_summary(
+        tmp_path, monkeypatch, capsys):
+    checkpoint = tmp_path / 'best.pth'
+    checkpoint.write_bytes(b'checkpoint')
+    cfg = SimpleNamespace(
+        get=lambda key, default=None: (
+            'once' if key == 'dataset_name' else default),
+        test_evaluator=SimpleNamespace())
+    args = SimpleNamespace(
+        config=str(tmp_path / 'once.py'),
+        checkpoint=str(checkpoint),
+        work_dir=str(tmp_path / 'evaluation'),
+        prediction_dir=None,
+        launcher='none')
+    runner = SimpleNamespace(rank=0, test=lambda: {})
+
+    monkeypatch.setattr(TEST_MODULE, 'parse_args', lambda: args)
+    monkeypatch.setattr(TEST_MODULE.Config, 'fromfile', lambda _path: cfg)
+    monkeypatch.setattr(
+        TEST_MODULE.ExperimentRunner, 'from_cfg', lambda _cfg: runner)
+    monkeypatch.setattr(
+        TEST_MODULE, 'configure_test_experiment',
+        lambda _cfg, _checkpoint, output_dir: output_dir)
+    monkeypatch.setattr(
+        TEST_MODULE, 'remove_runtime_config_artifacts',
+        lambda _experiment_dir, _config_path: None)
+
+    TEST_MODULE.main()
+
+    assert capsys.readouterr().out == ''

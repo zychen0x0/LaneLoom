@@ -497,6 +497,42 @@ def test_logger_reports_validation_progress_and_final_lane_metrics(monkeypatch):
     assert 'GT / Pred / TP: 100 / 120 / 40' in summary
 
 
+def test_logger_reports_only_best_once_metrics_in_percent_and_centimeters():
+    messages = []
+    runner = SimpleNamespace(
+        rank=0,
+        iter=123,
+        logger=SimpleNamespace(info=messages.append),
+        visualizer=SimpleNamespace(add_scalars=lambda *_args, **_kwargs: None),
+    )
+    metrics = {
+        'ONCEOfficial/F1': 0.75,
+        'ONCEOfficial/Recall': 0.70,
+        'ONCEOfficial/Precision': 0.81,
+        'ONCEOfficial/CDE': 0.06123456,
+        'ONCEOfficial/num_gt': 100.0,
+        'ONCEOfficial/num_pred': 90.0,
+        'ONCEOfficial/num_tp': 70.0,
+        'ONCEOfficial/score_threshold': 0.5,
+        'ONCEOfficial/best_F1': 0.74356091,
+        'ONCEOfficial/best_Precision': 0.79620898,
+        'ONCEOfficial/best_Recall': 0.69744354,
+        'ONCEOfficial/best_CDE': 0.06201651,
+        'ONCEOfficial/best_score_threshold': 0.45,
+    }
+
+    TrainingLoggerHook().after_val_epoch(runner, metrics)
+
+    assert len(messages) == 1
+    summary = messages[0]
+    assert summary.splitlines() == [
+        'F1 = 74.3561%',
+        'Precision = 79.6209%',
+        'Recall = 69.7444%',
+        'CDE = 6.2017 cm',
+    ]
+
+
 def test_training_logger_brief_mode_only_prints_key_lane_losses(monkeypatch):
     messages = []
     scalars = []
