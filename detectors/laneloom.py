@@ -26,6 +26,7 @@ class LaneLoom(BaseModel):
                  pts_voxel_encoder=None,
                  pts_middle_encoder=None,
                  pts_bev_encoder=None,
+                 pts_point_painter=None,
                  img_backbone=None,
                  pts_backbone=None,
                  img_neck=None,
@@ -43,6 +44,7 @@ class LaneLoom(BaseModel):
         self.pts_voxel_encoder = _build_module(pts_voxel_encoder)
         self.pts_middle_encoder = _build_module(pts_middle_encoder)
         self.pts_bev_encoder = _build_module(pts_bev_encoder)
+        self.pts_point_painter = _build_module(pts_point_painter)
         self.pts_backbone = _build_module(pts_backbone)
         self.pts_neck = _build_module(pts_neck)
 
@@ -70,6 +72,7 @@ class LaneLoom(BaseModel):
             (self.pts_voxel_encoder, None),
             (self.pts_middle_encoder, None),
             (self.pts_bev_encoder, None),
+            (self.pts_point_painter, None),
             (self.pts_backbone, None),
             (self.pts_neck, None),
             (self.lane_head, None),
@@ -240,6 +243,9 @@ class LaneLoom(BaseModel):
         if self.pts_bev_encoder is not None:
             return self.pts_bev_encoder(
                 points, img_feats, img_metas, images=images)
+        if self.pts_point_painter is not None:
+            points = self.pts_point_painter(
+                points, images=images, img_metas=img_metas)
 
         voxels, num_points, coors = self.voxelize(points)
         if voxels is None:

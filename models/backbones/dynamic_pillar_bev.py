@@ -32,6 +32,145 @@ GROUND_TO_VEHICLE_AXES = (
 )
 
 
+@MODELS.register_module()
+class RGBPointPainter(nn.Module):
+    """Append projected RGB values while preserving native point fields."""
+
+    def __init__(self, use_rgb_pointpainting=True, point_features=None):
+        super().__init__()
+        self.use_rgb_pointpainting = bool(use_rgb_pointpainting)
+        self.point_features = tuple(
+            point_features or OPENLANE_POINT_FEATURES)
+        if self.point_features not in (
+                ONCE_POINT_FEATURES, OPENLANE_POINT_FEATURES):
+            raise ValueError(
+                'point_features must describe either ONCE xyz/intensity or '
+                'OpenLane xyz/intensity/elongation/queue_index points.')
+        self.has_queue_index = 'queue_index' in self.point_features
+        self.raw_point_channels = len(self.point_features)
+        self.raw_queue_index = (
+            self.point_features.index('queue_index')
+            if self.has_queue_index else None)
+        self.painted_point_channels = (
+            self.raw_point_channels + PAINTED_RGB_CHANNELS)
+        self.painted_queue_index = (
+            self.raw_queue_index + PAINTED_RGB_CHANNELS
+            if self.has_queue_index else None)
+
+    @staticmethod
+    def _frame_meta(img_metas, batch_index, time_index):
+        if img_metas is None:
+            return None
+        sample_meta = (
+            img_metas[batch_index]
+            if isinstance(img_metas, (list, tuple)) else img_metas)
+        if not isinstance(sample_meta, dict):
+            return None
+        queue = sample_meta.get('queue')
+        if isinstance(queue, dict):
+            return queue.get(time_index, queue.get(str(time_index)))
+        if isinstance(queue, (list, tuple)) and time_index < len(queue):
+            return queue[time_index]
+        return sample_meta.get('current', sample_meta)
+
+    def paint_points(self, points, images=None, img_metas=None):
+        """Append RGB while preserving the configured native point fields."""
+        if not isinstance(points, (list, tuple)):
+            points = [points]
+        if not self.use_rgb_pointpainting:
+            images = None
+            img_metas = None
+        if images is not None and images.ndim == 5:
+            images = images.unsqueeze(1)
+        if images is not None and images.ndim != 6:
+            raise ValueError(
+                'Point painting images must have shape [B,T,N,3,H,W] or '
+                f'[B,N,3,H,W], got {tuple(images.shape)}.')
+        if images is not None and images.size(0) != len(points):
+            raise ValueError(
+                'Point painting image batch must match the point batch.')
+
+        painted_batch = []
+        for batch_index, sample in enumerate(points):
+            if sample.ndim != 2 or sample.size(-1) < self.raw_point_channels:
+                raise ValueError(
+                    'Points do not match point_features '
+                    f'{self.point_features}.')
+            if self.has_queue_index:
+                lidar_features = sample[:, :self.raw_queue_index]
+                queue = sample[
+                    :, self.raw_queue_index:self.raw_queue_index + 1]
+            else:
+                lidar_features = sample[:, :self.raw_point_channels]
+                queue = sample.new_zeros(sample.size(0), 1)
+            rgb = sample.new_zeros(sample.size(0), PAINTED_RGB_CHANNELS)
+            if images is None or img_metas is None or sample.numel() == 0:
+                fields = ((lidar_features, rgb, queue)
+                          if self.has_queue_index else (lidar_features, rgb))
+                painted_batch.append(torch.cat(fields, dim=-1))
+                continue
+
+            time_steps = images.size(1)
+            queue_indices = queue[:, 0].round().long()
+            ground_to_vehicle = sample.new_tensor(GROUND_TO_VEHICLE_AXES)
+            for time_index in queue_indices.unique().tolist():
+                if not 0 <= time_index < time_steps:
+                    continue
+                frame_meta = self._frame_meta(
+                    img_metas, batch_index, time_index)
+                if not isinstance(frame_meta, dict):
+                    continue
+                lidar_to_image_matrices = frame_meta.get('lidar2img')
+                if (lidar_to_image_matrices is None
+                        or len(lidar_to_image_matrices) == 0):
+                    continue
+                lidar_to_image = torch.as_tensor(
+                    lidar_to_image_matrices[0],
+                    device=sample.device, dtype=sample.dtype)
+                history_to_current = torch.as_tensor(
+                    frame_meta.get('lidaradj2lidarcurr', torch.eye(4)),
+                    device=sample.device, dtype=sample.dtype)
+
+                point_indices = torch.where(queue_indices == time_index)[0]
+                homogeneous = torch.cat((
+                    lidar_features[point_indices, XYZ],
+                    sample.new_ones(point_indices.numel(), 1),
+                ), dim=-1)
+                history_points = torch.linalg.solve(
+                    history_to_current, homogeneous.transpose(0, 1)
+                ).transpose(0, 1)
+                vehicle_points = torch.cat((
+                    history_points[:, :3] @ ground_to_vehicle.transpose(0, 1),
+                    history_points[:, 3:],
+                ), dim=-1)
+                projected = vehicle_points @ lidar_to_image.transpose(0, 1)
+                depth = projected[:, 2]
+                normalized_image = images[batch_index, time_index, 0]
+                height, width = normalized_image.shape[-2:]
+                grid = torch.stack((
+                    projected[:, 0] / depth.clamp_min(1e-5)
+                    / max(width - 1, 1) * 2 - 1,
+                    projected[:, 1] / depth.clamp_min(1e-5)
+                    / max(height - 1, 1) * 2 - 1,
+                ), dim=-1)
+                valid = (
+                    (depth > 1e-5)
+                    & (grid[:, 0].abs() <= 1)
+                    & (grid[:, 1].abs() <= 1))
+                sampled = F.grid_sample(
+                    normalized_image.unsqueeze(0), grid.view(1, 1, -1, 2),
+                    align_corners=True).view(PAINTED_RGB_CHANNELS, -1).T
+                rgb[point_indices] = torch.where(
+                    valid.unsqueeze(-1), sampled, torch.zeros_like(sampled))
+            fields = ((lidar_features, rgb, queue)
+                      if self.has_queue_index else (lidar_features, rgb))
+            painted_batch.append(torch.cat(fields, dim=-1))
+        return painted_batch
+
+    def forward(self, points, images=None, img_metas=None):
+        return self.paint_points(points, images=images, img_metas=img_metas)
+
+
 class _SparseBasicBlock(spconv.SparseModule):
     """Two submanifold convolutions with a sparse residual connection."""
 
@@ -158,7 +297,7 @@ class _ASPPNeck(nn.Module):
 
 
 @MODELS.register_module()
-class DynamicPillarBEVEncoder(nn.Module):
+class DynamicPillarBEVEncoder(RGBPointPainter):
     """Encode accumulated points with dynamic PFE and a sparse lane network.
 
     Point features are learned before aggregation. The max/mean learned
@@ -170,35 +309,20 @@ class DynamicPillarBEVEncoder(nn.Module):
                  temporal_sampling_distance, out_channels=128,
                  base_channels=64,
                  use_rgb_pointpainting=True, point_features=None, **kwargs):
-        super().__init__()
+        super().__init__(
+            use_rgb_pointpainting=use_rgb_pointpainting,
+            point_features=point_features)
+        del kwargs
         self.point_cloud_range = tuple(float(value)
                                        for value in point_cloud_range)
         self.pillar_size = tuple(float(value) for value in pillar_size)
         self.out_channels = int(out_channels)
         self.queue_length = resolve_temporal_sampling(
             temporal_sampling_distance).queue_length
-        self.use_rgb_pointpainting = bool(use_rgb_pointpainting)
-        self.point_features = tuple(
-            point_features or OPENLANE_POINT_FEATURES)
-        if self.point_features not in (
-                ONCE_POINT_FEATURES, OPENLANE_POINT_FEATURES):
-            raise ValueError(
-                'point_features must describe either ONCE xyz/intensity or '
-                'OpenLane xyz/intensity/elongation/queue_index points.')
         self.has_elongation = 'elongation' in self.point_features
-        self.has_queue_index = 'queue_index' in self.point_features
         if not self.has_queue_index and self.queue_length != 1:
             raise ValueError(
                 'Temporal LiDAR requires queue_index in point_features.')
-        self.raw_point_channels = len(self.point_features)
-        self.raw_queue_index = (
-            self.point_features.index('queue_index')
-            if self.has_queue_index else None)
-        self.painted_point_channels = (
-            self.raw_point_channels + PAINTED_RGB_CHANNELS)
-        self.painted_queue_index = (
-            self.raw_queue_index + PAINTED_RGB_CHANNELS
-            if self.has_queue_index else None)
         self.point_input_channels = self.painted_point_channels + 6
         self.pillar_statistic_channels = (
             7 + 2 * int(self.has_elongation) + int(self.has_queue_index))
@@ -351,116 +475,6 @@ class DynamicPillarBEVEncoder(nn.Module):
                     0, self.painted_point_channels)),
                 torch.zeros(0, dtype=torch.long, device=reference.device))
         return torch.cat(all_points), torch.cat(all_flat_indices)
-
-    @staticmethod
-    def _frame_meta(img_metas, batch_index, time_index):
-        if img_metas is None:
-            return None
-        sample_meta = (
-            img_metas[batch_index]
-            if isinstance(img_metas, (list, tuple)) else img_metas)
-        if not isinstance(sample_meta, dict):
-            return None
-        queue = sample_meta.get('queue')
-        if isinstance(queue, dict):
-            return queue.get(time_index, queue.get(str(time_index)))
-        if isinstance(queue, (list, tuple)) and time_index < len(queue):
-            return queue[time_index]
-        return sample_meta.get('current', sample_meta)
-
-    def paint_points(self, points, images=None, img_metas=None):
-        """Append RGB while preserving the configured native point fields."""
-        if not isinstance(points, (list, tuple)):
-            points = [points]
-        if not self.use_rgb_pointpainting:
-            images = None
-            img_metas = None
-        if images is not None and images.ndim == 5:
-            images = images.unsqueeze(1)
-        if images is not None and images.ndim != 6:
-            raise ValueError(
-                'Point painting images must have shape [B,T,N,3,H,W] or '
-                f'[B,N,3,H,W], got {tuple(images.shape)}.')
-        if images is not None and images.size(0) != len(points):
-            raise ValueError(
-                'Point painting image batch must match the point batch.')
-
-        painted_batch = []
-        for batch_index, sample in enumerate(points):
-            if sample.ndim != 2 or sample.size(-1) < self.raw_point_channels:
-                raise ValueError(
-                    'Dynamic pillar points do not match point_features '
-                    f'{self.point_features}.')
-            if self.has_queue_index:
-                lidar_features = sample[:, :self.raw_queue_index]
-                queue = sample[
-                    :, self.raw_queue_index:self.raw_queue_index + 1]
-            else:
-                lidar_features = sample[:, :self.raw_point_channels]
-                queue = sample.new_zeros(sample.size(0), 1)
-            rgb = sample.new_zeros(sample.size(0), PAINTED_RGB_CHANNELS)
-            if images is None or img_metas is None or sample.numel() == 0:
-                fields = ((lidar_features, rgb, queue)
-                          if self.has_queue_index else (lidar_features, rgb))
-                painted_batch.append(torch.cat(fields, dim=-1))
-                continue
-
-            time_steps = images.size(1)
-            queue_indices = queue[:, 0].round().long()
-            ground_to_vehicle = sample.new_tensor(GROUND_TO_VEHICLE_AXES)
-            for time_index in queue_indices.unique().tolist():
-                if not 0 <= time_index < time_steps:
-                    continue
-                frame_meta = self._frame_meta(
-                    img_metas, batch_index, time_index)
-                if not isinstance(frame_meta, dict):
-                    continue
-                lidar_to_image_matrices = frame_meta.get('lidar2img')
-                if (lidar_to_image_matrices is None
-                        or len(lidar_to_image_matrices) == 0):
-                    continue
-                lidar_to_image = torch.as_tensor(
-                    lidar_to_image_matrices[0],
-                    device=sample.device, dtype=sample.dtype)
-                history_to_current = torch.as_tensor(
-                    frame_meta.get('lidaradj2lidarcurr', torch.eye(4)),
-                    device=sample.device, dtype=sample.dtype)
-
-                point_indices = torch.where(queue_indices == time_index)[0]
-                homogeneous = torch.cat((
-                    lidar_features[point_indices, XYZ],
-                    sample.new_ones(point_indices.numel(), 1),
-                ), dim=-1)
-                history_points = torch.linalg.solve(
-                    history_to_current, homogeneous.transpose(0, 1)
-                ).transpose(0, 1)
-                vehicle_points = torch.cat((
-                    history_points[:, :3] @ ground_to_vehicle.transpose(0, 1),
-                    history_points[:, 3:],
-                ), dim=-1)
-                projected = vehicle_points @ lidar_to_image.transpose(0, 1)
-                depth = projected[:, 2]
-                normalized_image = images[batch_index, time_index, 0]
-                height, width = normalized_image.shape[-2:]
-                grid = torch.stack((
-                    projected[:, 0] / depth.clamp_min(1e-5)
-                    / max(width - 1, 1) * 2 - 1,
-                    projected[:, 1] / depth.clamp_min(1e-5)
-                    / max(height - 1, 1) * 2 - 1,
-                ), dim=-1)
-                valid = (
-                    (depth > 1e-5)
-                    & (grid[:, 0].abs() <= 1)
-                    & (grid[:, 1].abs() <= 1))
-                sampled = F.grid_sample(
-                    normalized_image.unsqueeze(0), grid.view(1, 1, -1, 2),
-                    align_corners=True).view(PAINTED_RGB_CHANNELS, -1).T
-                rgb[point_indices] = torch.where(
-                    valid.unsqueeze(-1), sampled, torch.zeros_like(sampled))
-            fields = ((lidar_features, rgb, queue)
-                      if self.has_queue_index else (lidar_features, rgb))
-            painted_batch.append(torch.cat(fields, dim=-1))
-        return painted_batch
 
     def _pillar_statistics(
             self, points, inverse, pillar_count, count, denominator):

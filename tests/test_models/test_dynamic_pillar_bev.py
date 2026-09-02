@@ -3,6 +3,7 @@ import pytest
 
 from LaneLoom.models.backbones.dynamic_pillar_bev import (
     DynamicPillarBEVEncoder,
+    RGBPointPainter,
 )
 
 
@@ -21,6 +22,19 @@ def _encoder(use_rgb_pointpainting=True, temporal_sampling_distance=(1,),
     )
     encoder.eval()
     return encoder
+
+
+def test_rgb_point_painter_adapter_preserves_openlane_field_layout():
+    painter = RGBPointPainter(point_features=[
+        'x', 'y', 'z', 'intensity', 'elongation', 'queue_index'])
+    points = [torch.tensor([[1., 2., 3., 4., 5., 6.]])]
+
+    painted = painter(points)
+
+    assert len(painted) == 1
+    assert torch.equal(
+        painted[0],
+        torch.tensor([[1., 2., 3., 4., 5., 0., 0., 0., 6.]]))
 
 
 def test_dynamic_pillar_uses_native_once_point_features():

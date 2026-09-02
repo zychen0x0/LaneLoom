@@ -130,6 +130,71 @@ def test_ms2one_ablation_is_isolated_from_the_main_config():
     assert cfg.model.img_ms2one.dilations == (1, 2, 5)
 
 
+def test_dynamic_pillar_control_matches_quick_ablation_protocol():
+    config_path = (
+        Path(__file__).resolve().parents[2]
+        / 'configs/ablations/laneloom_openlane_image_lidar_dp.py')
+    cfg = Config.fromfile(config_path)
+
+    assert cfg.work_dir == './work_dirs/laneloom_openlane_image_lidar_dp'
+    assert cfg.temporal_sampling_distance is False
+    assert cfg.load_interval == 5
+    assert cfg.total_epochs == 24
+    assert cfg.train_cfg.max_epochs == 24
+    assert cfg.train_dataloader.batch_size == 4
+    assert cfg.val_dataloader.batch_size == 4
+    assert cfg.model.pts_bev_encoder.type == 'DynamicPillarBEVEncoder'
+    assert cfg.model.pts_bev_encoder.pillar_size == [0.09765625, 0.09765625]
+
+
+def test_second_ablation_uses_painted_official_voxel_stack():
+    config_path = (
+        Path(__file__).resolve().parents[2]
+        / 'configs/ablations/laneloom_openlane_image_lidar_se.py')
+    cfg = Config.fromfile(config_path)
+
+    assert cfg.work_dir == './work_dirs/laneloom_openlane_image_lidar_se'
+    assert cfg.temporal_sampling_distance is False
+    assert cfg.load_interval == 5
+    assert cfg.total_epochs == 24
+    assert cfg.train_cfg.max_epochs == 24
+    assert cfg.train_dataloader.batch_size == 4
+    assert cfg.model.pts_bev_encoder is None
+    assert cfg.model.pts_point_painter.type == 'RGBPointPainter'
+    assert cfg.model.pts_point_painter.use_rgb_pointpainting is True
+    assert cfg.model.pts_voxel_encoder.type == 'HardSimpleVFE'
+    assert cfg.model.pts_middle_encoder.type == 'SparseEncoder'
+    assert cfg.model.pts_middle_encoder.sparse_shape == [51, 1024, 512]
+    assert cfg.model.pts_backbone.type == 'SECOND'
+    assert cfg.model.pts_neck.type == 'SECONDFPN'
+    assert cfg.model.pts_input_dim == 9
+    assert cfg.model.lane_head.anchor_prior.lidar_in_channels == 384
+
+
+def test_pointpillars_ablation_uses_painted_official_pillar_stack():
+    config_path = (
+        Path(__file__).resolve().parents[2]
+        / 'configs/ablations/laneloom_openlane_image_lidar_pp.py')
+    cfg = Config.fromfile(config_path)
+
+    assert cfg.work_dir == './work_dirs/laneloom_openlane_image_lidar_pp'
+    assert cfg.temporal_sampling_distance is False
+    assert cfg.load_interval == 5
+    assert cfg.total_epochs == 24
+    assert cfg.train_cfg.max_epochs == 24
+    assert cfg.train_dataloader.batch_size == 4
+    assert cfg.model.pts_bev_encoder is None
+    assert cfg.model.pts_point_painter.type == 'RGBPointPainter'
+    assert cfg.model.pts_point_painter.use_rgb_pointpainting is True
+    assert cfg.model.pts_voxel_encoder.type == 'PillarFeatureNet'
+    assert cfg.model.pts_middle_encoder.type == 'PointPillarsScatter'
+    assert cfg.model.pts_middle_encoder.output_shape == [1024, 512]
+    assert cfg.model.pts_backbone.type == 'SECOND'
+    assert cfg.model.pts_neck.type == 'SECONDFPN'
+    assert cfg.model.pts_input_dim == 9
+    assert cfg.model.lane_head.anchor_prior.lidar_in_channels == 384
+
+
 def test_config_uses_named_augmentation_recipes_for_training_only():
     config_path = Path(__file__).resolve().parents[2] / 'configs/main/laneloom_openlane_image_lidar_Temporal.py'
     cfg = Config.fromfile(config_path)
