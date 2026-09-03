@@ -321,6 +321,9 @@ class LaneLoss(LaneLossBase):
                  diagnostic_geometry_match_ratio=.8,
                  tube_loss_weight=.5, tube_radius=.5,
                  tube_z_weight=1., tube_epsilon=1e-6,
+                 visibility_loss_type='smooth_l1',
+                 visibility_start_loss_weight=0.,
+                 visibility_end_loss_weight=0.,
                  **kwargs):
         if assigner is None:
             assigner = dict(type='HungarianAssigner')
@@ -345,14 +348,25 @@ class LaneLoss(LaneLossBase):
         self.tube_radius = float(tube_radius)
         self.tube_z_weight = float(tube_z_weight)
         self.tube_epsilon = float(tube_epsilon)
+        self.visibility_loss_type = str(visibility_loss_type)
+        self.visibility_start_loss_weight = float(
+            visibility_start_loss_weight)
+        self.visibility_end_loss_weight = float(
+            visibility_end_loss_weight)
         if min(
                 self.score_loss_weight,
                 self.category_loss_weight,
                 self.negative_objectness_weight,
                 self.ambiguous_negative_weight,
                 self.auxiliary_ambiguous_negative_weight,
-                self.tube_loss_weight) < 0:
+                self.tube_loss_weight,
+                self.visibility_start_loss_weight,
+                self.visibility_end_loss_weight) < 0:
             raise ValueError('Lane loss weights must be non-negative.')
+        if self.visibility_loss_type not in ('smooth_l1', 'balanced_bce'):
+            raise ValueError(
+                'visibility_loss_type must be "smooth_l1" or '
+                '"balanced_bce".')
         if self.tube_radius <= 0:
             raise ValueError('tube_radius must be positive.')
         if self.tube_z_weight < 0:
@@ -533,12 +547,73 @@ class LaneLoss(LaneLossBase):
                     pred_z[batch_idx, positive_queries], target_z,
                     beta=self.smooth_l1_beta, reduction='none')
                 * visible).sum()
-            total_visibility = total_visibility + F.smooth_l1_loss(
-                pred_visibility[batch_idx, positive_queries].sigmoid(),
-                visible, beta=self.smooth_l1_beta, reduction='sum')
+            positive_visibility = pred_visibility[
+                batch_idx, positive_queries]
+            if self.visibility_loss_type == 'balanced_bce':
+                per_anchor = F.binary_cross_entropy_with_logits(
+                    positive_visibility, visible, reduction='none')
+                visible_mask = visible > .5
+                invisible_mask = ~visible_mask
+                visible_count = visible_mask.sum(dim=-1).clamp_min(1)
+                invisible_count = invisible_mask.sum(dim=-1).clamp_min(1)
+                visible_loss = (
+                    (per_anchor * visible_mask).sum(dim=-1)
+                    / visible_count)
+                invisible_loss = (
+                    (per_anchor * invisible_mask).sum(dim=-1)
+                    / invisible_count)
+                group_count = (
+                    visible_mask.any(dim=-1).to(per_anchor.dtype)
+                    + invisible_mask.any(dim=-1).to(per_anchor.dtype)
+                ).clamp_min(1)
+                total_visibility = total_visibility + (
+                    (visible_loss + invisible_loss) / group_count).sum()
+
+                if (self.visibility_start_loss_weight > 0
+                        or self.visibility_end_loss_weight > 0):
+                    num_anchors = positive_visibility.size(-1)
+                    anchor_indices = torch.arange(
+                        num_anchors, dtype=pred_x.dtype,
+                        device=pred_x.device).unsqueeze(0)
+                    gt_start = torch.where(
+                        visible_mask, anchor_indices,
+                        anchor_indices.new_full((), num_anchors)
+                    ).min(dim=-1).values - .5
+                    gt_end = torch.where(
+                        visible_mask, anchor_indices,
+                        anchor_indices.new_full((), -1)
+                    ).max(dim=-1).values + .5
+                    boundary_scale = max(num_anchors - 1, 1)
+                    boundary_beta = 1. / boundary_scale
+                    if self.visibility_start_loss_weight > 0:
+                        total_visibility = total_visibility + (
+                            F.smooth_l1_loss(
+                                predictions['pred_vis_start'][
+                                    batch_idx, positive_queries]
+                                / boundary_scale,
+                                gt_start / boundary_scale,
+                                beta=boundary_beta, reduction='sum')
+                            * self.visibility_start_loss_weight)
+                    if self.visibility_end_loss_weight > 0:
+                        total_visibility = total_visibility + (
+                            F.smooth_l1_loss(
+                                predictions['pred_vis_end'][
+                                    batch_idx, positive_queries]
+                                / boundary_scale,
+                                gt_end / boundary_scale,
+                                beta=boundary_beta, reduction='sum')
+                            * self.visibility_end_loss_weight)
+            else:
+                total_visibility = total_visibility + F.smooth_l1_loss(
+                    positive_visibility.sigmoid(), visible,
+                    beta=self.smooth_l1_beta, reduction='sum')
 
         batch_size = max(pred_x.size(0), 1)
-        visibility_count = max(positive_count * pred_x.size(-1), 1)
+        visibility_count = max(
+            positive_count * (
+                pred_x.size(-1)
+                if self.visibility_loss_type == 'smooth_l1' else 1),
+            1)
         return dict(
             loss_score=(
                 total_score / batch_size * self.score_loss_weight),
