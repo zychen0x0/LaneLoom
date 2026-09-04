@@ -27,6 +27,15 @@ from mmengine.runner import load_checkpoint
 from PIL import Image, ImageDraw
 
 
+matplotlib.rcParams.update(
+    {
+        "font.family": "sans-serif",
+        "font.sans-serif": ["Arial", "Helvetica", "DejaVu Sans", "sans-serif"],
+        "svg.fonttype": "none",
+    }
+)
+
+
 REPO_ROOT = Path(__file__).resolve().parents[2]
 WORKSPACE_ROOT = REPO_ROOT.parent
 if str(WORKSPACE_ROOT) not in sys.path:
@@ -53,7 +62,7 @@ DEFAULT_CHECKPOINT = (
     / "exp_date_20260720_220252/checkpoints"
     / "epoch_24.pth"
 )
-DEFAULT_OUTPUT_DIR = Path(__file__).resolve().parent / "vis_output"
+DEFAULT_OUTPUT_ROOT = Path(__file__).resolve().parent
 LANE_COLORS = (
     "#00ff66",
     "#00d9ff",
@@ -64,6 +73,8 @@ LANE_COLORS = (
     "#4d79ff",
     "#ffffff",
 )
+PAPER_DPI = 600
+PAPER_PAD_INCHES = 0.2
 
 
 @dataclass(frozen=True)
@@ -79,13 +90,32 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--image", type=Path, default=DEFAULT_IMAGE)
     parser.add_argument("--config", type=Path, default=DEFAULT_CONFIG)
     parser.add_argument("--checkpoint", type=Path, default=DEFAULT_CHECKPOINT)
-    parser.add_argument("--output-dir", type=Path, default=DEFAULT_OUTPUT_DIR)
+    output_group = parser.add_mutually_exclusive_group()
+    output_group.add_argument(
+        "--output-root",
+        type=Path,
+        default=DEFAULT_OUTPUT_ROOT,
+        help=(
+            "Output root; files are grouped below "
+            "<root>/openlane/<scene>/<frame>."
+        ),
+    )
+    output_group.add_argument(
+        "--output-dir",
+        type=Path,
+        help="Exact output directory (kept for compatibility with older commands).",
+    )
     parser.add_argument(
         "--device",
         default="cuda:0" if torch.cuda.is_available() else "cpu",
         help="PyTorch device, for example cuda:0 or cpu.",
     )
     return parser.parse_args()
+
+
+def _sample_output_dir(image_path: Path, output_root: Path) -> Path:
+    """Return the standard output directory for one OpenLane sample."""
+    return output_root / "openlane" / image_path.parent.name / image_path.stem
 
 
 def _split_and_label_path(image_path: Path, cfg: Config) -> tuple[str, Path]:
@@ -400,8 +430,15 @@ def _style_axis(axis) -> None:
     axis.tick_params(labelsize=9)
 
 
+def _save_paper_figure(figure, output_path: Path) -> None:
+    """Save a high-resolution PNG and an editable SVG."""
+    save_options = {"bbox_inches": "tight", "pad_inches": PAPER_PAD_INCHES}
+    figure.savefig(output_path, dpi=PAPER_DPI, **save_options)
+    figure.savefig(output_path.with_suffix(".svg"), **save_options)
+
+
 def _save_bev(lanes: list[LanePrediction], output_path: Path) -> None:
-    figure, axis = plt.subplots(figsize=(6, 10), dpi=150)
+    figure, axis = plt.subplots(figsize=(6, 10))
     for lane_index, lane in enumerate(lanes):
         xyz = lane.xyz
         axis.plot(
@@ -417,12 +454,12 @@ def _save_bev(lanes: list[LanePrediction], output_path: Path) -> None:
     axis.set_ylabel("y / m")
     _style_axis(axis)
     figure.tight_layout()
-    figure.savefig(output_path, bbox_inches="tight")
+    _save_paper_figure(figure, output_path)
     plt.close(figure)
 
 
 def _save_3d(lanes: list[LanePrediction], output_path: Path) -> None:
-    figure = plt.figure(figsize=(9, 7), dpi=150)
+    figure = plt.figure(figsize=(9, 7))
     axis = figure.add_subplot(111, projection="3d")
     for lane_index, lane in enumerate(lanes):
         xyz = lane.xyz
@@ -438,11 +475,11 @@ def _save_3d(lanes: list[LanePrediction], output_path: Path) -> None:
     axis.set_zlim(-5, 5)
     axis.set_xlabel("x / m")
     axis.set_ylabel("y / m")
-    axis.set_zlabel("z / m")
+    axis.set_zlabel("z / m", labelpad=-2)
     axis.view_init(elev=22, azim=-58)
     _style_axis(axis)
     figure.tight_layout()
-    figure.savefig(output_path, bbox_inches="tight")
+    _save_paper_figure(figure, output_path)
     plt.close(figure)
 
 
@@ -462,7 +499,11 @@ def main() -> None:
     predictions = _run_inference(model, batch, device)
     lanes = _visible_lanes(predictions)
 
-    output_dir = args.output_dir.resolve()
+    output_dir = (
+        args.output_dir.resolve()
+        if args.output_dir is not None
+        else _sample_output_dir(image_path, args.output_root.resolve())
+    )
     output_dir.mkdir(parents=True, exist_ok=True)
     original_path = output_dir / "01_original.jpg"
     overlay_path = output_dir / "02_lane_overlay.jpg"
@@ -479,7 +520,14 @@ def main() -> None:
     print(f"checkpoint: {checkpoint}")
     print(f"score threshold: {model.lane_head.score_threshold}")
     print(f"detected lanes: {len(lanes)}")
-    for path in (original_path, overlay_path, bev_path, view_3d_path):
+    for path in (
+        original_path,
+        overlay_path,
+        bev_path,
+        bev_path.with_suffix(".svg"),
+        view_3d_path,
+        view_3d_path.with_suffix(".svg"),
+    ):
         print(f"saved: {path}")
 
 

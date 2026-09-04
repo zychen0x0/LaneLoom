@@ -40,6 +40,7 @@ Thumbs.db
 work_dirs/
 outputs/
 output/
+!vis/output/
 results/
 checkpoints/
 logs/
