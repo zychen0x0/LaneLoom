@@ -1,6 +1,5 @@
 import json
 import os
-import random
 from pathlib import Path
 
 import numpy as np
@@ -77,6 +76,22 @@ def _with_test_coarse_dropout(pipeline):
                 p=1.0),
         ]))
     return pipeline
+
+
+def _without_image_augmentation(dataset_cfg):
+    """Return a visualization config using original, normalized images."""
+    dataset_cfg = dict(dataset_cfg)
+    dataset_cfg['dataset_cfg'] = dict(dataset_cfg['dataset_cfg'])
+    train_pipeline = []
+    for stage in dataset_cfg['dataset_cfg']['train_pipeline']:
+        stage = dict(stage)
+        if stage['type'] == 'LoadTemporalOpenLaneImages':
+            stage['image_augmentation_mode'] = 'none'
+            stage['image_augmentation_recipes'] = []
+        if stage['type'] not in ('Albu', 'GridMask'):
+            train_pipeline.append(stage)
+    dataset_cfg['dataset_cfg']['train_pipeline'] = train_pipeline
+    return dataset_cfg
 
 
 def _as_rows(points):
@@ -413,208 +428,6 @@ def test_named_recipes_seed_syncs_temporal_queue_augmentation():
         and seed == augmentation_recipe_seeds[view_index]
         for view_index, (transform, seed) in enumerate(applied, start=1)
     )
-
-
-# ---------------------------------------------------network input visualization start---------------------------------------------------
-def _make_tensor_img_canvas(tensor: torch.Tensor,
-                            denorm=True,
-                            row_labels=None,
-                            col_labels=None):
-    """Build one PIL canvas from network input image tensor.
-
-    Supported shapes:
-        [T, V, 3, H, W]    one dataset sample
-        [1, T, V, 3, H, W] one dataloader batch with batch_size=1
-    """
-    if tensor.ndim == 6:
-        assert tensor.shape[0] == 1
-        tensor = tensor[0]
-    assert tensor.ndim == 5
-    assert tensor.shape[2] == 3
-    if denorm:
-        assert torch.min(tensor) < 0
-
-    mean = np.array([123.675, 116.28, 103.53], dtype=np.float32)
-    std = np.array([58.395, 57.12, 57.375], dtype=np.float32)
-    numpy_array = tensor.detach().permute(0, 1, 3, 4, 2).cpu().numpy()
-    time_steps, view_num, height, width, _ = numpy_array.shape
-    if denorm:
-        numpy_array = numpy_array * std[None, None, None, None, :] + mean[None, None, None, None, :]
-    numpy_array = np.clip(numpy_array, 0, 255).astype('uint8')
-
-    canvas = Image.new('RGB', (width * view_num, height * time_steps), (255, 255, 255))
-    draw = ImageDraw.Draw(canvas)
-    for time_idx in range(time_steps):
-        for view_idx in range(view_num):
-            current_image = Image.fromarray(numpy_array[time_idx, view_idx])
-            x0 = view_idx * width
-            y0 = time_idx * height
-            canvas.paste(current_image, (x0, y0))
-            if row_labels is not None or col_labels is not None:
-                row_name = row_labels[time_idx] if row_labels else f't{time_idx}'
-                col_name = col_labels[view_idx] if col_labels else f'view{view_idx}'
-                draw.text((x0 + 8, y0 + 8), f'{row_name} {col_name}', fill=(255, 0, 0))
-    return canvas
-
-
-def show_tensor_img(tensor: torch.Tensor,
-                    denorm=True,
-                    save_path=None,
-                    show=False,
-                    row_labels=None,
-                    col_labels=None):
-    canvas = _make_tensor_img_canvas(
-        tensor,
-        denorm=denorm,
-        row_labels=row_labels,
-        col_labels=col_labels)
-    if save_path is not None:
-        save_path = Path(save_path)
-        save_path.parent.mkdir(parents=True, exist_ok=True)
-        canvas.save(save_path)
-    if show:
-        canvas.show()
-    return canvas
-
-
-def _make_labeled_image_grid(panels, columns=3):
-    rows = (len(panels) + columns - 1) // columns
-    panel_width, panel_height = panels[0][1].size
-    canvas = Image.new(
-        'RGB',
-        (columns * panel_width, rows * panel_height),
-        (255, 255, 255))
-    draw = ImageDraw.Draw(canvas)
-    for panel_index, (name, panel) in enumerate(panels):
-        assert panel.size == (panel_width, panel_height)
-        x0 = panel_index % columns * panel_width
-        y0 = panel_index // columns * panel_height
-        canvas.paste(panel, (x0, y0))
-        draw.rectangle((x0, y0, x0 + panel_width, y0 + 30), fill=(8, 8, 10))
-        draw.text((x0 + 8, y0 + 7), name, fill=(245, 245, 245))
-    return canvas
-
-
-def _load_resized_originals_as_normalized_tensor(sample):
-    """Load the unaugmented resized queue in the network tensor convention."""
-    tensors = []
-    for frame_idx in range(sample['img'].shape[0]):
-        frame_meta = sample['img_metas']['queue'][frame_idx]
-        height, width = frame_meta['img_shape'][:2]
-        image = Image.open(frame_meta['img_filename'][0]).convert('RGB')
-        image = image.resize((width, height), Image.BILINEAR)
-        array = np.asarray(image, dtype=np.float32).copy().transpose(2, 0, 1)
-        norm_cfg = frame_meta['img_norm_cfg']
-        mean = np.asarray(norm_cfg['mean'], dtype=np.float32).reshape(3, 1, 1)
-        std = np.asarray(norm_cfg['std'], dtype=np.float32).reshape(3, 1, 1)
-        tensors.append(torch.from_numpy((array - mean) / std))
-    return torch.stack(tensors, dim=0).unsqueeze(1)
-
-
-def _network_input_report(cfg, sample):
-    grid_cfg = next((
-        dict(stage) for stage in cfg.train_pipeline
-        if stage['type'] == 'GridMask'
-    ), None)
-    zero_mask = torch.all(sample['img'] == 0, dim=2)
-    flattened_masks = zero_mask.reshape(-1, *zero_mask.shape[-2:])
-    masks_are_shared = all(
-        torch.equal(flattened_masks[0], mask)
-        for mask in flattened_masks[1:])
-    augmentation_mode = sample['img_metas']['image_augmentation_mode']
-    recipe_names = sample['img_metas']['augmentation_recipe_names']
-    recipe_cfgs = {
-        recipe_cfg['name']: recipe_cfg
-        for recipe_cfg in cfg.image_augmentation_recipes
-    }
-    single_view_frequency = (
-        {
-            name: 1.0 / len(recipe_cfgs)
-            for name in recipe_cfgs
-        }
-        if augmentation_mode == 'named_recipes'
-        and sample['img'].shape[1] == 1
-        and recipe_cfgs
-        else None
-    )
-    grid_report = {'enabled': False}
-    if grid_cfg is not None:
-        ratio = float(grid_cfg['ratio'])
-        mode = int(grid_cfg['mode'])
-        stripe_union = 1.0 - (1.0 - ratio) ** 2
-        expected_masked_fraction = (
-            stripe_union if mode == 0 else 1.0 - stripe_union)
-        grid_report = {
-            'enabled': True,
-            'ratio': ratio,
-            'prob': float(grid_cfg['prob']),
-            'mode': mode,
-            'triggered_for_this_sample': bool(zero_mask.any()),
-            'expected_masked_fraction_when_triggered': expected_masked_fraction,
-            'measured_zero_fraction': float(zero_mask.float().mean()),
-            'shared_across_all_temporal_frames_and_views': masks_are_shared,
-            'masked_network_value': 0.0,
-        }
-    visualization_note = (
-        'Saved previews only undo normalization for display. Grid-masked '
-        'network zeros therefore appear as the normalization mean color '
-        'RGB [123.675, 116.28, 103.53], while the model receives zeros.'
-        if grid_cfg is not None else
-        'The preview shows the one named augmentation selected for this '
-        'sample. Its recipe and random parameters are shared by all temporal '
-        'frames; different named recipes are not stacked.'
-    )
-
-    return {
-        'configured_pipeline': [stage['type'] for stage in cfg.train_pipeline],
-        'effective_image_pipeline': [
-            'LoadTemporalOpenLaneImages',
-            'ResizeOpenLaneImages',
-            *([
-                f'NamedRecipe[{name}]'
-                for name in recipe_names
-            ] if augmentation_mode == 'named_recipes' else []),
-            'NormalizeOpenLaneImages',
-            *(['GridMask'] if grid_cfg is not None else []),
-        ],
-        'image_augmentation_mode': augmentation_mode,
-        'selected_augmentation_recipes': recipe_names,
-        'selected_recipe_transforms': {
-            name: [
-                transform['type']
-                for transform in recipe_cfgs[name]['transforms']
-            ]
-            for name in recipe_names
-            if name in recipe_cfgs
-        },
-        'single_view_selection_frequency': single_view_frequency,
-        'shared_across_temporal_frames': True,
-        'different_named_augmentations_stacked': False,
-        'grid_mask': grid_report,
-        'network_tensor': {
-            'shape': list(sample['img'].shape),
-            'dtype': str(sample['img'].dtype),
-            'min': float(sample['img'].min()),
-            'max': float(sample['img'].max()),
-        },
-        'visualization_note': visualization_note,
-    }
-
-
-def _without_image_augmentation(dataset_cfg):
-    """Return a visualization config using original, normalized images."""
-    dataset_cfg = dict(dataset_cfg)
-    dataset_cfg['dataset_cfg'] = dict(dataset_cfg['dataset_cfg'])
-    train_pipeline = []
-    for stage in dataset_cfg['dataset_cfg']['train_pipeline']:
-        stage = dict(stage)
-        if stage['type'] == 'LoadTemporalOpenLaneImages':
-            stage['image_augmentation_mode'] = 'none'
-            stage['image_augmentation_recipes'] = []
-        if stage['type'] not in ('Albu', 'GridMask'):
-            train_pipeline.append(stage)
-    dataset_cfg['dataset_cfg']['train_pipeline'] = train_pipeline
-    return dataset_cfg
 
 
 def _select_visualization_sample(dataset, image_path=None):
@@ -1028,149 +841,33 @@ def _audit_one_gt_sample(dataset, cfg, image_path):
     os.getenv('LANELOOM_VIS_INPUT') != '1',
     reason='Set LANELOOM_VIS_INPUT=1 to save one OpenLane network-input preview.')
 def test_visualize_one_openlane_network_input_sample():
-    cfg = _load_cfg()
-    _require_openlane_data(cfg)
+    from vis.data_aug.visualize_network_input import visualize_network_input
 
-    dataset_cfg = dict(cfg.train_dataloader['dataset'])
-    image_path = os.getenv('LANELOOM_VIS_IMAGE_PATH')
-    if image_path is None:
-        dataset_cfg['max_samples'] = 128
-    else:
-        dataset_cfg['dataset_cfg'] = dict(dataset_cfg['dataset_cfg'])
-        dataset_cfg['dataset_cfg']['load_interval'] = 1
-    dataset = DATASETS.build(dataset_cfg)
+    report = visualize_network_input(
+        os.getenv('LANELOOM_VIS_IMAGE_PATH'),
+        show=os.getenv('LANELOOM_SHOW_INPUT') == '1',
+        network_output=os.getenv('LANELOOM_VIS_OUTPUT'),
+        comparison_output=os.getenv('LANELOOM_VIS_PIPELINE_OUTPUT'))
 
-    sample, sample_index = _select_visualization_sample(dataset, image_path=image_path)
-    network_input = sample['img']
-
-    resized_originals = _load_resized_originals_as_normalized_tensor(sample)
-    output_path = Path(os.getenv(
-        'LANELOOM_VIS_OUTPUT',
-        'tests/test_data/test_pipelines/show_load_img/'
-        'openlane_network_input_sample.jpg'))
-    canvas = show_tensor_img(
-        network_input,
-        denorm=True,
-        save_path=output_path,
-        show=os.getenv('LANELOOM_SHOW_INPUT') == '1')
-    comparison_tensor = torch.cat((resized_originals, network_input), dim=1)
-    comparison_path = Path(os.getenv(
-        'LANELOOM_VIS_PIPELINE_OUTPUT',
-        'tests/test_data/test_pipelines/show_load_img/'
-        'openlane_resized_vs_network_input.jpg'))
-    recipe_names = sample['img_metas']['augmentation_recipe_names']
-    if len(recipe_names) != sample['img'].shape[1]:
-        recipe_names = [
-            f'{sample["img_metas"]["image_augmentation_mode"]} view{view_idx}'
-            for view_idx in range(sample['img'].shape[1])
-        ]
-    comparison_canvas = show_tensor_img(
-        comparison_tensor,
-        denorm=True,
-        save_path=comparison_path,
-        row_labels=sample['img_metas']['frame_keys'],
-        col_labels=[
-            'resized original',
-            *[
-                f'network input {name}'
-                for name in recipe_names
-            ],
-        ])
-    report = _network_input_report(cfg, sample)
-    report['output_paths'] = {
-        'network_input': str(output_path),
-        'resized_vs_network_input': str(comparison_path),
-    }
-    print('\nOpenLane network-input augmentation report:')
-    print(json.dumps(report, indent=2, ensure_ascii=False))
-
-    assert output_path.is_file()
-    assert comparison_path.is_file()
-    assert sample_index >= 0
-    assert canvas.size[0] > 0 and canvas.size[1] > 0
-    assert comparison_canvas.size[0] > canvas.size[0]
+    assert Path(report['outputs']['network_input']).is_file()
+    assert Path(report['outputs']['resized_vs_network_input']).is_file()
 
 
 @pytest.mark.skipif(
     os.getenv('LANELOOM_VIS_NAMED_RECIPES') != '1',
     reason='Set LANELOOM_VIS_NAMED_RECIPES=1 to compare named recipes.')
 def test_visualize_openlane_named_recipes():
-    """Apply each configured multi-view recipe to the same resized image."""
-    cfg = _load_cfg()
-    _require_openlane_data(cfg)
+    from vis.data_aug.visualize_named_recipes import visualize_named_recipes
+
     image_path = os.getenv('LANELOOM_VIS_IMAGE_PATH')
     if image_path is None:
         raise ValueError(
             'LANELOOM_VIS_IMAGE_PATH must point to the source image.')
-
-    image_path = Path(image_path).expanduser().resolve()
-    if not image_path.is_file():
-        raise FileNotFoundError(f'Cannot find visualization image: {image_path}')
-
-    dataset_cfg = dict(cfg.train_dataloader['dataset'])
-    dataset_cfg['max_samples'] = 1
-    dataset_cfg['dataset_cfg'] = dict(dataset_cfg['dataset_cfg'])
-    dataset_cfg['dataset_cfg'].update(
-        num_views=len(cfg.image_augmentation_recipes),
-        image_augmentation_mode='named_recipes',
-        image_augmentation_recipes=cfg.image_augmentation_recipes,
-    )
-    dataset = DATASETS.build(dataset_cfg)
-    base_seed = 20260726
-    augmentation_recipe_seeds = [
-        base_seed + view_index
-        for view_index in range(dataset.num_views)
-    ]
-    view_tensors, _ = dataset._load_image_views(
+    report = visualize_named_recipes(
         image_path,
-        augmentation_recipe_seeds=augmentation_recipe_seeds)
+        output=os.getenv('LANELOOM_VIS_NAMED_RECIPES_OUTPUT'))
 
-    mean = np.asarray(cfg.img_norm_cfg['mean'], dtype=np.float32)
-    std = np.asarray(cfg.img_norm_cfg['std'], dtype=np.float32)
-    view_arrays = view_tensors.permute(0, 2, 3, 1).cpu().numpy()
-    view_arrays = np.clip(
-        view_arrays * std[None, None, None, :]
-        + mean[None, None, None, :],
-        0,
-        255,
-    ).astype(np.uint8)
-    panels = [
-        (name, Image.fromarray(view_arrays[view_index]))
-        for view_index, name in enumerate(dataset.augmentation_recipe_names)
-    ]
-    canvas = _make_labeled_image_grid(panels)
-
-    output_path = Path(os.getenv(
-        'LANELOOM_VIS_NAMED_RECIPES_OUTPUT',
-        'tests/test_data/test_pipelines/show_load_img/'
-        'openlane_named_recipes.jpg'))
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-    canvas.save(output_path, quality=95)
-
-    print('\nOpenLane named-recipe visualization:')
-    print(json.dumps({
-        'source_image': str(image_path),
-        'image_augmentation_mode': 'named_recipes',
-        'augmentation_recipe_seeds': augmentation_recipe_seeds,
-        'recipes': {
-            recipe_cfg['name']: [
-                transform_cfg['type']
-                for transform_cfg in recipe_cfg['transforms']
-            ]
-            for recipe_cfg in cfg.image_augmentation_recipes
-        },
-        'output_path': str(output_path),
-    }, indent=2, ensure_ascii=False))
-
-    assert view_tensors.shape[0] == len(cfg.image_augmentation_recipes)
-    assert dataset.augmentation_recipe_names == [
-        recipe_cfg['name'] for recipe_cfg in cfg.image_augmentation_recipes
-    ]
-    assert output_path.is_file()
-    assert canvas.size == (
-        3 * dataset.resize_w,
-        ((len(panels) + 2) // 3) * dataset.resize_h,
-    )
+    assert Path(report['outputs']['named_recipes']).is_file()
 
 
 @pytest.mark.skipif(
@@ -1736,4 +1433,3 @@ def test_visualize_beneficial_openlane_bezier_refit():
         record['ground'][:, (0, 2)],
         basis(record['ground'][:, 1]) @ second_controls,
         atol=1e-4)
-# ----------------------------------------------------network input visualization end----------------------------------------------------

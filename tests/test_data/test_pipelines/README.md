@@ -1,62 +1,9 @@
 # OpenLane Pipeline Tests
 
-
-## 当前单 view 命名增强网络输入
-
-```bash
-cd /workspace/LaneLoom
-
-SAMPLE=/workspace/LaneLoom/data/openlane/images/training/segment-16625429321676352815_1543_860_1563_860_with_camera_labels/150809235044180100.jpg
-
-PYTHONPATH=/workspace \
-LANELOOM_VIS_INPUT=1 \
-LANELOOM_VIS_IMAGE_PATH="$SAMPLE" \
-python -m pytest \
-tests/test_data/test_pipelines/test_openlane_pipeline.py::test_visualize_one_openlane_network_input_sample \
--q -s
-```
-
-当前训练配置从 `original`、`brightness`、`fog`、`blur`、`occlusion`、
-`random` 中均匀选择一个，单项频率均为 `1/6 ≈ 16.67%`。同一样本的三帧
-共用所选方案及随机参数，不会叠加不同的命名方案。
-
-当选中 `random` 时，第一个 `OneOf` 必定从两种 ColorTint 和 HSV 中选择
-一种，各占全部训练样本约 `1/18 ≈ 5.56%`。第二个 `OneOf(p=0.65)` 再以
-65% 概率从压缩、噪声和 ToneCurve 中选择一种，各占全部样本约 `3.61%`；
-剩余约 `5.83%` 的全部样本只执行 `random` 的第一项颜色增强。
-
-`openlane_resized_vs_network_input.jpg` 对比左侧三帧 resize 原图与右侧三帧
-所选命名增强网络输入；`openlane_network_input_sample.jpg` 保存同一组三帧
-增强结果。命令输出的 JSON 会显示本次选择的方案和全部方案的理论频率。
-
-## named_recipes 六视图效果对比
-
-下面的测试将同一张图片分别应用到当前配置的 `original`、`brightness`、
-`fog`、`blur`、`occlusion` 和 `random` 六个 view，输出 3 列 × 2 行对比图。
-测试临时将 `num_views` 调整为 6；训练配置已经使用
-`image_augmentation_mode='named_recipes'`。
-
-```bash
-cd /workspace/LaneLoom
-
-SAMPLE=/workspace/LaneLoom/data/openlane/images/training/segment-16534202648288984983_900_000_920_000_with_camera_labels/155934387138996700.jpg
-
-PYTHONPATH=/workspace \
-LANELOOM_VIS_NAMED_RECIPES=1 \
-LANELOOM_VIS_IMAGE_PATH="$SAMPLE" \
-python -m pytest \
-tests/test_data/test_pipelines/test_openlane_pipeline.py::test_visualize_openlane_named_recipes \
--q -s
-```
-
-默认输出路径是
-`tests/test_data/test_pipelines/show_load_img/openlane_named_recipes.jpg`。
-每个 view 使用固定随机种子，因此随机参数和 `OneOf` 的选择可以稳定复现。
-
-每个外层配置对应一个 view。同一 view 的 `transforms` 会按顺序执行，例如
-`fog` 会依次叠加雾和亮度/对比度调整，`blur` 会依次叠加雨和高斯模糊。
-`random` 中第一个 `OneOf(p=1.0)` 必定选择一种颜色增强，第二个
-`OneOf(p=0.65)` 有 65% 概率再选择压缩、噪声或 ToneCurve 中的一种。
+数据增强的两个手动可视化入口已移动到 `vis/data_aug`，使用方法和按
+dataset/scene/sample 组织的输出结构见
+[`vis/data_aug/README.md`](../../../vis/data_aug/README.md)。这里保留的同名 pytest
+节点只是旧命令的兼容入口；新使用方式请直接运行 `vis/data_aug` 下的脚本。
 
 
 
