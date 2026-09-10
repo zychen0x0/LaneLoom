@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
+import json
 import shutil
 import tarfile
 from pathlib import Path, PurePosixPath
@@ -56,27 +58,109 @@ def _safe_relative(name):
     return Path(*relative.parts)
 
 
-def _extract_zip(zip_path, destination, overwrite=False):
+def _extract_zip(zip_path, destination, overwrite=False, min_free_bytes=0):
     print(f'Extracting labels: {zip_path}')
+    destination.mkdir(parents=True, exist_ok=True)
     with ZipFile(zip_path) as archive:
         for info in archive.infolist():
             if info.is_dir() or '/.nfs' in f'/{info.filename}':
                 continue
             relative = _safe_relative(info.filename)
             target = destination / relative
-            if target.is_file() and not overwrite:
+            if target.is_file() and not overwrite \
+                    and target.stat().st_size == info.file_size:
                 continue
+            partial = target.with_name(f'.{target.name}.laneloom-part')
+            if partial.is_file():
+                partial.unlink()
+            free_bytes = shutil.disk_usage(destination).free
+            required_bytes = int(info.file_size) + int(min_free_bytes)
+            if free_bytes < required_bytes:
+                raise RuntimeError(
+                    f'Insufficient free space under {destination}: '
+                    f'{free_bytes / 1024**3:.1f} GiB available, '
+                    f'{min_free_bytes / 1024**3:.1f} GiB reserved.')
             target.parent.mkdir(parents=True, exist_ok=True)
-            with archive.open(info) as source, open(target, 'wb') as output:
+            with archive.open(info) as source, open(partial, 'wb') as output:
                 shutil.copyfileobj(source, output)
+            partial.replace(target)
+
+
+def _wanted_digest(wanted):
+    digest = hashlib.sha256()
+    for name in sorted(wanted):
+        digest.update(name.encode('utf-8'))
+        digest.update(b'\0')
+    return digest.hexdigest()
+
+
+def _source_signatures(paths):
+    return [
+        dict(name=path.name, size=path.stat().st_size,
+             mtime_ns=path.stat().st_mtime_ns)
+        for path in paths
+    ]
+
+
+def _marker_is_complete(marker, paths, wanted, destination):
+    if not marker.is_file():
+        return False
+    try:
+        payload = json.loads(marker.read_text(encoding='utf-8'))
+        if payload.get('version') != 1:
+            return False
+        if payload.get('wanted_sha256') != _wanted_digest(wanted):
+            return False
+        if payload.get('sources') != _source_signatures(paths):
+            return False
+        for relative, size in payload.get('outputs', []):
+            target = destination / _safe_relative(relative)
+            if not target.is_file() or target.stat().st_size != int(size):
+                return False
+        return True
+    except (KeyError, OSError, TypeError, UnicodeError, ValueError,
+            json.JSONDecodeError):
+        return False
+
+
+def _write_marker(marker, paths, wanted, outputs):
+    payload = dict(
+        version=1,
+        sources=_source_signatures(paths),
+        wanted_sha256=_wanted_digest(wanted),
+        outputs=sorted(outputs.items()),
+    )
+    marker.parent.mkdir(parents=True, exist_ok=True)
+    partial = marker.with_name(f'.{marker.name}.laneloom-part')
+    if partial.is_file():
+        partial.unlink()
+    partial.write_text(
+        json.dumps(payload, separators=(',', ':')) + '\n', encoding='utf-8')
+    partial.replace(marker)
+
+
+def _validate_tar_terminator(paths):
+    required = 1024
+    chunks = []
+    for path in reversed(paths):
+        with open(path, 'rb') as handle:
+            size = path.stat().st_size
+            take = min(size, required)
+            handle.seek(size - take)
+            chunks.append(handle.read(take))
+        required -= take
+        if required == 0:
+            break
+    tail = b''.join(reversed(chunks))
+    if len(tail) < 1024 or not tail.endswith(b'\0' * 1024):
+        raise RuntimeError(
+            'ONCE tar archive is incomplete or missing its final split part: '
+            + ', '.join(path.name for path in paths))
 
 
 def _extract_tar_members(paths, destination, wanted, marker,
-                         overwrite=False):
+                         overwrite=False, min_free_bytes=0):
     paths = [Path(path) for path in paths]
-    if marker.is_file() and not overwrite:
-        print(f'Skipping completed archive: {marker.name}')
-        return
     if not paths:
         raise FileNotFoundError('No archive parts matched the requested input')
     missing = [path for path in paths if not path.is_file()]
@@ -84,9 +168,16 @@ def _extract_tar_members(paths, destination, wanted, marker,
         raise FileNotFoundError(
             'Missing archive parts: '
             + ', '.join(str(path) for path in missing))
+    if _marker_is_complete(
+            marker, paths, wanted, destination) and not overwrite:
+        print(f'Skipping completed archive: {marker.name}')
+        return
+    _validate_tar_terminator(paths)
 
     print('Scanning archive: ' + ', '.join(path.name for path in paths))
+    destination.mkdir(parents=True, exist_ok=True)
     extracted = 0
+    outputs = {}
     reader = _ConcatenatedReader(paths)
     try:
         with tarfile.open(fileobj=reader, mode='r|') as archive:
@@ -98,21 +189,35 @@ def _extract_tar_members(paths, destination, wanted, marker,
                 # dataset roots already describe the contents, so omit that
                 # redundant archive-level directory on disk.
                 target = destination / relative.relative_to('data')
-                if target.is_file() and not overwrite:
+                target_relative = target.relative_to(destination).as_posix()
+                if target.is_file() and not overwrite \
+                        and target.stat().st_size == member.size:
+                    outputs[target_relative] = int(member.size)
                     continue
+                partial = target.with_name(f'.{target.name}.laneloom-part')
+                if partial.is_file():
+                    partial.unlink()
+                free_bytes = shutil.disk_usage(destination).free
+                required_bytes = int(member.size) + int(min_free_bytes)
+                if free_bytes < required_bytes:
+                    raise RuntimeError(
+                        f'Insufficient free space under {destination}: '
+                        f'{free_bytes / 1024**3:.1f} GiB available, '
+                        f'{min_free_bytes / 1024**3:.1f} GiB reserved.')
                 source = archive.extractfile(member)
                 if source is None:
                     continue
                 target.parent.mkdir(parents=True, exist_ok=True)
-                with source, open(target, 'wb') as output:
+                with source, open(partial, 'wb') as output:
                     shutil.copyfileobj(source, output)
+                partial.replace(target)
+                outputs[target_relative] = int(member.size)
                 extracted += 1
                 if extracted % 1000 == 0:
                     print(f'  extracted {extracted} files')
     finally:
         reader.close()
-    marker.parent.mkdir(parents=True, exist_ok=True)
-    marker.write_text(f'extracted={extracted}\n', encoding='utf-8')
+    _write_marker(marker, paths, wanted, outputs)
 
 
 def _read_split(path):
@@ -144,6 +249,45 @@ def _write_split(path, entries):
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(
         ''.join(f'/{entry}\n' for entry in entries), encoding='utf-8')
+
+
+def _find_archive(roots, name):
+    matches = [root / name for root in roots if (root / name).is_file()]
+    if len(matches) > 1:
+        raise RuntimeError(
+            f'Duplicate ONCE archive {name}: '
+            + ', '.join(str(path) for path in matches))
+    return matches[0] if matches else roots[0] / name
+
+
+def _find_archive_parts(roots, pattern):
+    matches = {}
+    for root in roots:
+        for path in root.glob(pattern):
+            if path.name in matches:
+                raise RuntimeError(
+                    f'Duplicate ONCE archive part {path.name}: '
+                    f'{matches[path.name]}, {path}')
+            matches[path.name] = path
+    paths = [matches[name] for name in sorted(matches)]
+    suffixes = [path.name.rsplit('.part', 1)[-1] for path in paths]
+    if suffixes:
+        width = len(suffixes[0])
+        indices = []
+        for suffix in suffixes:
+            if len(suffix) != width or not suffix.isalpha() \
+                    or not suffix.islower():
+                raise RuntimeError(
+                    f'Invalid ONCE archive part suffix: {suffix}')
+            index = 0
+            for character in suffix:
+                index = index * 26 + ord(character) - ord('a')
+            indices.append(index)
+        if indices != list(range(len(indices))):
+            raise RuntimeError(
+                f'Incomplete ONCE archive part sequence for {pattern}: '
+                + ', '.join(path.name for path in paths))
+    return paths
 
 
 def _flatten_data_directory(root):
@@ -212,10 +356,24 @@ def _verify(root):
     print('ONCE preparation verification passed.')
 
 
-def prepare(root, overwrite=False):
+def prepare(root, overwrite=False, archive_root=None,
+            lidar_archive_dirs=None, min_free_bytes=0):
     root = root.expanduser().resolve()
+    archive_root = Path(archive_root or root).expanduser().resolve()
+    lidar_archive_roots = [
+        Path(path).expanduser().resolve()
+        for path in (lidar_archive_dirs or [archive_root / '3D_lidars'])
+    ]
+
+    print(f'ONCE archive root: {archive_root}')
+    print(f'ONCE output root:  {root}')
+    print('LiDAR archives:   '
+          + ', '.join(str(path) for path in lidar_archive_roots))
+
     labels_root = root / 'ONCE_3DLanes'
-    _extract_zip(root / 'ONCE_3DLanes.zip', labels_root, overwrite=overwrite)
+    _extract_zip(
+        archive_root / 'ONCE_3DLanes.zip', labels_root, overwrite=overwrite,
+        min_free_bytes=min_free_bytes)
     official_splits = {
         name: _read_split(labels_root / 'list' / f'{name}.txt')
         for name in ('train', 'val', 'test')
@@ -223,33 +381,39 @@ def prepare(root, overwrite=False):
     marker_root = root / 'LaneLoom_splits/.prepare_markers'
 
     image_root = root / '3D_images'
+    image_archive_root = archive_root / '3D_images'
     _flatten_data_directory(image_root)
     train_image_members = _image_members(official_splits['train'])
     for partition in ('p0', 'p1'):
-        archive = image_root / f'raw_cam01_{partition}.tar'
+        archive = image_archive_root / f'raw_cam01_{partition}.tar'
         _extract_tar_members(
             [archive], image_root, train_image_members,
-            marker_root / f'raw_cam01_{partition}.complete', overwrite)
+            marker_root / f'raw_cam01_{partition}.complete', overwrite,
+            min_free_bytes)
     for split_name in ('val', 'test'):
         _extract_tar_members(
-            [image_root / f'{split_name}_cam01.tar'], image_root,
+            [image_archive_root / f'{split_name}_cam01.tar'], image_root,
             _image_members(official_splits[split_name]),
-            marker_root / f'{split_name}_cam01.complete', overwrite)
+            marker_root / f'{split_name}_cam01.complete', overwrite,
+            min_free_bytes)
 
     lidar_root = root / '3D_lidars'
     _flatten_data_directory(lidar_root)
     train_lidar_members = _lidar_members(official_splits['train'])
     for partition in ('p0', 'p1'):
-        parts = sorted(lidar_root.glob(
-            f'raw_lidar_{partition}.tar.part*'))
+        parts = _find_archive_parts(
+            lidar_archive_roots, f'raw_lidar_{partition}.tar.part*')
         _extract_tar_members(
             parts, lidar_root, train_lidar_members,
-            marker_root / f'raw_lidar_{partition}.complete', overwrite)
+            marker_root / f'raw_lidar_{partition}.complete', overwrite,
+            min_free_bytes)
     for split_name in ('val', 'test'):
         _extract_tar_members(
-            [lidar_root / f'{split_name}_lidar.tar'], lidar_root,
+            [_find_archive(
+                lidar_archive_roots, f'{split_name}_lidar.tar')], lidar_root,
             _lidar_members(official_splits[split_name]),
-            marker_root / f'{split_name}_lidar.complete', overwrite)
+            marker_root / f'{split_name}_lidar.complete', overwrite,
+            min_free_bytes)
 
     train_p0p1 = []
     for entry in official_splits['train']:
@@ -261,6 +425,7 @@ def prepare(root, overwrite=False):
     _write_split(root / 'LaneLoom_splits/test.txt', official_splits['test'])
 
     info_root = root / '3D_infos'
+    info_archive_root = archive_root / '3D_infos'
     _flatten_data_directory(info_root)
     wanted_info = _info_members(
         train_p0p1 + official_splits['val'] + official_splits['test'])
@@ -268,8 +433,9 @@ def prepare(root, overwrite=False):
             'raw_small_infos.tar', 'raw_medium_infos.tar',
             'val_infos.tar', 'test_infos.tar'):
         _extract_tar_members(
-            [info_root / archive_name], info_root, wanted_info,
-            marker_root / f'{archive_name}.complete', overwrite)
+            [info_archive_root / archive_name], info_root, wanted_info,
+            marker_root / f'{archive_name}.complete', overwrite,
+            min_free_bytes)
 
     _verify(root)
 
@@ -278,6 +444,19 @@ def parse_args():
     parser = argparse.ArgumentParser(
         description='Prepare ONCE-3DLanes p0+p1 for LaneLoom.')
     parser.add_argument('--once-root', type=Path, required=True)
+    parser.add_argument(
+        '--archive-root', type=Path,
+        help='Root containing the original ONCE archives; defaults to '
+             '--once-root.')
+    parser.add_argument(
+        '--lidar-archive-dir', type=Path, action='append', default=None,
+        help='Directory containing LiDAR tar files or split parts. Repeat '
+             'when parts live on multiple disks; defaults to '
+             '<archive-root>/3D_lidars.')
+    parser.add_argument(
+        '--min-free-gb', type=float, default=20.0,
+        help='Stop before target-disk free space drops below this reserve '
+             '(default: 20 GiB).')
     parser.add_argument(
         '--verify-only', action='store_true',
         help='Only validate an already prepared directory.')
@@ -289,10 +468,17 @@ def parse_args():
 
 def main():
     args = parse_args()
+    if args.min_free_gb < 0:
+        raise ValueError('--min-free-gb must be non-negative.')
     if args.verify_only:
         _verify(args.once_root.expanduser().resolve())
     else:
-        prepare(args.once_root, overwrite=args.overwrite)
+        prepare(
+            args.once_root,
+            overwrite=args.overwrite,
+            archive_root=args.archive_root,
+            lidar_archive_dirs=args.lidar_archive_dir,
+            min_free_bytes=int(args.min_free_gb * 1024**3))
 
 
 if __name__ == '__main__':
