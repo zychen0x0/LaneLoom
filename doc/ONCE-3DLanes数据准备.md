@@ -78,6 +78,7 @@ python tools/prepare_once_laneloom.py \
 - 解压官方标注；
 - 直接流式读取 LiDAR 分卷，无需先合并出一个巨大 tar；
 - 只展开 p0+p1 训练帧以及完整 `val`/`test`；
+- 去掉官方 tar 内部的 `data/` 包装层；旧布局会在无重名冲突时自动上移；
 - 生成 `LaneLoom_splits/{train_p0p1,val,test}.txt`；
 - 核对每张图像、点云、info 和可用标注是否存在。
 
@@ -109,12 +110,29 @@ once_3dlanes/
 │   ├── train/<sequence>/cam01/<frame>.json
 │   ├── val/<sequence>/cam01/<frame>.json
 │   └── list/{train,val,test}.txt
-├── 3D_images/data/<sequence>/cam01/<frame>.jpg
-├── 3D_lidars/data/<sequence>/lidar_roof/<frame>.bin
-├── 3D_infos/data/<sequence>/<sequence>.json
-├── LaneLoom_splits/{train_p0p1,val,test}.txt
-└── pred_dir/
+├── 3D_images/<sequence>/cam01/<frame>.jpg
+├── 3D_lidars/<sequence>/lidar_roof/<frame>.bin
+├── 3D_infos/<sequence>/<sequence>.json
+└── LaneLoom_splits/{train_p0p1,val,test}.txt
 ```
+
+各目录的职责如下：
+
+- `3D_images` 和 `3D_lidars` 分别是相机图像与原始点云；
+- `ONCE_3DLanes/{train,val}` 下的逐帧 JSON 才是 3D 车道标注；
+- `3D_infos` 是序列级传感器信息，提供标定、每帧位姿与帧索引，不是车道标注；
+- `ONCE_3DLanes/list` 保存官方的完整划分；
+- `LaneLoom_splits` 保存当前项目实际可用的样本列表。其中
+  `train_p0p1` 只包含已准备图像和 LiDAR 的 p0+p1 训练帧，`val` 和
+  `test` 则保留官方划分，便于数据集类统一读取。
+
+之前的中间 `data/` 没有额外语义，只是官方 tar 包内成员路径自带
+`data/` 前缀，旧准备脚本按原路径解压后保留了这一层。
+
+`pred_dir` 不是数据集输入，而是 ONCE 官方格式的预测 JSON 输出目录。
+`tools/test_once.py` 默认将它创建在实验目录的
+`once_evaluation/pred_dir/` 下；只有显式传入 `--prediction-dir` 时才会使用
+其他位置。训练和数据加载都不依赖它。
 
 单条 split 记录：
 
@@ -125,9 +143,9 @@ once_3dlanes/
 对应：
 
 ```text
-图像:  3D_images/data/000027/cam01/1616100800400.jpg
-LiDAR: 3D_lidars/data/000027/lidar_roof/1616100800400.bin
-info:  3D_infos/data/000027/000027.json
+图像:  3D_images/000027/cam01/1616100800400.jpg
+LiDAR: 3D_lidars/000027/lidar_roof/1616100800400.bin
+info:  3D_infos/000027/000027.json
 标签:  ONCE_3DLanes/val/000027/cam01/1616100800400.json
 ```
 

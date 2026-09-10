@@ -105,9 +105,9 @@ persistent_workers = False
 dataset_cfg = dict(
     dataset_name=dataset_name,
     data_label_dir=os.path.join(once_root, 'ONCE_3DLanes'),
-    data_image_dir=os.path.join(once_root, '3D_images', 'data'),
-    lidar_processed_dir=os.path.join(once_root, '3D_lidars', 'data'),
-    info_dir=os.path.join(once_root, '3D_infos', 'data'),
+    data_image_dir=os.path.join(once_root, '3D_images'),
+    lidar_processed_dir=os.path.join(once_root, '3D_lidars'),
+    info_dir=os.path.join(once_root, '3D_infos'),
     split_dir=os.path.join(once_root, 'LaneLoom_splits'),
     # This machine currently has p0+p1 LiDAR only.  Use ``train`` here only
     # after all p0-p9 image/LiDAR/info files have been prepared.

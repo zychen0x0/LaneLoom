@@ -18,7 +18,7 @@
 
 ```bash
 python vis/gt_label/visualize_once_gt.py \
-  data/once_3dlanes/3D_images/data/000027/cam01/1616101257899.jpg
+  data/once_3dlanes/3D_images/000027/cam01/1616101257899.jpg
 ```
 
 ```bash
@@ -32,7 +32,7 @@ python vis/gt_label/visualize_openlane_gt.py \
 ```bash
 LANELOOM_DATA_ROOT=/path/to/data \
 python vis/gt_label/visualize_once_gt.py \
-  /path/to/data/once_3dlanes/3D_images/data/000027/cam01/1616101257899.jpg
+  /path/to/data/once_3dlanes/3D_images/000027/cam01/1616101257899.jpg
 ```
 
 使用 `--output-root` 可以更改输出根目录：

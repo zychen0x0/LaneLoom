@@ -94,7 +94,10 @@ def _extract_tar_members(paths, destination, wanted, marker,
                 if not member.isfile() or member.name not in wanted:
                     continue
                 relative = _safe_relative(member.name)
-                target = destination / relative
+                # ONCE archives wrap every extracted path in ``data/``.  The
+                # dataset roots already describe the contents, so omit that
+                # redundant archive-level directory on disk.
+                target = destination / relative.relative_to('data')
                 if target.is_file() and not overwrite:
                     continue
                 source = archive.extractfile(member)
@@ -143,13 +146,33 @@ def _write_split(path, entries):
         ''.join(f'/{entry}\n' for entry in entries), encoding='utf-8')
 
 
+def _flatten_data_directory(root):
+    """Move an older ``root/data/*`` extraction one level upward."""
+    nested_root = root / 'data'
+    if not nested_root.is_dir():
+        return
+
+    children = list(nested_root.iterdir())
+    conflicts = [root / child.name for child in children
+                 if (root / child.name).exists()]
+    if conflicts:
+        raise FileExistsError(
+            'Cannot flatten legacy ONCE data because targets already exist: '
+            + ', '.join(str(path) for path in conflicts[:20]))
+
+    print(f'Flattening legacy extraction: {nested_root}')
+    for child in children:
+        child.rename(root / child.name)
+    nested_root.rmdir()
+
+
 def _sample_paths(root, entry, annotation_split):
     sequence, _, filename = entry.split('/')
     stem = Path(filename).stem
     return (
-        root / '3D_images/data' / entry,
-        root / '3D_lidars/data' / sequence / 'lidar_roof' / f'{stem}.bin',
-        root / '3D_infos/data' / sequence / f'{sequence}.json',
+        root / '3D_images' / entry,
+        root / '3D_lidars' / sequence / 'lidar_roof' / f'{stem}.bin',
+        root / '3D_infos' / sequence / f'{sequence}.json',
         None if annotation_split is None else
         root / 'ONCE_3DLanes' / annotation_split / sequence / 'cam01'
         / f'{stem}.json',
@@ -200,6 +223,7 @@ def prepare(root, overwrite=False):
     marker_root = root / 'LaneLoom_splits/.prepare_markers'
 
     image_root = root / '3D_images'
+    _flatten_data_directory(image_root)
     train_image_members = _image_members(official_splits['train'])
     for partition in ('p0', 'p1'):
         archive = image_root / f'raw_cam01_{partition}.tar'
@@ -213,6 +237,7 @@ def prepare(root, overwrite=False):
             marker_root / f'{split_name}_cam01.complete', overwrite)
 
     lidar_root = root / '3D_lidars'
+    _flatten_data_directory(lidar_root)
     train_lidar_members = _lidar_members(official_splits['train'])
     for partition in ('p0', 'p1'):
         parts = sorted(lidar_root.glob(
@@ -236,6 +261,7 @@ def prepare(root, overwrite=False):
     _write_split(root / 'LaneLoom_splits/test.txt', official_splits['test'])
 
     info_root = root / '3D_infos'
+    _flatten_data_directory(info_root)
     wanted_info = _info_members(
         train_p0p1 + official_splits['val'] + official_splits['test'])
     for archive_name in (
@@ -245,7 +271,6 @@ def prepare(root, overwrite=False):
             [info_root / archive_name], info_root, wanted_info,
             marker_root / f'{archive_name}.complete', overwrite)
 
-    (root / 'pred_dir').mkdir(parents=True, exist_ok=True)
     _verify(root)
 
 
