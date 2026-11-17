@@ -29,8 +29,8 @@ from LaneLoom.datasets.once.dataset import CAMERA_TO_GROUND  # noqa: E402
 
 
 DEFAULT_OUTPUT_ROOT = Path(__file__).resolve().parent
-OPENLANE_CONFIG = REPO_ROOT / 'configs/main/laneloom_openlane_image_lidar_Temporal.py'
-ONCE_CONFIG = REPO_ROOT / 'configs/main/laneloom_once_image_lidar_Temporal.py'
+OPENLANE_CONFIG = REPO_ROOT / 'configs/main/laneloom_openlane_image_lidar_temporal.py'
+ONCE_CONFIG = REPO_ROOT / 'configs/main/laneloom_once_image_lidar_temporal.py'
 LANE_COLORS = (
     (40, 255, 80),
     (255, 190, 40),

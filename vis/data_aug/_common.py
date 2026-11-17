@@ -25,7 +25,7 @@ import LaneLoom.datasets  # noqa: E402,F401 - register project datasets.
 
 
 CONFIG_PATH = (
-    REPO_ROOT / 'configs/main/laneloom_openlane_image_lidar_Temporal.py')
+    REPO_ROOT / 'configs/main/laneloom_openlane_image_lidar_temporal.py')
 DEFAULT_OUTPUT_ROOT = Path(__file__).resolve().parent
 
 

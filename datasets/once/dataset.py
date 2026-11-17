@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import warnings
 from pathlib import Path
 
 import numpy as np
@@ -62,10 +63,9 @@ class ONCEDataset(OpenLaneDataset):
     ``(x, z, -y)``.  Raw LiDAR points are transformed through the official
     ``cam_to_velo`` calibration before entering that ground frame.
 
-    This first ONCE integration is deliberately single-frame.  ONCE lane
-    annotations do not carry the track IDs required by LaneLoom's temporal-GT
-    supplementation, so enabling that OpenLane-specific supervision would
-    change the target set rather than merely add temporal inputs.
+    Historical image/LiDAR inputs are pose-aligned with the current frame.
+    Supervision uses only current-frame lanes because ONCE annotations have
+    no track IDs for OpenLane's temporal-GT supplementation.
     """
 
     METAINFO = dict(dataset_name='ONCE-3DLanes')
@@ -73,12 +73,6 @@ class ONCEDataset(OpenLaneDataset):
     def __init__(self, dataset_cfg, temporal_sampling_distance,
                  smooth_3d_gt, gt_outlier_residual, modality,
                  test_mode=False, split=None, max_samples=None):
-        if temporal_sampling_distance is not False:
-            raise ValueError(
-                'ONCEDataset currently requires '
-                'temporal_sampling_distance=False; ONCE lane labels have no '
-                'track IDs for temporal GT augmentation.')
-
         original_cfg = dict(dataset_cfg)
         self.info_root = Path(original_cfg['info_dir']).expanduser().resolve()
         self.split_root = (
@@ -93,7 +87,7 @@ class ONCEDataset(OpenLaneDataset):
             ]
         super().__init__(
             dataset_cfg=parent_cfg,
-            temporal_sampling_distance=False,
+            temporal_sampling_distance=temporal_sampling_distance,
             smooth_3d_gt=smooth_3d_gt,
             gt_outlier_residual=gt_outlier_residual,
             modality=modality,
@@ -101,6 +95,7 @@ class ONCEDataset(OpenLaneDataset):
             split=split,
             max_samples=max_samples)
         self.dataset_cfg = original_cfg
+        self.temporal_gt_augmentation = False
 
     # Index construction.
     @staticmethod
@@ -131,14 +126,23 @@ class ONCEDataset(OpenLaneDataset):
 
         annotation_split = self._annotation_split()
         label_files = []
+        skipped = []
         with open(split_file, 'r', encoding='utf-8') as handle:
             for line in handle:
                 relative = line.strip().lstrip('/')
                 if not relative:
                     continue
-                label_files.append(
-                    self.label_root / annotation_split
-                    / Path(relative).with_suffix('.json'))
+                label_path = (self.label_root / annotation_split
+                              / Path(relative).with_suffix('.json'))
+                if label_path.stat().st_size == 0:
+                    skipped.append(label_path)
+                    continue
+                label_files.append(label_path)
+        if skipped:
+            warnings.warn(
+                f'ONCE {self.split}: skipped {len(skipped)} empty labels:\n'
+                + '\n'.join(str(path) for path in skipped),
+                stacklevel=2)
         if max_samples is not None:
             label_files = label_files[:int(max_samples)]
         label_files = label_files[::self.load_interval]
@@ -156,7 +160,8 @@ class ONCEDataset(OpenLaneDataset):
         if cache_key in self._label_scene_cache:
             return self._label_scene_cache[cache_key]
         frames = {
-            path.stem: path for path in sorted(scene_dir.glob('*.json'))}
+            path.stem: path for path in sorted(scene_dir.glob('*.json'))
+            if path.stat().st_size > 0}
         scene = dict(keys=sorted(frames), frames=frames)
         self._label_scene_cache[cache_key] = scene
         return scene
@@ -285,7 +290,6 @@ class ONCEDataset(OpenLaneDataset):
 
     # LiDAR loading.
     def _load_lidar_points(self, info, current_pose, queue_index):
-        del queue_index
         raw = np.fromfile(info['lidar_file'], dtype=np.float32)
         if raw.size == 0 or raw.size % 4:
             return np.zeros((0, self.num_lidar_feat), dtype=np.float32)
@@ -302,12 +306,30 @@ class ONCEDataset(OpenLaneDataset):
         ground_xyz = (
             np.asarray(info['lidar_to_ground'], dtype=np.float32)
             @ current_xyz.T).T[:, :3]
-        return np.concatenate(
-            [ground_xyz, raw[:, 3:4]], axis=1
-        ).astype(np.float32)
+        fields = [ground_xyz, raw[:, 3:4]]
+        if self.num_lidar_feat == 5:
+            fields.append(np.full(
+                (raw.shape[0], 1), queue_index, dtype=np.float32))
+        return np.concatenate(fields, axis=1).astype(np.float32)
     # End LiDAR loading.
 
     # Sample construction.
+    def _build_frame_meta(self, scene_name, frame_key, label_info,
+                          image_path, lidar_scene, current_pose):
+        meta = super()._build_frame_meta(
+            scene_name, frame_key, label_info, image_path,
+            lidar_scene, current_pose)
+        if lidar_scene is not None and frame_key in lidar_scene['frames']:
+            info = lidar_scene['frames'][frame_key]
+            lidar_to_ground = info['lidar_to_ground']
+            meta['lidaradj2lidarcurr'] = (
+                lidar_to_ground @ np.linalg.inv(current_pose) @ info['pose']
+                @ np.linalg.inv(lidar_to_ground)).astype(np.float32)
+            # ONCE frame IDs are milliseconds, not OpenLane microseconds.
+            meta['timestamp'] = int(frame_key) / 1e3
+            meta['timestamp_micros'] = int(frame_key) * 1000
+        return meta
+
     def get_data_info(self, index):
         (current_path, scene_name, current_key,
          lidar_scene, current_pose) = self._current_frame_context(index)
@@ -368,7 +390,7 @@ class ONCEDataset(OpenLaneDataset):
                 frame_keys=queue_keys,
                 current_key=current_key,
                 sampling_mode=sampling_mode,
-                num_history_frames=0,
+                num_history_frames=len(queue_keys) - 1,
                 image_augmentation_mode=self.image_augmentation_mode,
                 num_views=self.num_views,
                 augmentation_recipe_names=[

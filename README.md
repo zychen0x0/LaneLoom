@@ -11,12 +11,20 @@
 ```bash
 cd /workspace/LaneLoom
 
+# 单帧模型训练
 PYTHONPATH=/workspace CUDA_VISIBLE_DEVICES=0,1 \
 torchrun --nproc_per_node=2 --master_port=29501 \
 tools/train.py \
-configs/main/laneloom_openlane_image_lidar_Temporal.py \
+configs/ablations/laneloom_openlane_image_lidar_temporal_0923.py \
 --launcher pytorch
 
+
+PYTHONPATH=/workspace CUDA_VISIBLE_DEVICES=0,1 \
+torchrun --nproc_per_node=2 --master_port=29501 \
+tools/train.py \
+configs/main/laneloom_once_image_lidar_temporal.py \
+--launcher pytorch \
+--load-from "work_dirs/laneloom_once_image_lidar/exp_date_20261010_111319/checkpoints/best_ONCEOfficial_F1_epoch_2.pth"
 ```
 
 ## 继续训练 load_from
@@ -27,9 +35,9 @@ cd /workspace/LaneLoom
 PYTHONPATH=/workspace CUDA_VISIBLE_DEVICES=0,1 \
 torchrun --nproc_per_node=2 --master_port=29501 \
 tools/train.py \
-configs/main/laneloom_openlane_image_lidar_Temporal.py \
+configs/main/laneloom_openlane_image_lidar_temporal.py \
 --launcher pytorch \
---load-from "work_dirs/laneloom_openlane_image_lidar/exp_date_20260725_163203/checkpoints/epoch_24.pth"
+--load-from "work_dirs/laneloom_openlane_image_lidar/exp_date_20260803_081030/checkpoints/best_OpenLaneTemporal_F1_epoch_44.pth"
 
 ```
 
@@ -42,12 +50,13 @@ PYTHONPATH=/workspace CUDA_VISIBLE_DEVICES=0,1 \
 torchrun --nproc_per_node=2 --master_port=29502 \
 tools/test.py \
 configs/main/laneloom_openlane_image_lidar_Temporal.py \
-work_dirs/laneloom_openlane_image_lidar/exp_date_20260715_191319/checkpoints/best_OpenLane_F1_epoch_22.pth \
---work-dir work_dirs/laneloom_openlane_image_lidar/nms_evaluation \
+work_dirs/laneloom_openlane_image_lidar/exp_date_20260803_081030/checkpoints/best_OpenLaneTemporal_F1_epoch_44.pth \
 --case validation \
 --launcher pytorch
 ```
 
+默认输出位置
+--work-dir work_dirs/laneloom_openlane_image_lidar/exp_date_20260803_081030 \
 
 # 其他模式
 
@@ -75,6 +84,6 @@ work_dirs/laneloom_openlane_image_lidar/exp_date_20260715_191319/checkpoints/bes
 cd /workspace/LaneLoom
 
 tensorboard \
-  --logdir work_dirs/laneloom_openlane_image_lidar/exp_date_20260720_220252/Tensorboard \
+  --logdir work_dirs/laneloom_once_image_lidar/exp_date_20261010_165137/Tensorboard \
   --host 0.0.0.0 \
   --port 6006

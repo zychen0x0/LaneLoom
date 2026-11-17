@@ -38,14 +38,15 @@ img_norm_cfg = dict(
 # in [0, 50] m.  LaneLoom uses x=lateral, y=forward, z=height.
 point_cloud_range = [-10.0, 0.0, -5.0, 10.0, 50.0, 5.0]
 load_dim = 4
-point_features = ['x', 'y', 'z', 'intensity']
+# queue_index is appended by the loader; source .bin files still have 4 fields.
+point_features = ['x', 'y', 'z', 'intensity', 'queue_index']
 use_dim = len(point_features)
 
-# ONCE lane labels have no track IDs.  Keep the first integration single-frame
-# rather than applying OpenLane's track-aware temporal-GT supplementation.
-temporal_sampling_distance = False
-temporal_sampling_enabled = False
-smooth_3d_gt = True
+# Fuse historical inputs while supervising only the current frame: ONCE lane
+# labels have no track IDs for OpenLane's temporal-GT supplementation.
+temporal_sampling_distance = (10.0, 5.0)
+temporal_sampling_enabled = temporal_sampling_distance is not False
+smooth_3d_gt = False
 gt_outlier_residual = 0.75
 
 anchor_y_steps = [float(index) for index in range(1, 51)]
@@ -97,21 +98,19 @@ test_pipeline = [
 eval_pipeline = test_pipeline
 
 seed = 0
-batch_size_per_gpu = 4
-val_batch_size_per_gpu = 8
-num_workers = 4
+batch_size_per_gpu = 16
+val_batch_size_per_gpu = 16
+num_workers = 2
 persistent_workers = False
 
 dataset_cfg = dict(
     dataset_name=dataset_name,
-    data_label_dir=os.path.join(once_root, 'ONCE_3DLanes'),
+    data_label_dir=once_root,
     data_image_dir=os.path.join(once_root, '3D_images'),
     lidar_processed_dir=os.path.join(once_root, '3D_lidars'),
     info_dir=os.path.join(once_root, '3D_infos'),
-    split_dir=os.path.join(once_root, 'LaneLoom_splits'),
-    # This machine currently has p0+p1 LiDAR only.  Use ``train`` here only
-    # after all p0-p9 image/LiDAR/info files have been prepared.
-    train_split='train_p0p1',
+    split_dir=os.path.join(once_root, 'list'),
+    train_split='train',
     val_split='val',
     test_split='test',
     org_h=org_h,

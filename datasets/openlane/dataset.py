@@ -232,6 +232,10 @@ class OpenLaneDataset(Dataset):
         self.image_root = _as_path(dataset_cfg['data_image_dir'])
         self.lidar_root = _as_path(dataset_cfg['lidar_processed_dir'])
         self.load_interval = max(1, int(dataset_cfg.get('load_interval', 1)))
+        self.excluded_segments = frozenset(dataset_cfg.get('excluded_segments', ()))
+        self.scene_cache_size = int(dataset_cfg.get('scene_cache_size', 0))
+        if self.scene_cache_size < 0:
+            raise ValueError('scene_cache_size must be non-negative')
 
         self.org_h = int(dataset_cfg.get('org_h', 1280))
         self.org_w = int(dataset_cfg.get('org_w', 1920))
@@ -273,6 +277,25 @@ class OpenLaneDataset(Dataset):
         self.num_lidar_feat = self._resolve_lidar_feat_dim(self.use_dim)
         self.max_lanes = int(dataset_cfg.get('max_lanes', 20))
         self.num_category = int(dataset_cfg.get('num_category', 21))
+        self.full_shape_template_targets = bool(
+            dataset_cfg.get('full_shape_template_targets', False))
+        self.full_shape_visible_fit_tolerance_m = dataset_cfg.get(
+            'full_shape_visible_fit_tolerance_m')
+        self.max_shape_templates = int(
+            dataset_cfg.get('max_shape_templates', 5))
+        self.full_shape_min_points = int(
+            dataset_cfg.get('full_shape_min_points', 4))
+        self.full_shape_min_span = float(
+            dataset_cfg.get('full_shape_min_span', 15.0))
+        self.full_shape_guarded_short_merge = bool(
+            dataset_cfg.get('full_shape_guarded_short_merge', False))
+        self.full_shape_z_extrapolation_grace_m = float(
+            dataset_cfg.get('full_shape_z_extrapolation_grace_m', 20.0))
+        self.full_shape_z_extrapolation_decay_m = dataset_cfg.get(
+            'full_shape_z_extrapolation_decay_m')
+        if self.full_shape_z_extrapolation_decay_m is not None:
+            self.full_shape_z_extrapolation_decay_m = float(
+                self.full_shape_z_extrapolation_decay_m)
         self.metainfo = dict(
             self.METAINFO,
             classes=tuple(dataset_cfg.get('class_names', ())),
@@ -295,6 +318,18 @@ class OpenLaneDataset(Dataset):
         self.shuffle_points = any(
             aug.get('type') == 'PointShuffle' for aug in self.pts_aug_cfg)
         self.pack_keys = tuple(pack_cfg.get('keys', ()))
+        if self.full_shape_template_targets:
+            self.pack_keys = tuple(dict.fromkeys((*self.pack_keys,
+                'gt_lanes_3d_full',
+                'gt_lanes_full_valid',
+                'gt_shape_templates',
+                'gt_shape_template_valid',
+            )))
+            if self.full_shape_z_extrapolation_decay_m is not None:
+                self.pack_keys = tuple(dict.fromkeys((*self.pack_keys,
+                    'gt_lanes_full_z_weights',
+                    'gt_shape_template_z_weights',
+                )))
 
         self.label_files = self._load_label_files(max_samples=max_samples)
         self.lidar_segment_dirs = self._load_lidar_segment_dirs()
@@ -462,6 +497,9 @@ class OpenLaneDataset(Dataset):
         # official test split adds a scenario directory, e.g.
         # ``test/merge_split_case/segment/frame.json``.
         label_files = sorted(split_dir.rglob('*.json'))
+        if self.excluded_segments:
+            label_files = [path for path in label_files
+                           if path.parent.name not in self.excluded_segments]
         if not label_files:
             raise FileNotFoundError(f'No OpenLane json files found under {split_dir}')
         if max_samples is not None:
@@ -473,19 +511,24 @@ class OpenLaneDataset(Dataset):
         segment_dirs = sorted(self.lidar_root.glob('segment-*'))
         return {segment_dir.name: segment_dir for segment_dir in segment_dirs}
 
+    def _cache_scene(self, cache, key, value):
+        cache[key] = value
+        limit = getattr(self, 'scene_cache_size', 0)
+        if limit and len(cache) > limit:
+            del cache[next(iter(cache))]
+        return value
+
     def _load_lidar_scene(self, scene_name):
         if scene_name in self._lidar_scene_cache:
             return self._lidar_scene_cache[scene_name]
 
         segment_dir = self.lidar_segment_dirs.get(scene_name)
         if segment_dir is None:
-            self._lidar_scene_cache[scene_name] = None
-            return None
+            return self._cache_scene(self._lidar_scene_cache, scene_name, None)
 
         segment_pkl = segment_dir / f'{scene_name}.pkl'
         if not segment_pkl.is_file():
-            self._lidar_scene_cache[scene_name] = None
-            return None
+            return self._cache_scene(self._lidar_scene_cache, scene_name, None)
 
         with open(segment_pkl, 'rb') as f:
             frame_infos = pickle.load(f)
@@ -512,8 +555,7 @@ class OpenLaneDataset(Dataset):
             )
 
         scene = dict(keys=sorted(frames.keys()), frames=frames)
-        self._lidar_scene_cache[scene_name] = scene
-        return scene
+        return self._cache_scene(self._lidar_scene_cache, scene_name, scene)
 
     def _load_label_scene(self, scene_name, scene_dir=None):
         scene_dir = Path(scene_dir or (self.label_root / self.split / scene_name))
@@ -523,8 +565,7 @@ class OpenLaneDataset(Dataset):
 
         frame_map = {_timestamp_key(path): path for path in sorted(scene_dir.glob('*.json'))}
         scene = dict(keys=sorted(frame_map.keys()), frames=frame_map)
-        self._label_scene_cache[cache_key] = scene
-        return scene
+        return self._cache_scene(self._label_scene_cache, cache_key, scene)
     # ----------------------------------------------------index build end----------------------------------------------------
 
     # ------------------------------------------------temporal sampling start-------------------------------------------------
@@ -1682,7 +1723,9 @@ class OpenLaneDataset(Dataset):
     def _process_points(self, points):
         points = self._filter_points_by_range(points)
         if self.shuffle_points:
-            np.random.shuffle(points)
+            # Shuffling indices uses the same RNG draws and point order while
+            # avoiding NumPy's slow row-by-row swaps of the full point array.
+            points = points[np.random.permutation(len(points))]
         return points.astype(np.float32)
 
     def _load_lidar_queue(self, lidar_scene, queue_keys):
@@ -1779,6 +1822,27 @@ class OpenLaneDataset(Dataset):
         view_mask = torch.stack(view_masks, dim=0)
         lidar = self._load_lidar_queue(lidar_scene, queue_keys)
         gt = self._parse_openlane_gt(label_infos[-1])
+        if self.full_shape_template_targets:
+            from .full_shape_targets import build_full_shape_targets
+
+            full_shape_targets = build_full_shape_targets(
+                gt['gt_lanes_3d'].numpy(),
+                gt['gt_lanes_visibility'].numpy(),
+                self.anchor_y_steps,
+                max_templates=self.max_shape_templates,
+                min_lane_points=self.full_shape_min_points,
+                min_lane_span=self.full_shape_min_span,
+                guarded_short_merge=self.full_shape_guarded_short_merge,
+                z_extrapolation_grace_m=(
+                    self.full_shape_z_extrapolation_grace_m),
+                z_extrapolation_decay_m=(
+                    self.full_shape_z_extrapolation_decay_m),
+                visible_fit_tolerance_m=(
+                    self.full_shape_visible_fit_tolerance_m))
+            gt.update({
+                key: torch.from_numpy(value)
+                for key, value in full_shape_targets.items()
+            })
         if self.temporal_gt_augmentation:
             gt.update(self._build_temporal_enhanced_gt(label_infos, frame_metas))
 
@@ -1833,6 +1897,12 @@ def openlane_collate(batch):
         'gt_lanes_category',
         'gt_lane_track_ids',
         'gt_lanes_memory_mask',
+        'gt_lanes_3d_full',
+        'gt_lanes_full_valid',
+        'gt_lanes_full_z_weights',
+        'gt_shape_templates',
+        'gt_shape_template_valid',
+        'gt_shape_template_z_weights',
         'gt_lanes_3d_enhanced',
         'gt_lanes_visibility_enhanced',
         'gt_lanes_category_enhanced',
@@ -1845,3 +1915,36 @@ def openlane_collate(batch):
         if key in batch[0]:
             collated[key] = [item[key] for item in batch]
     return collated
+
+
+def openlane_raw_visible_gt(labels, pc_range):
+    """Batch original visible JSON points, retaining short and nonuniform lanes.
+
+    Used only after prediction for the opt-in Q0 supervision experiment.
+    Unlike the decoder's fixed-anchor targets, no smoothing, interpolation,
+    full-range extrapolation, mode averaging or minimum-span filter is applied.
+    """
+    samples = []
+    for label in labels:
+        transform = _build_cam_to_ground_lane(
+            np.asarray(label['extrinsic'], dtype=np.float32).reshape(4, 4))
+        lanes = []
+        for lane in label.get('lane_lines', []):
+            xyz = np.asarray(lane['xyz'], dtype=np.float64)
+            points = (transform @ np.vstack((xyz, np.ones(xyz.shape[1]))))[:3].T
+            visible = np.asarray(lane.get('visibility', np.ones(len(points)))) > 0
+            keep = (visible & np.isfinite(points).all(-1)
+                    & (points[:, 0] >= pc_range[0]) & (points[:, 0] <= pc_range[3])
+                    & (points[:, 1] >= pc_range[1]) & (points[:, 1] <= pc_range[4]))
+            if keep.sum() >= 2:
+                lanes.append(points[keep][np.argsort(points[keep, 1])])
+        samples.append(lanes)
+    lane_count = max(1, max(map(len, samples), default=0))
+    point_count = max(1, max((len(lane) for lanes in samples for lane in lanes), default=0))
+    points = torch.zeros(len(labels), lane_count, point_count, 3)
+    visibility = torch.zeros(len(labels), lane_count, point_count, dtype=torch.bool)
+    for batch_index, lanes in enumerate(samples):
+        for lane_index, lane in enumerate(lanes):
+            points[batch_index, lane_index, :len(lane)] = torch.as_tensor(lane, dtype=torch.float32)
+            visibility[batch_index, lane_index, :len(lane)] = True
+    return points, visibility

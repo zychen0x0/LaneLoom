@@ -16,6 +16,7 @@ from transformers import AutoImageProcessor, AutoModelForDepthEstimation
 
 MODEL_ID = 'depth-anything/Depth-Anything-V2-Small-hf'
 DEFAULT_OUTPUT_ROOT = Path(__file__).resolve().parent / 'openlane'
+PAPER_DPI = 600
 
 
 def _colorize_depth(
@@ -42,7 +43,10 @@ def export_depth(
         image_path: Path, output_path: Path | None = None,
         colormap: str = 'magma',
         lower_percentile: float = 1.0,
-        upper_percentile: float = 99.0) -> dict:
+        upper_percentile: float = 99.0,
+        dpi: int = PAPER_DPI) -> dict:
+    if dpi < 1:
+        raise ValueError('dpi must be positive.')
     image_path = image_path.expanduser().resolve()
     if not image_path.is_file():
         raise FileNotFoundError(f'Input image does not exist: {image_path}')
@@ -70,7 +74,7 @@ def export_depth(
         upper_percentile=upper_percentile)
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
-    Image.fromarray(rgb).save(output_path)
+    Image.fromarray(rgb).save(output_path, dpi=(dpi, dpi))
     finite = np.isfinite(depth)
     return {
         'model': MODEL_ID,
@@ -78,6 +82,7 @@ def export_depth(
         'source': str(image_path),
         'output': str(output_path),
         'size': [image.width, image.height],
+        'dpi': dpi,
         'raw_min': float(depth[finite].min()),
         'raw_max': float(depth[finite].max()),
         'display_min': display_min,
@@ -99,6 +104,9 @@ def _parse_args(argv=None):
         '--percentiles', type=float, nargs=2, default=(1.0, 99.0),
         metavar=('LOWER', 'UPPER'),
         help='Display normalization percentiles (default: 1 99).')
+    parser.add_argument(
+        '--dpi', type=int, default=PAPER_DPI,
+        help=f'PNG resolution metadata (default: {PAPER_DPI} DPI).')
     return parser.parse_args(argv)
 
 
@@ -109,7 +117,8 @@ def main(argv=None) -> int:
         output_path=args.output,
         colormap=args.colormap,
         lower_percentile=args.percentiles[0],
-        upper_percentile=args.percentiles[1])
+        upper_percentile=args.percentiles[1],
+        dpi=args.dpi)
     print(json.dumps(report, indent=2, ensure_ascii=False))
     return 0
 

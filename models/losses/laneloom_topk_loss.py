@@ -7,6 +7,7 @@ import torch.nn.functional as F
 from mmdet3d.registry import MODELS, TASK_UTILS
 
 from ..valid_range_tube_iou import valid_range_tube_iou
+from .hungarian_assigner import batched_hungarian_assignment
 from .topk_assigner import TopkAssigner
 
 
@@ -18,7 +19,8 @@ class LaneLossBase(nn.Module):
                  visibility_loss_weight=1.0, aux_loss_weight=0.5,
                  smooth_l1_beta=0.5, focal_alpha=0.25, focal_gamma=2.0,
                  emit_diagnostics=False, diagnostic_score_threshold=.3,
-                 diagnostic_visibility_threshold=.5, **kwargs):
+                 diagnostic_visibility_threshold=.5,
+                 use_enhanced_gt=True, **kwargs):
         super().__init__()
         self.assigner = (
             TASK_UTILS.build(assigner) if assigner is not None
@@ -35,6 +37,7 @@ class LaneLossBase(nn.Module):
         self.diagnostic_score_threshold = float(diagnostic_score_threshold)
         self.diagnostic_visibility_threshold = float(
             diagnostic_visibility_threshold)
+        self.use_enhanced_gt = bool(use_enhanced_gt)
 
     def _focal_loss(self, logits, target, positive_count):
         probability = logits.softmax(dim=-1)
@@ -204,7 +207,8 @@ class LaneLossBase(nn.Module):
                 gt_lanes_category, gt_lanes_3d_enhanced=None,
                 gt_lanes_visibility_enhanced=None,
                 gt_lanes_category_enhanced=None, **kwargs):
-        if (gt_lanes_3d_enhanced is not None
+        if (self.use_enhanced_gt
+                and gt_lanes_3d_enhanced is not None
                 and gt_lanes_visibility_enhanced is not None):
             gt_lanes_3d = gt_lanes_3d_enhanced
             gt_lanes_visibility = gt_lanes_visibility_enhanced
@@ -324,7 +328,11 @@ class LaneLoss(LaneLossBase):
                  visibility_loss_type='smooth_l1',
                  visibility_start_loss_weight=0.,
                  visibility_end_loss_weight=0.,
+                 assignment_mode='geometry',
                  **kwargs):
+        if assignment_mode not in ('geometry', 'support'):
+            raise ValueError('assignment_mode must be "geometry" or "support".')
+        self.assignment_mode = assignment_mode
         if assigner is None:
             assigner = dict(type='HungarianAssigner')
         if objectness_loss_weight is not None:
@@ -392,6 +400,38 @@ class LaneLoss(LaneLossBase):
         final_predictions.pop('anchor_points', None)
         anchor_x = final_predictions['pred_x'].detach()
         anchor_z = final_predictions['pred_z'].detach()
+        if self.assignment_mode == 'support':
+            visibility = gt_visibility > .5
+            pred_visibility = predictions['pred_vis'].detach().sigmoid()
+            overlap = valid_range_tube_iou(
+                anchor_x[:, :, None], anchor_z[:, :, None],
+                pred_visibility[:, :, None],
+                gt_lanes_3d[:, None, :, :, 0],
+                gt_lanes_3d[:, None, :, :, 2], gt_visibility[:, None],
+                tube_radius=self.tube_radius, z_weight=self.tube_z_weight,
+                epsilon=self.tube_epsilon)
+            distance = torch.hypot(
+                anchor_x[:, :, None] - gt_lanes_3d[:, None, :, :, 0],
+                anchor_z[:, :, None] - gt_lanes_3d[:, None, :, :, 2])
+            count = visibility.sum(-1).clamp_min(1)
+            geometry = ((distance * visibility[:, None]).sum(-1)
+                        / count[:, None])
+            indices = torch.arange(
+                anchor_x.size(-1), device=anchor_x.device,
+                dtype=anchor_x.dtype)
+            start = torch.where(visibility, indices, float('inf')).amin(-1) - .5
+            end = torch.where(visibility, indices, float('-inf')).amax(-1) + .5
+            boundary = (
+                (predictions['pred_vis_start'].detach()[:, :, None]
+                 - start[:, None]).abs()
+                + (predictions['pred_vis_end'].detach()[:, :, None]
+                   - end[:, None]).abs()) / (2 * count[:, None])
+            cost = (1 - overlap
+                    + .2 * (geometry / (4 * self.tube_radius)).clamp_max(1)
+                    + .1 * boundary.clamp_max(4))
+            cost = cost.masked_fill(~visibility.any(-1)[:, None], torch.inf)
+            assignments = batched_hungarian_assignment(cost)
+            return list(assignments.unbind(dim=0))
         assignments = self.assigner.assign_batch(
             anchor_x, anchor_z,
             gt_lanes_3d[..., 0], gt_lanes_3d[..., 2],
@@ -413,6 +453,9 @@ class LaneLoss(LaneLossBase):
 
     def required_prediction_mask(
             self, predictions, gt_lanes_3d, gt_visibility):
+        if self.assignment_mode == 'support':
+            return torch.stack(self._assign(
+                predictions, gt_lanes_3d, gt_visibility)) >= 0
         assignments = self.assigner.assign_batch(
             predictions['pred_x'].detach(),
             predictions['pred_z'].detach(),

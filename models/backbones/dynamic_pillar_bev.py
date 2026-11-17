@@ -23,6 +23,7 @@ QUEUE_INDEX = 8
 PAINTED_RGB_CHANNELS = 3
 POINT_FEATURE_LAYOUT_VERSION = 2
 ONCE_POINT_FEATURES = ('x', 'y', 'z', 'intensity')
+ONCE_TEMPORAL_POINT_FEATURES = (*ONCE_POINT_FEATURES, 'queue_index')
 OPENLANE_POINT_FEATURES = (
     'x', 'y', 'z', 'intensity', 'elongation', 'queue_index')
 GROUND_TO_VEHICLE_AXES = (
@@ -42,9 +43,11 @@ class RGBPointPainter(nn.Module):
         self.point_features = tuple(
             point_features or OPENLANE_POINT_FEATURES)
         if self.point_features not in (
-                ONCE_POINT_FEATURES, OPENLANE_POINT_FEATURES):
+                ONCE_POINT_FEATURES, ONCE_TEMPORAL_POINT_FEATURES,
+                OPENLANE_POINT_FEATURES):
             raise ValueError(
-                'point_features must describe either ONCE xyz/intensity or '
+                'point_features must describe ONCE xyz/intensity with an '
+                'optional queue_index, or '
                 'OpenLane xyz/intensity/elongation/queue_index points.')
         self.has_queue_index = 'queue_index' in self.point_features
         self.raw_point_channels = len(self.point_features)
@@ -120,7 +123,10 @@ class RGBPointPainter(nn.Module):
                     img_metas, batch_index, time_index)
                 if not isinstance(frame_meta, dict):
                     continue
-                lidar_to_image_matrices = frame_meta.get('lidar2img')
+                is_once = self.point_features in (
+                    ONCE_POINT_FEATURES, ONCE_TEMPORAL_POINT_FEATURES)
+                lidar_to_image_matrices = frame_meta.get(
+                    'lane2img' if is_once else 'lidar2img')
                 if (lidar_to_image_matrices is None
                         or len(lidar_to_image_matrices) == 0):
                     continue
@@ -139,7 +145,7 @@ class RGBPointPainter(nn.Module):
                 history_points = torch.linalg.solve(
                     history_to_current, homogeneous.transpose(0, 1)
                 ).transpose(0, 1)
-                vehicle_points = torch.cat((
+                vehicle_points = history_points if is_once else torch.cat((
                     history_points[:, :3] @ ground_to_vehicle.transpose(0, 1),
                     history_points[:, 3:],
                 ), dim=-1)
@@ -258,6 +264,130 @@ class _DenseBasicBlock(nn.Module):
         return self.relu(self.norm2(self.conv2(output)) + inputs)
 
 
+class _DenseResidualBlock(nn.Module):
+    """Dense ResNet block for the stride-16 stage of the DV34 ablation."""
+
+    def __init__(self, channels):
+        super().__init__()
+        norm = dict(eps=1e-3, momentum=0.01)
+        self.conv1 = nn.Conv2d(channels, channels, 3, padding=1, bias=False)
+        self.norm1 = nn.BatchNorm2d(channels, **norm)
+        self.conv2 = nn.Conv2d(channels, channels, 3, padding=1, bias=False)
+        self.norm2 = nn.BatchNorm2d(channels, **norm)
+        self.relu = nn.ReLU(inplace=True)
+
+    def forward(self, inputs):
+        output = self.relu(self.norm1(self.conv1(inputs)))
+        return self.relu(self.norm2(self.conv2(output)) + inputs)
+
+
+class _SparseResNet34_2D(nn.Module):
+    """DV-3DLane-style [3, 4, 6, 3] sparse stages and a dense 1/16 stage."""
+
+    def __init__(self, base_channels):
+        super().__init__()
+        channels = tuple(base_channels * scale for scale in (1, 2, 4, 8))
+        norm = dict(eps=1e-3, momentum=0.01)
+        self.stem = spconv.SparseSequential(
+            spconv.SubMConv2d(
+                channels[0], channels[0], 3, padding=1, bias=False,
+                indice_key='dv34_stage0'),
+            nn.BatchNorm1d(channels[0], **norm),
+            nn.ReLU(inplace=True),
+            *[_SparseBasicBlock(channels[0], 'dv34_stage0')
+              for _ in range(3)])
+        self.stage1 = self._down_stage(
+            channels[0], channels[1], 4, 1, norm)
+        self.stage2 = self._down_stage(
+            channels[1], channels[2], 6, 2, norm)
+        self.stage3 = self._down_stage(
+            channels[2], channels[3], 3, 3, norm)
+        self.dense_stage = nn.Sequential(
+            nn.Conv2d(
+                channels[3], channels[3], 3, stride=2, padding=1,
+                bias=False),
+            nn.BatchNorm2d(channels[3], **norm),
+            nn.ReLU(inplace=True),
+            _DenseResidualBlock(channels[3]),
+            _DenseResidualBlock(channels[3]))
+
+    @staticmethod
+    def _down_stage(in_channels, out_channels, blocks, stage, norm):
+        return spconv.SparseSequential(
+            spconv.SparseConv2d(
+                in_channels, out_channels, 3, stride=2, padding=1,
+                bias=False, indice_key=f'dv34_down{stage}'),
+            nn.BatchNorm1d(out_channels, **norm),
+            nn.ReLU(inplace=True),
+            *[_SparseBasicBlock(out_channels, f'dv34_stage{stage}')
+              for _ in range(blocks)])
+
+    def forward(self, inputs):
+        stage0 = self.stem(inputs)
+        stage1 = self.stage1(stage0)
+        stage2 = self.stage2(stage1)
+        stage3 = self.stage3(stage2)
+        stage4 = self.dense_stage(stage3.dense())
+        return stage2, stage3, stage4
+
+
+class _RPNGNeck(nn.Module):
+    """Fuse stride-16, stride-8 and stride-4 maps into one stride-4 map."""
+
+    def __init__(self, stride4_channels, stride8_channels, out_channels,
+                 layer_nums=5):
+        super().__init__()
+        norm = dict(eps=1e-3, momentum=0.01)
+        self.block16 = self._block(
+            stride8_channels, stride8_channels, layer_nums, norm)
+        self.up16_to8 = nn.Sequential(
+            nn.ConvTranspose2d(
+                stride8_channels, stride8_channels, 2, stride=2,
+                bias=False),
+            nn.BatchNorm2d(stride8_channels, **norm),
+            nn.ReLU(inplace=True))
+        self.block8 = self._block(
+            stride8_channels * 2, stride8_channels, layer_nums, norm)
+        self.up8_to4 = nn.Sequential(
+            nn.ConvTranspose2d(
+                stride8_channels, stride4_channels, 2, stride=2,
+                bias=False),
+            nn.BatchNorm2d(stride4_channels, **norm),
+            nn.ReLU(inplace=True))
+        self.block4 = self._block(
+            stride4_channels * 2, out_channels, layer_nums, norm)
+
+    @staticmethod
+    def _block(in_channels, out_channels, layer_nums, norm):
+        layers = []
+        for index in range(layer_nums + 1):
+            layers.extend((
+                nn.Conv2d(
+                    in_channels if index == 0 else out_channels,
+                    out_channels, 3, padding=1, bias=False),
+                nn.BatchNorm2d(out_channels, **norm),
+                nn.ReLU(inplace=True)))
+        return nn.Sequential(*layers)
+
+    @staticmethod
+    def _align(inputs, reference):
+        if inputs.shape[-2:] != reference.shape[-2:]:
+            inputs = F.interpolate(
+                inputs, size=reference.shape[-2:], mode='bilinear',
+                align_corners=False)
+        return inputs
+
+    def forward(self, stages):
+        stride4, stride8, stride16 = stages
+        stride4 = stride4.dense()
+        stride8 = stride8.dense()
+        stride8_from16 = self._align(
+            self.up16_to8(self.block16(stride16)), stride8)
+        fused8 = self.block8(torch.cat((stride8, stride8_from16), dim=1))
+        stride4_from8 = self._align(self.up8_to4(fused8), stride4)
+        return self.block4(torch.cat((stride4, stride4_from8), dim=1))
+
+
 class _ASPPNeck(nn.Module):
     """Memory-conscious ASPP after the sparse backbone is densified."""
 
@@ -308,7 +438,9 @@ class DynamicPillarBEVEncoder(RGBPointPainter):
     def __init__(self, point_cloud_range, pillar_size,
                  temporal_sampling_distance, out_channels=128,
                  base_channels=64,
-                 use_rgb_pointpainting=True, point_features=None, **kwargs):
+                 use_rgb_pointpainting=True, point_features=None,
+                 backbone_type='pillarnext', return_road_evidence=False,
+                 align_to_lane_ground=False, **kwargs):
         super().__init__(
             use_rgb_pointpainting=use_rgb_pointpainting,
             point_features=point_features)
@@ -317,6 +449,14 @@ class DynamicPillarBEVEncoder(RGBPointPainter):
                                        for value in point_cloud_range)
         self.pillar_size = tuple(float(value) for value in pillar_size)
         self.out_channels = int(out_channels)
+        self.backbone_type = str(backbone_type)
+        self.return_road_evidence = bool(return_road_evidence)
+        self.align_to_lane_ground = bool(align_to_lane_ground)
+        if self.align_to_lane_ground and self.point_features != OPENLANE_POINT_FEATURES:
+            raise ValueError('Lane-ground calibration alignment requires OpenLane point coordinates')
+        if self.backbone_type not in ('pillarnext', 'dv34_rpng'):
+            raise ValueError(
+                'backbone_type must be "pillarnext" or "dv34_rpng".')
         self.queue_length = resolve_temporal_sampling(
             temporal_sampling_distance).queue_length
         self.has_elongation = 'elongation' in self.point_features
@@ -365,9 +505,15 @@ class DynamicPillarBEVEncoder(RGBPointPainter):
                 self.pillar_feature_channels, base_channels, bias=False),
             nn.BatchNorm1d(base_channels, **norm),
             nn.ReLU(inplace=True))
-        self.backbone = _SparseResNet2D(
-            base_channels, base_channels, self.out_channels)
-        self.lane_neck = _ASPPNeck(self.out_channels)
+        if self.backbone_type == 'dv34_rpng':
+            self.backbone = _SparseResNet34_2D(base_channels)
+            self.lane_neck = _RPNGNeck(
+                base_channels * 4, base_channels * 8,
+                self.out_channels)
+        else:
+            self.backbone = _SparseResNet2D(
+                base_channels, base_channels, self.out_channels)
+            self.lane_neck = _ASPPNeck(self.out_channels)
 
     def _load_from_state_dict(
             self, state_dict, prefix, local_metadata, strict,
@@ -624,31 +770,68 @@ class DynamicPillarBEVEncoder(RGBPointPainter):
             occupancy, size=(self.grid_h // 2, self.grid_w // 2),
             mode='nearest') > 0
 
+    def points_in_lane_ground(self, painted, img_metas):
+        """Express current-ego accumulated returns in the actual lane GT frame.
+
+        OpenLane lane coordinates zero the camera's horizontal translation.
+        Dataset returns instead use a pure rotation of vehicle coordinates.
+        Apply the per-frame calibration after RGB projection, so both the
+        image colors and BEV positions use their appropriate coordinate frame.
+        No lane annotations, predictions or frame-specific fitted offsets.
+        """
+        if not self.align_to_lane_ground:
+            return painted
+        aligned = []
+        for batch_index, sample in enumerate(painted):
+            meta = img_metas[batch_index] if isinstance(img_metas, (list, tuple)) else img_metas
+            current = meta.get('current', meta) if isinstance(meta, dict) else {}
+            calib = current.get('openlane_calib', {})
+            if 'vehicle_to_ground' not in calib:
+                raise ValueError('Lane-ground alignment requires current OpenLane calibration metadata')
+            vehicle_to_lane = torch.as_tensor(calib['vehicle_to_ground'],
+                                              device=sample.device, dtype=sample.dtype)
+            ground_to_vehicle = torch.eye(4, device=sample.device, dtype=sample.dtype)
+            ground_to_vehicle[:3, :3] = sample.new_tensor(GROUND_TO_VEHICLE_AXES)
+            transform = vehicle_to_lane @ ground_to_vehicle
+            value = sample.clone()
+            value[:, :3] = sample[:, :3] @ transform[:3, :3].T + transform[:3, 3]
+            aligned.append(value)
+        return aligned
+
     def forward(self, points, img_feats=None, img_metas=None, images=None):
         del img_feats
-        pillars = self.pillarize(
-            self.paint_points(points, images=images, img_metas=img_metas))
+        painted = self.paint_points(points, images=images, img_metas=img_metas)
+        painted = self.points_in_lane_ground(painted, img_metas)
+        pillars = self.pillarize(painted)
         batch_size = pillars['batch_size']
         occupancy = self._occupancy(
             pillars['coordinates'], batch_size, pillars['features'].device)
         output_size = (self.grid_h // 2, self.grid_w // 2)
+        extra = {}
+        if self.return_road_evidence:
+            from .road_evidence import road_evidence
+            extra['road_evidence'] = road_evidence(
+                painted, self.point_cloud_range, *output_size,
+                rgb_start=self.raw_point_channels - int(self.has_queue_index))
         if not pillars['features'].numel():
             return dict(
                 features=pillars['features'].new_zeros(
                     batch_size, self.out_channels, *output_size),
-                occupancy=occupancy)
+                occupancy=occupancy, **extra)
 
         sparse_inputs = spconv.SparseConvTensor(
             self.pillar_projection(pillars['features']),
             pillars['coordinates'],
             spatial_shape=(self.grid_h, self.grid_w),
             batch_size=batch_size)
-        dense_features = self.backbone(sparse_inputs).dense()
-        dense_features = self.lane_neck(dense_features)
+        encoded = self.backbone(sparse_inputs)
+        dense_features = self.lane_neck(
+            encoded if self.backbone_type == 'dv34_rpng'
+            else encoded.dense())
         features = F.interpolate(
             dense_features, size=output_size,
             mode='bilinear', align_corners=False)
         sample_valid = occupancy.flatten(1).any(dim=-1)
         features = features * sample_valid[:, None, None, None].to(
             features.dtype)
-        return dict(features=features, occupancy=occupancy)
+        return dict(features=features, occupancy=occupancy, **extra)

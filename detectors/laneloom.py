@@ -309,10 +309,14 @@ class LaneLoom(BaseModel):
         target_keys = (
             'gt_lanes_3d', 'gt_lanes_uv', 'gt_lanes_visibility',
             'gt_lanes_category', 'gt_lane_track_ids', 'gt_lanes_memory_mask',
+            'gt_lanes_3d_full', 'gt_lanes_full_valid',
+            'gt_lanes_full_z_weights',
+            'gt_shape_templates', 'gt_shape_template_valid',
+            'gt_shape_template_z_weights',
             'gt_lanes_3d_enhanced', 'gt_lanes_visibility_enhanced',
             'gt_lanes_category_enhanced',
             'gt_lane_track_ids_enhanced', 'ground_lanes', 'raw_lanes_3d',
-            'raw_lanes_uv', 'raw_lanes_uvy')
+            'raw_lanes_uv', 'raw_lanes_uvy', 'raw_label')
         return {key: batch[key] for key in target_keys if key in batch}
 
     def forward(self, mode='tensor', **batch):

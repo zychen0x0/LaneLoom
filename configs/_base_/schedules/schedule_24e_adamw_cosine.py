@@ -21,7 +21,7 @@ optim_wrapper = dict(
 
 
 # ---------------------------------------------------schedule start---------------------------------------------------
-total_epochs = 48
+total_epochs = 24
 val_interval = 1
 keep_n_ckpts = 2
 

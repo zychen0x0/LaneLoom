@@ -273,9 +273,9 @@ eval_pipeline = test_pipeline
 
 # ---------------------------------------------------data config start---------------------------------------------------
 seed = 0
-batch_size_per_gpu = 8
-val_batch_size_per_gpu = 12
-num_workers = 4
+batch_size_per_gpu = 14
+val_batch_size_per_gpu = 14
+num_workers = 7
 persistent_workers = False
 
 dataset_cfg = dict(

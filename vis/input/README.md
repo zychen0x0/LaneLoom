@@ -35,7 +35,7 @@ sample”组织结果：
 
 ```bash
 python vis/input/visualize_sample.py \
-  /workspace/LaneLoom/data/openlane/images/validation/segment-5373876050695013404_3817_170_3837_170_with_camera_labels/151026502946490600.jpg
+  /workspace/LaneLoom/data/openlane/images/validation/segment-14811410906788672189_373_113_393_113_with_camera_labels/150724277455060100.jpg
 ```
 
 输出位置：

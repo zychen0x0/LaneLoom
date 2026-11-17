@@ -200,14 +200,16 @@ class TrainingLoggerHook(Hook):
 
     def _log_once_evaluation_summary(self, runner, metrics):
         runner.logger.info(
-            'F1 = {:.4f}%\n'
-            'Precision = {:.4f}%\n'
-            'Recall = {:.4f}%\n'
-            'CDE = {:.4f} cm'.format(
-                100.0 * self._metric_value(metrics, 'best_F1'),
-                100.0 * self._metric_value(metrics, 'best_Precision'),
-                100.0 * self._metric_value(metrics, 'best_Recall'),
-                100.0 * self._metric_value(metrics, 'best_CDE')))
+            'score_threshold = {:.2f}\n'
+            'F1              = {:.8f}\n'
+            'Precision       = {:.8f}\n'
+            'Recall          = {:.8f}\n'
+            'CDE             = {:.8f} m'.format(
+                self._metric_value(metrics, 'best_score_threshold'),
+                self._metric_value(metrics, 'best_F1'),
+                self._metric_value(metrics, 'best_Precision'),
+                self._metric_value(metrics, 'best_Recall'),
+                self._metric_value(metrics, 'best_CDE')))
 
     def _log_openlane_evaluation_summary(self, runner, metrics):
         runner.logger.info(

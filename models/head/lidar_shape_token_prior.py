@@ -38,6 +38,8 @@ class LiDARShapeTokenPrior(nn.Module):
                  shape_cover_loss_weight=1.0,
                  shape_mode_loss_weight=1.0,
                  shape_diversity_loss_weight=0.05,
+                 supervise_shapes=True,
+                 shape_supervision='visible_modes',
                  **kwargs):
         super().__init__()
         removed_options = sorted({
@@ -59,6 +61,8 @@ class LiDARShapeTokenPrior(nn.Module):
         self.max_templates = int(max_templates)
         self.lateral_slope_scale = float(lateral_slope_scale)
         self.vertical_slope_scale = float(vertical_slope_scale)
+        self.supervise_shapes = bool(supervise_shapes)
+        self.shape_supervision = str(shape_supervision)
         self.shape_softmin_temperature = float(shape_softmin_temperature)
         self.shape_nms_threshold = float(shape_nms_threshold)
         self.aligned_p80_threshold = float(aligned_p80_threshold)
@@ -85,6 +89,10 @@ class LiDARShapeTokenPrior(nn.Module):
         )
         if self.max_templates <= 0:
             raise ValueError('max_templates must be positive.')
+        if self.shape_supervision not in ('visible_modes', 'full_templates'):
+            raise ValueError(
+                'shape_supervision must be "visible_modes" or '
+                '"full_templates".')
         if self.lateral_slope_scale <= 0 or self.vertical_slope_scale <= 0:
             raise ValueError('Slope scales must be positive.')
         if min(self.shape_scales) <= 0:
@@ -389,8 +397,8 @@ class LiDARShapeTokenPrior(nn.Module):
                 members |= assignment.unsqueeze(-1) & template.unsqueeze(1)
                 active |= assignment
 
-            costs = torch.einsum(
-                'bij,bcj->bci', pairwise, members.to(pairwise.dtype))
+            costs = torch.where(
+                members.unsqueeze(2), pairwise.unsqueeze(1), 0).sum(dim=-1)
             costs = costs.masked_fill(~members, torch.inf)
             medoids = costs.argmin(dim=-1)
         return medoids, active
@@ -525,10 +533,13 @@ class LiDARShapeTokenPrior(nn.Module):
         )
 
     def forward(self, pts_feats, img_feats=None, img_metas=None):
+        return self._format_prior(self._relative_controls(pts_feats, img_feats))
+
+    def _format_prior(self, controls):
         (x_controls, z_controls, lateral_slopes, vertical_slopes,
          control_yaw_degrees, control_pitch_degrees,
          shape_query_features,
-         from_lidar) = self._relative_controls(pts_feats, img_feats)
+         from_lidar) = controls
         shape_points = self._sample_curves(x_controls, z_controls)
         control_y = self.control_y.to(x_controls).view(1, 1, 4).expand_as(
             x_controls)
@@ -550,7 +561,63 @@ class LiDARShapeTokenPrior(nn.Module):
             from_lidar=from_lidar,
         )
 
-    def loss(self, prior, lanes_3d, visibility):
+    def _full_template_loss(
+            self, prior, shape_templates, shape_template_valid,
+            shape_template_z_weights=None):
+        predicted = prior['shape_points']
+        targets = shape_templates.to(predicted).float()
+        valid = shape_template_valid.to(
+            device=predicted.device, dtype=torch.bool)
+        valid &= torch.isfinite(targets).all(dim=-1).all(dim=-1)
+        from_lidar = prior['from_lidar']
+        if not torch.is_tensor(from_lidar):
+            from_lidar = torch.full(
+                (predicted.size(0),), bool(from_lidar),
+                dtype=torch.bool, device=predicted.device)
+        valid &= from_lidar.unsqueeze(-1)
+
+        difference = (
+            predicted.unsqueeze(1)[..., (0, 2)]
+            - targets.unsqueeze(2)[..., (0, 2)])
+        point_loss = F.smooth_l1_loss(
+            difference, torch.zeros_like(difference), reduction='none')
+        if shape_template_z_weights is None:
+            pair_loss = point_loss.mean(dim=-1).mean(dim=-1)
+        else:
+            z_weights = shape_template_z_weights.to(
+                device=predicted.device, dtype=predicted.dtype)
+            z_weights = z_weights.clamp_min(0).unsqueeze(2)
+            x_loss = point_loss[..., 0].mean(dim=-1)
+            z_loss = (point_loss[..., 1] * z_weights).sum(dim=-1)
+            z_loss = z_loss / z_weights.sum(dim=-1).clamp_min(1e-6)
+            pair_loss = (x_loss + z_loss) * 0.5
+        pair_loss = pair_loss.masked_fill(~valid.unsqueeze(-1), torch.inf)
+        assignments = batched_hungarian_assignment(pair_loss.detach())
+        matched = valid & (assignments >= 0)
+        selected = pair_loss.gather(
+            -1, assignments.clamp_min(0).unsqueeze(-1)).squeeze(-1)
+        loss = torch.where(matched, selected, 0).sum()
+        loss = loss / matched.sum().clamp_min(1).to(loss.dtype)
+        return dict(
+            loss_lidar_shape_template=(
+                loss * self.shape_cover_loss_weight),
+            diag_gt_shape_template_count=(
+                valid.sum(dim=-1).to(predicted.dtype).mean()),
+        )
+
+    def loss(self, prior, lanes_3d, visibility,
+             shape_templates=None, shape_template_valid=None,
+             shape_template_z_weights=None):
+        if not self.supervise_shapes:
+            return {}
+        if self.shape_supervision == 'full_templates':
+            if shape_templates is None or shape_template_valid is None:
+                raise ValueError(
+                    'Full-template supervision requires shape_templates and '
+                    'shape_template_valid targets.')
+            return self._full_template_loss(
+                prior, shape_templates, shape_template_valid,
+                shape_template_z_weights)
         from_lidar = prior['from_lidar']
         if not torch.is_tensor(from_lidar):
             from_lidar = torch.full(

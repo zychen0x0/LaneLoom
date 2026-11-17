@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import xml.etree.ElementTree as ET
 from pathlib import Path
 
 import numpy as np
@@ -15,6 +16,8 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_IMAGE_ROOT = REPO_ROOT / 'data/openlane/images'
 DEFAULT_LABEL_ROOT = REPO_ROOT / 'data/openlane/lane3d_1000'
 DEFAULT_OUTPUT_ROOT = Path(__file__).resolve().parent / 'openlane'
+PAPER_DPI = 600
+SVG_NAMESPACE = 'http://www.w3.org/2000/svg'
 
 
 def _resolve_label(image_path: Path, label_path: Path | None) -> Path:
@@ -46,22 +49,14 @@ def _parse_lane_uv_points(lane: dict) -> np.ndarray | None:
     return uv
 
 
-def rasterize_uv_mask(
-        label: dict, source_size: tuple[int, int], output_size: tuple[int, int],
-        line_width: int = 5) -> Image.Image:
-    """Return a strict 0/255 mask from raw ``lane_lines[].uv`` coordinates."""
-    if line_width < 1:
-        raise ValueError('line_width must be at least 1 pixel.')
+def _iter_scaled_lane_segments(
+        label: dict, source_size: tuple[int, int],
+        output_size: tuple[int, int]):
     source_width, source_height = source_size
     output_width, output_height = output_size
-    if min(source_width, source_height, output_width, output_height) < 1:
-        raise ValueError('Image dimensions must be positive.')
-
     scale = np.array(
         [output_width / source_width, output_height / source_height],
         dtype=np.float64)
-    mask = Image.new('L', output_size, 0)
-    draw = ImageDraw.Draw(mask)
     for lane in label.get('lane_lines', []):
         uv = _parse_lane_uv_points(lane)
         if uv is None:
@@ -75,22 +70,80 @@ def rasterize_uv_mask(
             end = start
             while end < len(uv) and finite[end]:
                 end += 1
-            if end - start >= 2:
-                points = [tuple(point) for point in uv[start:end]]
-                draw.line(points, fill=255, width=line_width, joint='curve')
-            elif end - start == 1:
-                x, y = uv[start]
-                radius = line_width / 2
-                draw.ellipse(
-                    (x - radius, y - radius, x + radius, y + radius), fill=255)
+            if end > start:
+                yield uv[start:end]
             start = end
+
+
+def rasterize_uv_mask(
+        label: dict, source_size: tuple[int, int], output_size: tuple[int, int],
+        line_width: int = 5) -> Image.Image:
+    """Return a strict 0/255 mask from raw ``lane_lines[].uv`` coordinates."""
+    if line_width < 1:
+        raise ValueError('line_width must be at least 1 pixel.')
+    source_width, source_height = source_size
+    output_width, output_height = output_size
+    if min(source_width, source_height, output_width, output_height) < 1:
+        raise ValueError('Image dimensions must be positive.')
+
+    mask = Image.new('L', output_size, 0)
+    draw = ImageDraw.Draw(mask)
+    for segment in _iter_scaled_lane_segments(
+            label, source_size, output_size):
+        if len(segment) >= 2:
+            draw.line(
+                [tuple(point) for point in segment],
+                fill=255, width=line_width, joint='curve')
+        else:
+            x, y = segment[0]
+            radius = line_width / 2
+            draw.ellipse(
+                (x - radius, y - radius, x + radius, y + radius), fill=255)
     return mask
+
+
+def export_uv_mask_svg(
+        label: dict, source_size: tuple[int, int],
+        output_size: tuple[int, int], line_width: int,
+        output_path: Path) -> Path:
+    """Export the UV annotation as resolution-independent SVG paths."""
+    width, height = output_size
+    ET.register_namespace('', SVG_NAMESPACE)
+    root = ET.Element(
+        f'{{{SVG_NAMESPACE}}}svg',
+        {'width': str(width), 'height': str(height),
+         'viewBox': f'0 0 {width} {height}'})
+    ET.SubElement(
+        root, f'{{{SVG_NAMESPACE}}}rect',
+        {'width': '100%', 'height': '100%', 'fill': 'black'})
+    for segment in _iter_scaled_lane_segments(
+            label, source_size, output_size):
+        if len(segment) >= 2:
+            points = ' '.join(
+                f'{x:.3f},{y:.3f}' for x, y in segment)
+            ET.SubElement(
+                root, f'{{{SVG_NAMESPACE}}}polyline',
+                {'points': points, 'fill': 'none', 'stroke': 'white',
+                 'stroke-width': str(line_width),
+                 'stroke-linecap': 'round', 'stroke-linejoin': 'round'})
+        else:
+            x, y = segment[0]
+            ET.SubElement(
+                root, f'{{{SVG_NAMESPACE}}}circle',
+                {'cx': f'{x:.3f}', 'cy': f'{y:.3f}',
+                 'r': f'{line_width / 2:.3f}', 'fill': 'white'})
+    ET.ElementTree(root).write(
+        output_path, encoding='utf-8', xml_declaration=True)
+    return output_path
 
 
 def export_uv_gt_mask(
         image_path: Path, label_path: Path | None = None,
         output_path: Path | None = None, output_size: tuple[int, int] = (960, 640),
-        line_width: int = 5) -> Path:
+        line_width: int = 5, dpi: int = PAPER_DPI,
+        export_svg: bool = True) -> Path:
+    if dpi < 1:
+        raise ValueError('dpi must be positive.')
     image_path = image_path.expanduser().resolve()
     if not image_path.is_file():
         raise FileNotFoundError(f'OpenLane image does not exist: {image_path}')
@@ -108,7 +161,11 @@ def export_uv_gt_mask(
     output_path.parent.mkdir(parents=True, exist_ok=True)
     mask = rasterize_uv_mask(
         label, source_size, output_size, line_width=line_width)
-    mask.save(output_path)
+    mask.save(output_path, dpi=(dpi, dpi))
+    if export_svg:
+        export_uv_mask_svg(
+            label, source_size, output_size, line_width,
+            output_path.with_suffix('.svg'))
     return output_path
 
 
@@ -128,6 +185,12 @@ def _parse_args(argv=None):
     parser.add_argument(
         '--line-width', type=int, default=5,
         help='Lane rasterization width in output pixels (default: 5).')
+    parser.add_argument(
+        '--dpi', type=int, default=PAPER_DPI,
+        help=f'PNG resolution metadata (default: {PAPER_DPI} DPI).')
+    parser.add_argument(
+        '--no-svg', action='store_true',
+        help='Do not write the resolution-independent SVG mask.')
     return parser.parse_args(argv)
 
 
@@ -138,8 +201,12 @@ def main(argv=None) -> int:
         label_path=args.label,
         output_path=args.output,
         output_size=tuple(args.size),
-        line_width=args.line_width)
+        line_width=args.line_width,
+        dpi=args.dpi,
+        export_svg=not args.no_svg)
     print(output_path)
+    if not args.no_svg:
+        print(output_path.with_suffix('.svg'))
     return 0
 
 

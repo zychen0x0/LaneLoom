@@ -13,7 +13,9 @@ class BEVLaneHead(nn.Module):
 
     def __init__(self, bev_encoder, lane_decoder, loss_module,
                  anchor_prior=None, proposal_expander=None,
-                 query_sampler=None, test_cfg=None, **kwargs):
+                 query_sampler=None, test_cfg=None,
+                 use_enhanced_prior_gt=True, q0_raw_visible_supervision=False,
+                 q0_lane_field_loss_weight=0., **kwargs):
         super().__init__()
         self.bev_encoder = MODELS.build(bev_encoder)
         self.lane_decoder = MODELS.build(lane_decoder)
@@ -28,6 +30,16 @@ class BEVLaneHead(nn.Module):
         self.test_cfg = test_cfg or {}
         self.score_threshold = float(self.test_cfg.get('score_threshold', 0.3))
         self.curve_nms_cfg = self.test_cfg.get('curve_nms')
+        self.use_enhanced_prior_gt = bool(use_enhanced_prior_gt)
+        self.q0_raw_visible_supervision = bool(q0_raw_visible_supervision)
+        self.q0_lane_field_loss_weight = float(q0_lane_field_loss_weight)
+        if self.q0_lane_field_loss_weight < 0 or (
+                self.q0_lane_field_loss_weight and not self.q0_raw_visible_supervision):
+            raise ValueError('Lane-field supervision requires raw-visible Q0 supervision')
+        if self.q0_raw_visible_supervision and (
+                self.anchor_prior is None or self.proposal_expander is None
+                or self.anchor_prior.supervise_shapes):
+            raise ValueError('Raw-visible Q0 supervision requires proposals and disables template losses')
 
     @property
     def anchor_y_steps(self):
@@ -130,7 +142,8 @@ class BEVLaneHead(nn.Module):
         lidar_occupancy = self._lidar_occupancy(pts_feats, current_bev)
         prior_lanes = targets['gt_lanes_3d']
         prior_visibility = targets['gt_lanes_visibility']
-        if (targets.get('gt_lanes_3d_enhanced') is not None
+        if (getattr(self, 'use_enhanced_prior_gt', True)
+                and targets.get('gt_lanes_3d_enhanced') is not None
                 and targets.get('gt_lanes_visibility_enhanced') is not None):
             prior_lanes = targets['gt_lanes_3d_enhanced']
             prior_visibility = targets['gt_lanes_visibility_enhanced']
@@ -145,11 +158,50 @@ class BEVLaneHead(nn.Module):
                 img_feats, current_bev, img_metas, lidar_occupancy),
             required_query_selector=required_query_selector), **targets)
         if anchor_prior is not None:
+            if self.q0_raw_visible_supervision:
+                # Q0 predictions and decoder sampling are complete before raw
+                # annotations enter their training-only supervision path.
+                from LaneLoom.datasets.openlane.dataset import openlane_raw_visible_gt
+                from ..losses.q0_visible_geometry import raw_visible_geometry_loss
+                from ..losses.bev_lane_field import bev_lane_field_loss
+                if targets.get('raw_label') is None:
+                    raise ValueError('Raw-visible Q0 training requires original JSON labels')
+                points, visible = openlane_raw_visible_gt(
+                    targets['raw_label'], self.proposal_expander.pc_range)
+                device = anchor_prior['curve_x_controls'].device
+                points, visible = points.to(device), visible.to(device)
+                losses.update(raw_visible_geometry_loss(
+                    anchor_prior, points, visible,
+                    length=float(self.anchor_prior.anchor_y_steps[-1])))
+                if self.q0_lane_field_loss_weight:
+                    field_losses = bev_lane_field_loss(
+                        anchor_prior, points, visible, self.proposal_expander.pc_range)
+                    losses.update({key: value * self.q0_lane_field_loss_weight
+                                   if key.startswith('loss_') else value
+                                   for key, value in field_losses.items()})
+                return losses
             losses.update(self.anchor_prior.loss(
-                anchor_prior, prior_lanes, prior_visibility))
+                anchor_prior, prior_lanes, prior_visibility,
+                shape_templates=targets.get('gt_shape_templates'),
+                shape_template_valid=targets.get(
+                    'gt_shape_template_valid'),
+                shape_template_z_weights=targets.get(
+                    'gt_shape_template_z_weights')))
             if self.proposal_expander is not None:
-                losses.update(self.proposal_expander.loss(
-                    anchor_prior, prior_lanes, prior_visibility))
+                q0_lanes = targets.get('gt_lanes_3d_full', prior_lanes)
+                q0_visibility = prior_visibility
+                full_lane_valid = targets.get('gt_lanes_full_valid')
+                if full_lane_valid is not None:
+                    q0_visibility = full_lane_valid.unsqueeze(-1).expand(
+                        -1, -1, q0_lanes.size(-2)).to(q0_lanes.dtype)
+                q0_z_weights = targets.get('gt_lanes_full_z_weights')
+                if q0_z_weights is None:
+                    losses.update(self.proposal_expander.loss(
+                        anchor_prior, q0_lanes, q0_visibility))
+                else:
+                    losses.update(self.proposal_expander.loss(
+                        anchor_prior, q0_lanes, q0_visibility,
+                        z_weights=q0_z_weights))
         return losses
 
     def predict(self, img_feats, pts_feats, img_metas, prev_bev=None, **kwargs):
