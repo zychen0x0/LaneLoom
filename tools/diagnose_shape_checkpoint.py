@@ -27,11 +27,6 @@ from LaneLoom.models.head.curve_nms import mean_distance_curve_nms
 from LaneLoom.vis.output.infer_openlane_sample import _build_model, _build_sample
 
 
-DEFAULT_CHECKPOINT = (
-    ROOT / "work_dirs/laneloom_openlane_image_lidar_temporal_0923"
-    / "exp_date_20260923_230337/checkpoints"
-    / "epoch_18.pth"
-)
 SCENES = (
     "segment-14811410906788672189_373_113_393_113_with_camera_labels/150724276945019300",
     "segment-17612470202990834368_2800_000_2820_000_with_camera_labels/155364079579344600",
@@ -449,7 +444,8 @@ def _analyze_model(cfg, checkpoint, image, lanes, visible, targets,
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--checkpoint", type=Path, default=DEFAULT_CHECKPOINT)
+    parser.add_argument("--checkpoint", type=Path, required=True,
+                        help="Path to the epoch-18 checkpoint.")
     parser.add_argument("--output-dir", type=Path, default=ROOT / "work_dirs/shape_checkpoint_diagnostic_epoch18")
     parser.add_argument("--gt-only", action="store_true",
                         help="Audit target construction when CUDA is unavailable")

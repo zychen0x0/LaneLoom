@@ -51,6 +51,7 @@ mlruns/
 tensorboard/
 Tensorboard/
 runs/
+vis/
 
 # Model weights and exported inference engines
 *.pth

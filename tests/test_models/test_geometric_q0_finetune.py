@@ -1,7 +1,4 @@
 """Preserve learned initialization while rebuilding the decoder sampling grid."""
-from pathlib import Path
-
-from mmengine.config import Config
 import pytest
 import torch
 from torch import nn
@@ -12,24 +9,7 @@ from LaneLoom.models.losses.bev_lane_field import bev_lane_field_loss
 from LaneLoom.tools.prepare_q0_finetune_checkpoint import compose_state
 
 
-def test_finetune_configuration_retains_full_temporal_detector_and_raw_q0_supervision():
-    root = Path(__file__).resolve().parents[2]
-    base = Config.fromfile(root / 'configs/main/laneloom_openlane_image_lidar_temporal.py')
-    cfg = Config.fromfile(root / 'configs/ablations/laneloom_openlane_temporal_geometric_q0_5e.py')
-    assert cfg.model.lane_head.lane_decoder == base.model.lane_head.lane_decoder
-    assert cfg.model.lane_head.query_sampler == base.model.lane_head.query_sampler
-    assert cfg.model.lane_head.anchor_prior.geometric_readout is True
-    assert cfg.model.lane_head.anchor_prior.supervise_shapes is False
-    assert cfg.model.lane_head.q0_raw_visible_supervision is True
-    assert cfg.model.lane_head.q0_lane_field_loss_weight == 1
-    assert cfg.model.pts_bev_encoder.pillar_size == [.1, .2]
-    assert cfg.model.pts_bev_encoder.align_to_lane_ground is True
-    assert cfg.train_cfg.max_epochs == cfg.param_scheduler[-1].T_max == 5
-    assert cfg.train_dataloader.dataset.split == 'train'
-    assert not cfg.train_dataloader.dataset.dataset_cfg.get('excluded_segments')
-    assert cfg.val_dataloader.dataset.split == 'val'
-    assert cfg.val_evaluator.use_temporal_gt_supplement is False
-    assert cfg.default_hooks.checkpoint.save_best == 'OpenLaneOfficial/F1'
+def test_lane_targets_preserve_raw_labels():
     raw = [dict(lane_lines=[])]
     assert LaneLoom._lane_targets(dict(raw_label=raw))['raw_label'] is raw
 

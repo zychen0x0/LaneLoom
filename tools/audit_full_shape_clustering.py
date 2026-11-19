@@ -294,13 +294,14 @@ def _summary(rows):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--config", type=Path, required=True,
+                        help="OpenLane config for the dataset being audited")
     parser.add_argument("--train-samples", type=int, default=1200)
     parser.add_argument("--val-samples", type=int, default=600)
     parser.add_argument("--output", type=Path, default=(
         ROOT / "work_dirs/shape_clustering_audit/audit.json"))
     args = parser.parse_args()
-    cfg = Config.fromfile(str(ROOT / "configs/ablations/"
-                              "laneloom_openlane_image_lidar_temporal_0923.py"))
+    cfg = Config.fromfile(args.config)
     dc = cfg.train_dataloader.dataset
     dataset = OpenLaneDataset(
         dataset_cfg=dc.dataset_cfg,
@@ -309,7 +310,7 @@ def main():
         gt_outlier_residual=dc.gt_outlier_residual,
         modality=dc.modality, split="train", max_samples=1)
     label_root = Path(dc.dataset_cfg.data_label_dir)
-    curated = _curated_paths(ROOT / "docs/场景.md", label_root)
+    curated = _curated_paths(ROOT / "docs/场景数据可视化.md", label_root)
     rng = random.Random(20260924)
     frames = []
     for split, count in (("training", args.train_samples),

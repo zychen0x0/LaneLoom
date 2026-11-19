@@ -31,14 +31,15 @@ def _guarded_clusters(lanes):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--config", type=Path, required=True,
+                        help="OpenLane config used to generate the audit")
     parser.add_argument("--audit", type=Path, default=(
         ROOT / "work_dirs/shape_clustering_audit/audit.json"))
     parser.add_argument("--output", type=Path, default=(
         ROOT / "work_dirs/shape_clustering_audit/target_delta.json"))
     args = parser.parse_args()
     audit = json.loads(args.audit.read_text())
-    cfg = Config.fromfile(str(ROOT / "configs/ablations/"
-                              "laneloom_openlane_image_lidar_temporal_0923.py"))
+    cfg = Config.fromfile(args.config)
     dc = cfg.train_dataloader.dataset
     dataset = OpenLaneDataset(
         dataset_cfg=dc.dataset_cfg,

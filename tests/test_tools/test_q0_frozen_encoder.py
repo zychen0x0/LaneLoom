@@ -1,5 +1,6 @@
 """A head comparison must share a training-only encoder and freeze its buffers."""
 import hashlib
+from pathlib import Path
 
 import pytest
 import torch
@@ -7,7 +8,7 @@ from mmengine.config import Config
 from torch import nn
 
 from LaneLoom.engine import register_all_modules
-from LaneLoom.tools.train_q0_prior import Q0Pretrainer, load_training_encoder, model_training_signature
+from LaneLoom.tools.train_q0_prior import Q0Pretrainer, load_training_encoder
 from LaneLoom.tools.evaluate_q0_prior import load_model
 
 
@@ -78,8 +79,11 @@ def test_train_mode_cannot_update_frozen_encoder_parameters_or_batchnorm():
 
 def test_saved_model_is_self_contained_and_need_not_reopen_initialization_checkpoint(tmp_path):
     register_all_modules()
-    cfg = Config.fromfile('configs/ablations/laneloom_openlane_q0_frozen_encoder.py')
+    root = Path(__file__).resolve().parents[2]
+    cfg = Config.fromfile(root / 'configs/main/laneloom_openlane_image_lidar_temporal.py')
     cfg.q0_encoder_checkpoint = str(tmp_path/'missing-source.pth')
+    cfg.q0_freeze_encoder = True
+    cfg.q0_evaluation_split = 'validation'
     model = Q0Pretrainer(cfg, initialize_encoder=False)
     assert all(not p.requires_grad for p in model.pts_bev_encoder.parameters())
     protocol = dict(target_overlap=0, feature_cache_used=False, target_oversampling=False)
@@ -92,14 +96,8 @@ def test_saved_model_is_self_contained_and_need_not_reopen_initialization_checkp
         torch.testing.assert_close(value,restored.state_dict()[key],rtol=0,atol=0)
 
 
-def test_frozen_head_experiments_share_source_data_and_record_the_training_change():
-    baseline = Config.fromfile('configs/ablations/laneloom_openlane_q0_frozen_encoder.py')
-    new = Config.fromfile('configs/ablations/laneloom_openlane_q0_frozen_encoder_field_geometry.py')
-    fresh = Config.fromfile('configs/ablations/laneloom_openlane_q0_fulltrain.py')
-    assert baseline.q0_encoder_checkpoint == new.q0_encoder_checkpoint
-    assert baseline.q0_freeze_encoder is new.q0_freeze_encoder is True
-    assert baseline.train_dataloader == new.train_dataloader
-    assert model_training_signature(baseline) != model_training_signature(fresh)
-    baseline.q0_evaluation_split = 'training'
+def test_training_pretrained_encoder_rejects_training_scene_holdout(tmp_path):
+    cfg = Config(dict(q0_encoder_checkpoint=str(tmp_path / 'training.pth'),
+                      q0_freeze_encoder=True, q0_evaluation_split='training'))
     with pytest.raises(ValueError, match='holdout'):
-        Q0Pretrainer(baseline)
+        Q0Pretrainer(cfg)

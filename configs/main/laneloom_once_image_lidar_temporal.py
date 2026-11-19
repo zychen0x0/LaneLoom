@@ -1,4 +1,4 @@
-"""LaneLoom temporal image + LiDAR training on ONCE-3DLanes."""
+"""ONCE-3DLanes three-frame training on cam01 images and LiDAR."""
 
 _base_ = [
     '../_base_/datasets/once_datasets.py',
@@ -8,6 +8,7 @@ _base_ = [
 
 default_scope = 'mmdet3d'
 launcher = 'none'
+# Run exp_date_20261010_165137 loads its ONCE initialization via --load-from.
 work_dir = './work_dirs/laneloom_once_image_lidar'
 model_wrapper_cfg = dict(
     type='MMDistributedDataParallel',

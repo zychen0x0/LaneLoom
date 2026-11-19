@@ -25,8 +25,9 @@ plt = infer.plt
 plt.rcParams.update({'font.family': 'sans-serif', 'font.sans-serif': ['DejaVu Sans'],
                      'svg.fonttype': 'none',
                      'pdf.fonttype': 42, 'font.size': 8})
-DEFAULT_CHECKPOINT = REPO_ROOT / (
-    'work_dirs/laneloom_openlane_image_lidar_temporal_0923_z_confidence_full_50e/'
+DEFAULT_CHECKPOINT = REPO_ROOT.parent / (
+    'LaneLoom-removed-experiments/openlane-temporal-legacy/work_dirs/'
+    'laneloom_openlane_image_lidar_temporal_0923_z_confidence_full_50e/'
     'exp_date_20260924_174958/checkpoints/best_OpenLaneOfficial_F1_epoch_43.pth')
 DEFAULT_IMAGES = [REPO_ROOT / 'data/openlane/images/validation' / scene / frame
                   for scene, frame in (

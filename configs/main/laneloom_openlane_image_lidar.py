@@ -1,4 +1,4 @@
-"""Single-frame OpenLane image + LiDAR training and official evaluation."""
+"""OpenLane single-frame image + LiDAR run exp_date_20260831_230204."""
 
 # ---------------------------------------------------base config start---------------------------------------------------
 _base_ = [
@@ -38,10 +38,13 @@ output_y_steps = [2.0 * i for i in range(1, 51)]
 evidence_y_steps = [5.0 * i for i in range(1, 21)]
 score_threshold = {{_base_.score_threshold}}
 temporal_sampling_distance = False
+temporal_sampling_enabled = False
 
 # Single-frame validation uses the official current-frame ground truth.
 validation_metric_prefix = 'OpenLaneOfficial'
 validation_best_metric = 'OpenLaneOfficial/F1'
+temporal_validation_prefix = validation_metric_prefix
+temporal_validation_best_metric = validation_best_metric
 val_evaluator = dict(
     prefix=validation_metric_prefix,
     use_temporal_gt_supplement=False)
@@ -56,6 +59,7 @@ backbone_init = 'torchvision://resnet50'
 # On a 24 GiB RTX 3090, 14 samples per GPU keeps useful headroom for
 # the variable number of LiDAR points in each single-frame batch.
 train_batch_size_per_gpu = 14
+num_workers = 6
 
 # Use every OpenLane training, validation, and test annotation.
 dataset_name = 'openlane'
@@ -65,14 +69,17 @@ test_dataset_cfg = dict(dataset_cfg)
 
 train_dataloader = dict(
     batch_size=train_batch_size_per_gpu,
+    num_workers=num_workers,
     dataset=dict(
         temporal_sampling_distance=temporal_sampling_distance,
         dataset_cfg=dataset_cfg))
 val_dataloader = dict(
+    num_workers=num_workers,
     dataset=dict(
         temporal_sampling_distance=temporal_sampling_distance,
         dataset_cfg=dataset_cfg))
 test_dataloader = dict(
+    num_workers=num_workers,
     dataset=dict(
         temporal_sampling_distance=temporal_sampling_distance,
         dataset_cfg=test_dataset_cfg))

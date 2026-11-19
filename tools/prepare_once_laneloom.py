@@ -1,4 +1,4 @@
-"""Prepare the p0+p1 ONCE-3DLanes image/LiDAR subset for LaneLoom."""
+"""Prepare ONCE-3DLanes images, LiDAR, and annotations for LaneLoom."""
 
 from __future__ import annotations
 
@@ -310,7 +310,7 @@ def _flatten_data_directory(root):
     nested_root.rmdir()
 
 
-def _sample_paths(root, entry, annotation_split):
+def _sample_paths(root, entry, annotation_split, labels_root):
     sequence, _, filename = entry.split('/')
     stem = Path(filename).stem
     return (
@@ -318,27 +318,29 @@ def _sample_paths(root, entry, annotation_split):
         root / '3D_lidars' / sequence / 'lidar_roof' / f'{stem}.bin',
         root / '3D_infos' / sequence / f'{sequence}.json',
         None if annotation_split is None else
-        root / 'ONCE_3DLanes' / annotation_split / sequence / 'cam01'
-        / f'{stem}.json',
+        labels_root / annotation_split / sequence / 'cam01' / f'{stem}.json',
     )
 
 
-def _verify(root):
+def _verify(root, full_train=False):
+    labels_root = root if full_train else root / 'ONCE_3DLanes'
+    split_root = root / ('list' if full_train else 'LaneLoom_splits')
+    train_split = 'train' if full_train else 'train_p0p1'
     split_specs = (
-        ('train_p0p1', 'train'),
+        (train_split, 'train'),
         ('val', 'val'),
         ('test', None),
     )
     failures = []
     for split_name, annotation_split in split_specs:
-        split_path = root / 'LaneLoom_splits' / f'{split_name}.txt'
+        split_path = split_root / f'{split_name}.txt'
         if not split_path.is_file():
             failures.append(str(split_path))
             continue
         entries = _read_split(split_path)
         for entry in entries:
             image, lidar, info, label = _sample_paths(
-                root, entry, annotation_split)
+                root, entry, annotation_split, labels_root)
             for path in (image, lidar, info, label):
                 if path is not None and not path.is_file():
                     failures.append(str(path))
@@ -357,7 +359,7 @@ def _verify(root):
 
 
 def prepare(root, overwrite=False, archive_root=None,
-            lidar_archive_dirs=None, min_free_bytes=0):
+            lidar_archive_dirs=None, min_free_bytes=0, full_train=False):
     root = root.expanduser().resolve()
     archive_root = Path(archive_root or root).expanduser().resolve()
     lidar_archive_roots = [
@@ -370,7 +372,7 @@ def prepare(root, overwrite=False, archive_root=None,
     print('LiDAR archives:   '
           + ', '.join(str(path) for path in lidar_archive_roots))
 
-    labels_root = root / 'ONCE_3DLanes'
+    labels_root = root if full_train else root / 'ONCE_3DLanes'
     _extract_zip(
         archive_root / 'ONCE_3DLanes.zip', labels_root, overwrite=overwrite,
         min_free_bytes=min_free_bytes)
@@ -379,12 +381,13 @@ def prepare(root, overwrite=False, archive_root=None,
         for name in ('train', 'val', 'test')
     }
     marker_root = root / 'LaneLoom_splits/.prepare_markers'
+    partitions = [f'p{index}' for index in range(10 if full_train else 2)]
 
     image_root = root / '3D_images'
     image_archive_root = archive_root / '3D_images'
     _flatten_data_directory(image_root)
     train_image_members = _image_members(official_splits['train'])
-    for partition in ('p0', 'p1'):
+    for partition in partitions:
         archive = image_archive_root / f'raw_cam01_{partition}.tar'
         _extract_tar_members(
             [archive], image_root, train_image_members,
@@ -400,7 +403,7 @@ def prepare(root, overwrite=False, archive_root=None,
     lidar_root = root / '3D_lidars'
     _flatten_data_directory(lidar_root)
     train_lidar_members = _lidar_members(official_splits['train'])
-    for partition in ('p0', 'p1'):
+    for partition in partitions:
         parts = _find_archive_parts(
             lidar_archive_roots, f'raw_lidar_{partition}.tar.part*')
         _extract_tar_members(
@@ -415,35 +418,46 @@ def prepare(root, overwrite=False, archive_root=None,
             marker_root / f'{split_name}_lidar.complete', overwrite,
             min_free_bytes)
 
-    train_p0p1 = []
-    for entry in official_splits['train']:
-        image, lidar, _, _ = _sample_paths(root, entry, 'train')
-        if image.is_file() and lidar.is_file():
-            train_p0p1.append(entry)
-    _write_split(root / 'LaneLoom_splits/train_p0p1.txt', train_p0p1)
-    _write_split(root / 'LaneLoom_splits/val.txt', official_splits['val'])
-    _write_split(root / 'LaneLoom_splits/test.txt', official_splits['test'])
+    train_entries = official_splits['train']
+    if not full_train:
+        train_entries = []
+        for entry in official_splits['train']:
+            image, lidar, _, _ = _sample_paths(
+                root, entry, 'train', labels_root)
+            if image.is_file() and lidar.is_file():
+                train_entries.append(entry)
+        _write_split(root / 'LaneLoom_splits/train_p0p1.txt', train_entries)
+        _write_split(root / 'LaneLoom_splits/val.txt', official_splits['val'])
+        _write_split(root / 'LaneLoom_splits/test.txt', official_splits['test'])
 
     info_root = root / '3D_infos'
     info_archive_root = archive_root / '3D_infos'
     _flatten_data_directory(info_root)
     wanted_info = _info_members(
-        train_p0p1 + official_splits['val'] + official_splits['test'])
-    for archive_name in (
-            'raw_small_infos.tar', 'raw_medium_infos.tar',
-            'val_infos.tar', 'test_infos.tar'):
+        train_entries + official_splits['val'] + official_splits['test'])
+    info_archives = [
+        'raw_small_infos.tar', 'raw_medium_infos.tar',
+        'val_infos.tar', 'test_infos.tar',
+    ]
+    if full_train:
+        info_archives.append('raw_large_infos.tar')
+    for archive_name in info_archives:
         _extract_tar_members(
             [info_archive_root / archive_name], info_root, wanted_info,
             marker_root / f'{archive_name}.complete', overwrite,
             min_free_bytes)
 
-    _verify(root)
+    _verify(root, full_train=full_train)
 
 
 def parse_args():
     parser = argparse.ArgumentParser(
-        description='Prepare ONCE-3DLanes p0+p1 for LaneLoom.')
+        description='Prepare ONCE-3DLanes for LaneLoom.')
     parser.add_argument('--once-root', type=Path, required=True)
+    parser.add_argument(
+        '--full-train', action='store_true',
+        help='Use p0-p9 and the main config layout. The default prepares '
+             'the legacy p0+p1 subset.')
     parser.add_argument(
         '--archive-root', type=Path,
         help='Root containing the original ONCE archives; defaults to '
@@ -471,14 +485,15 @@ def main():
     if args.min_free_gb < 0:
         raise ValueError('--min-free-gb must be non-negative.')
     if args.verify_only:
-        _verify(args.once_root.expanduser().resolve())
+        _verify(args.once_root.expanduser().resolve(), full_train=args.full_train)
     else:
         prepare(
             args.once_root,
             overwrite=args.overwrite,
             archive_root=args.archive_root,
             lidar_archive_dirs=args.lidar_archive_dir,
-            min_free_bytes=int(args.min_free_gb * 1024**3))
+            min_free_bytes=int(args.min_free_gb * 1024**3),
+            full_train=args.full_train)
 
 
 if __name__ == '__main__':

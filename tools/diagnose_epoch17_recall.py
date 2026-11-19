@@ -23,8 +23,6 @@ from LaneLoom.datasets.openlane.full_shape_targets import build_full_shape_targe
 from LaneLoom.datasets.openlane.dataset import openlane_collate
 from mmdet3d.registry import DATASETS
 
-CHECKPOINT = ROOT / ('work_dirs/laneloom_openlane_image_lidar_temporal_0923_z_confidence_full_50e/'
-                     'exp_date_20260924_174958/checkpoints/best_OpenLaneOfficial_F1_epoch_17.pth')
 OUTPUT = ROOT / 'work_dirs/epoch17_recall_diagnostic'
 
 
@@ -41,6 +39,8 @@ def cpu(value):
 def main():
     global OUTPUT
     parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--checkpoint', type=Path, required=True,
+                        help='Path to the epoch-17 checkpoint.')
     parser.add_argument('--all-scenes', action='store_true')
     parser.add_argument('--threads', type=int, default=4)
     parser.add_argument('--sample-count', type=int, default=0,
@@ -57,7 +57,7 @@ def main():
         with (ROOT / 'work_dirs/gt_shape_extension_prototype/scene_summary.csv').open() as f:
             scenes = list(csv.DictReader(f))
         manifest.write_text(json.dumps(scenes, indent=2))
-    checkpoint = torch.load(CHECKPOINT, map_location='cpu', weights_only=False)
+    checkpoint = torch.load(args.checkpoint, map_location='cpu', weights_only=False)
     cfg = Config.fromstring(checkpoint['meta']['cfg'], '.py')
     meta = {k: checkpoint['meta'].get(k) for k in ('epoch', 'iter')}
     del checkpoint
@@ -77,7 +77,7 @@ def main():
     (OUTPUT / 'checkpoint_config.py').write_text(cfg.pretty_text)
     device = torch.device('cuda:0' if torch.cuda.is_available() else 'cpu')
     print('BUILD', device, meta, flush=True)
-    model = _build_model(cfg, CHECKPOINT, device)
+    model = _build_model(cfg, args.checkpoint, device)
     if device.type == 'cpu':
         from spconv.core import ConvAlgo
         from spconv.pytorch.conv import SparseConvolution
@@ -120,7 +120,7 @@ def main():
         if args.sample_count:
             capture['decoder'].pop('bev', None)
             capture['q0'].pop('query_features', None)
-        record = dict(scene=scene, checkpoint=str(CHECKPOINT), meta=meta,
+        record = dict(scene=scene, checkpoint=str(args.checkpoint), meta=meta,
                       backend=str(device), stages=capture.copy(), output=cpu(output),
                       targets=targets, batch={k: cpu(v) for k, v in batch.items()
                                              if k != 'img' and not (args.sample_count and k=='lidar')})

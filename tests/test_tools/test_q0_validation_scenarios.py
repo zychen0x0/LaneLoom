@@ -1,9 +1,8 @@
 """Official validation cannot be confused with the old training-scene holdout."""
 import hashlib
 import pytest
-from mmengine.config import Config
 
-from LaneLoom.tools.q0_scenarios import read_validation_scenarios, HARD_GROUPS
+from LaneLoom.tools.q0_scenarios import read_validation_scenarios
 from LaneLoom.tools.evaluate_q0_prior import validate_validation_training_manifest, coverage_goal_report
 
 
@@ -20,20 +19,6 @@ def test_scene_list_selects_validation_only_and_stops_before_duplicate_notes(tmp
     scenes.write_text('## 验证\n弯道\ndata/openlane/images/training/segment-test/123.jpg')
     with pytest.raises(ValueError, match='Unexpected'):
         read_validation_scenarios(scenes)
-
-
-def test_full_training_configs_restore_training_scenes_without_changing_data_between_heads():
-    baseline = Config.fromfile('configs/ablations/laneloom_openlane_q0_fulltrain.py')
-    new = Config.fromfile('configs/ablations/laneloom_openlane_q0_fulltrain_field_geometry.py')
-    assert baseline.q0_evaluation_split == new.q0_evaluation_split == 'validation'
-    assert baseline.q0_excluded_segments == new.q0_excluded_segments == []
-    assert baseline.train_dataloader == new.train_dataloader
-    assert baseline.train_dataloader.dataset.dataset_cfg.excluded_segments == []
-    assert baseline.q0_target_frames == new.q0_target_frames == {}
-    assert baseline.optim_wrapper == new.optim_wrapper
-    selected = read_validation_scenarios(baseline.q0_validation_scenes)
-    assert len(selected) == 47
-    assert sum(s['group'] in HARD_GROUPS for s in selected) == 26
 
 
 def test_validation_audit_checks_actual_training_manifest_and_its_digest(tmp_path):

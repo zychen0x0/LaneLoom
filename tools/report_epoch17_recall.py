@@ -283,7 +283,10 @@ def plot(c,r,stages):
 
 
 def log_data():
-    path=ROOT/'work_dirs/laneloom_openlane_image_lidar_temporal_0923_z_confidence_full_50e/exp_date_20260924_174958/logs/20260924_174958.log'
+    path = ROOT.parent / (
+        'LaneLoom-removed-experiments/openlane-temporal-legacy/work_dirs/'
+        'laneloom_openlane_image_lidar_temporal_0923_z_confidence_full_50e/'
+        'exp_date_20260924_174958/logs/20260924_174958.log')
     text=path.read_text()
     pattern=(r'Evaluation laneline F1: ([\d.]+).*?Recall: ([\d.]+).*?Precision: ([\d.]+)'
              r'.*?GT / Pred / TP: (\d+) / (\d+) / (\d+).*?before NMS / suppressed / ratio: (\d+) / (\d+) / ([\d.]+)')

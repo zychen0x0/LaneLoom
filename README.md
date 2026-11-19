@@ -1,89 +1,20 @@
 # LaneLoom
 
-## 配置目录
+## 论文实验配置
 
-- `configs/main/`：已验证的主实验配置；旧 checkpoint 应使用这里的配置。
-- `configs/ablations/`：消融实验配置；每项消融使用独立文件和输出目录。
+| 实验 | 配置 | 输入 |
+|---|---|---|
+| OpenLane 单帧 | [laneloom_openlane_image_lidar.py](configs/main/laneloom_openlane_image_lidar.py) | 当前帧前视图像和 LiDAR |
+| OpenLane 多帧 | [laneloom_openlane_image_lidar_temporal.py](configs/main/laneloom_openlane_image_lidar_temporal.py) | 当前帧及两帧历史的前视图像和 LiDAR |
+| ONCE-3DLanes 多帧 | [laneloom_once_image_lidar_temporal.py](configs/main/laneloom_once_image_lidar_temporal.py) | 当前帧及两帧历史的 cam01 前视图像和 LiDAR |
 
+[训练与评估](docs/train_eval.md)列出了每个入口对应的训练日志、初始化权重、批量大小和评估口径。
 
-## 多卡训练
+## 仓库目录
 
-```bash
-cd /workspace/LaneLoom
+- `configs/main/` 存放上表的三个训练和评估入口。三个入口都只从 `configs/_base_/` 继承配置。
+- `configs/_base_/` 存放共享的数据集、模型、训练计划和评估器配置。
+- [历史实验与诊断结果](configs/ablations/README.md) 记录早期实验的训练和评估口径。
+- `work_dirs/` 存放本地生成的训练日志、权重和评估结果，由 Git 忽略。
 
-# 单帧模型训练
-PYTHONPATH=/workspace CUDA_VISIBLE_DEVICES=0,1 \
-torchrun --nproc_per_node=2 --master_port=29501 \
-tools/train.py \
-configs/ablations/laneloom_openlane_image_lidar_temporal_0923.py \
---launcher pytorch
-
-
-PYTHONPATH=/workspace CUDA_VISIBLE_DEVICES=0,1 \
-torchrun --nproc_per_node=2 --master_port=29501 \
-tools/train.py \
-configs/main/laneloom_once_image_lidar_temporal.py \
---launcher pytorch \
---load-from "work_dirs/laneloom_once_image_lidar/exp_date_20261010_111319/checkpoints/best_ONCEOfficial_F1_epoch_2.pth"
-```
-
-## 继续训练 load_from
-
-```bash
-cd /workspace/LaneLoom
-
-PYTHONPATH=/workspace CUDA_VISIBLE_DEVICES=0,1 \
-torchrun --nproc_per_node=2 --master_port=29501 \
-tools/train.py \
-configs/main/laneloom_openlane_image_lidar_temporal.py \
---launcher pytorch \
---load-from "work_dirs/laneloom_openlane_image_lidar/exp_date_20260803_081030/checkpoints/best_OpenLaneTemporal_F1_epoch_44.pth"
-
-```
-
-## 评估 checkpoint
-
-```bash
-cd /workspace/LaneLoom
-
-PYTHONPATH=/workspace CUDA_VISIBLE_DEVICES=0,1 \
-torchrun --nproc_per_node=2 --master_port=29502 \
-tools/test.py \
-configs/main/laneloom_openlane_image_lidar_Temporal.py \
-work_dirs/laneloom_openlane_image_lidar/exp_date_20260803_081030/checkpoints/best_OpenLaneTemporal_F1_epoch_44.pth \
---case validation \
---launcher pytorch
-```
-
-默认输出位置
---work-dir work_dirs/laneloom_openlane_image_lidar/exp_date_20260803_081030 \
-
-# 其他模式
-
-# 验证集 + 全部测试场景（默认行为）
---case all
-
-# 只跑验证集
---case validation
-
-# 只跑测试集
---case test
-
-# 只跑单个场景
---case curve_case
---case intersection_case
---case merge_split_case
-
-
-
-
-
-
-## TensorBoard 可视化
-
-cd /workspace/LaneLoom
-
-tensorboard \
-  --logdir work_dirs/laneloom_once_image_lidar/exp_date_20261010_165137/Tensorboard \
-  --host 0.0.0.0 \
-  --port 6006
+开始运行前，请按[环境安装](docs/installation.md)和[数据准备](docs/data_preparation.md)配置工作目录。

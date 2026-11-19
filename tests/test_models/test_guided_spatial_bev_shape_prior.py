@@ -2,12 +2,10 @@
 import torch
 import torch.nn.functional as F
 import pytest
-from mmengine.config import Config
 
 from LaneLoom.models.head.guided_spatial_bev_shape_prior import GuidedSpatialBEVShapePrior
 from LaneLoom.models.head.shape_proposal_expander import ShapeProposalExpander
 from LaneLoom.models.losses.bev_lane_field import bev_lane_field_loss
-from LaneLoom.tools.train_q0_prior import model_training_signature
 
 
 RANGE = [-25, 0, -5, 25, 100, 5]
@@ -83,7 +81,7 @@ def test_geometry_extension_preserves_shared_initialization_and_initial_function
     torch.testing.assert_close(before['lane_field_logits'], after['lane_field_logits'], rtol=1e-5, atol=1e-5)
 
 
-def test_measured_geometry_requires_native_grid_and_an_unchanged_training_protocol():
+def test_measured_geometry_requires_native_grid():
     model = GuidedSpatialBEVShapePrior(
         lidar_in_channels=4, hidden_channels=16,
         anchor_y_steps=[5., 20., 50., 100.], longitudinal_rows=8,
@@ -92,14 +90,6 @@ def test_measured_geometry_requires_native_grid_and_an_unchanged_training_protoc
     for road in (None, torch.zeros(1, 16, 8, 12), torch.zeros(1, 15, 16, 24)):
         with pytest.raises(ValueError, match='Road evidence'):
             model(dict(features=features, road_evidence=road))
-    measured = Config.fromfile('configs/ablations/laneloom_openlane_q0_aligned_field_geometry.py')
-    old = Config.fromfile('configs/ablations/laneloom_openlane_q0_aligned_field_curve.py')
-    assert measured.train_dataloader == old.train_dataloader
-    assert measured.q0_target_frames == old.q0_target_frames
-    assert measured.q0_lane_field_loss_weight == old.q0_lane_field_loss_weight
-    assert measured.optim_wrapper == old.optim_wrapper
-    assert model_training_signature(measured) != model_training_signature(old)
-    assert measured.model.pts_bev_encoder.align_to_lane_ground
 
 
 def make_prior():
@@ -183,15 +173,6 @@ def test_predicted_field_changes_q0_at_inference_and_empty_clouds_stay_finite():
     assert (first-second).abs().max() > 1e-5
 
 
-def test_auxiliary_ablation_changes_supervision_fingerprint_only():
-    supervised = Config.fromfile('configs/ablations/laneloom_openlane_q0_guided_spatial.py')
-    ablation = Config.fromfile('configs/ablations/laneloom_openlane_q0_guided_spatial_no_aux.py')
-    assert supervised.model == ablation.model
-    assert supervised.train_dataloader == ablation.train_dataloader
-    assert supervised.q0_target_frames == ablation.q0_target_frames
-    assert model_training_signature(supervised) != model_training_signature(ablation)
-
-
 def test_geometric_readout_recovers_analytic_road_and_keeps_absolute_height():
     model = GuidedSpatialBEVShapePrior(lidar_in_channels=4, hidden_channels=16,
         anchor_y_steps=[5., 20., 50., 100.], max_templates=5, longitudinal_rows=8,
@@ -262,7 +243,7 @@ def test_row_distribution_keeps_multiple_peaks_without_broadening_the_soft_targe
     assert p[125] < p[105]*.01
 
 
-def test_row_distribution_forward_has_finite_geometry_and_a_distinct_training_signature():
+def test_row_distribution_forward_has_finite_geometry():
     model = GuidedSpatialBEVShapePrior(lidar_in_channels=4, hidden_channels=16,
         anchor_y_steps=[5., 20., 50., 100.], max_templates=5, longitudinal_rows=8,
         spatial_layers=1, num_heads=4, geometric_readout=True, lane_field_mode='row_distribution')
@@ -274,11 +255,6 @@ def test_row_distribution_forward_has_finite_geometry_and_a_distinct_training_si
     assert torch.count_nonzero(output['shape_z_controls'][1]) == 0
     output['shape_points'].square().mean().backward()
     assert torch.isfinite(model.lane_field_head[-1].weight.grad).all()
-    cfg = Config.fromfile('configs/ablations/laneloom_openlane_q0_field_distribution.py')
-    old = Config.fromfile('configs/ablations/laneloom_openlane_q0_field_curve.py')
-    assert cfg.train_dataloader == old.train_dataloader
-    assert cfg.q0_target_frames == old.q0_target_frames
-    assert model_training_signature(cfg) != model_training_signature(old)
 
 
 def test_predicted_row_references_preserve_two_different_bends_instead_of_averaging_them():
@@ -313,7 +289,6 @@ def test_predicted_row_references_preserve_two_different_bends_instead_of_averag
 
 
 def test_reference_conditioned_attention_is_finite_for_sparse_and_empty_clouds():
-    cfg = Config.fromfile('configs/ablations/laneloom_openlane_q0_field_distribution_local.py')
     model = GuidedSpatialBEVShapePrior(lidar_in_channels=4, hidden_channels=16,
         anchor_y_steps=[5., 20., 50., 100.], max_templates=5, longitudinal_rows=8,
         spatial_layers=1, num_heads=4, geometric_readout=True,
@@ -326,5 +301,3 @@ def test_reference_conditioned_attention_is_finite_for_sparse_and_empty_clouds()
     assert torch.count_nonzero(result['shape_z_controls'][1]) == 0
     result['shape_points'].square().mean().backward()
     assert torch.isfinite(model.lane_field_head[-1].weight.grad).all()
-    assert len(cfg.q0_excluded_segments) == 19
-    assert sum(map(len, cfg.q0_target_frames.values())) == 21

@@ -1,3 +1,5 @@
+"""OpenLane three-frame fine-tuning from the epoch-44 temporal checkpoint."""
+
 # ---------------------------------------------------base config start---------------------------------------------------
 _base_ = [
     '../_base_/datasets/openlane_datasets.py',
@@ -34,7 +36,8 @@ _num_levels_ = 1
 bev_h_ = 200
 bev_w_ = 100
 output_y_steps = [2.0 * i for i in range(1, 51)]
-evidence_y_steps = output_y_steps.copy()
+# Decode at 2 m intervals and sample image/LiDAR evidence every 5 m.
+evidence_y_steps = [5.0 * i for i in range(1, 21)]
 score_threshold = {{_base_.score_threshold}}
 temporal_sampling_distance = {{_base_.temporal_sampling_distance}}
 
@@ -48,6 +51,26 @@ val_evaluator = dict(
 backbone_init = 'torchvision://resnet50'
 # ----------------------------------------------------model common config end----------------------------------------------------
 
+
+# Run exp_date_20260812_005916. Pass its initialization via --load-from.
+load_interval = 1
+dataset_cfg = dict(load_interval=load_interval)
+test_dataset_cfg = dict(dataset_cfg)
+batch_size_per_gpu = 8
+val_batch_size_per_gpu = 12
+num_workers = 4
+train_dataloader = dict(
+    batch_size=batch_size_per_gpu,
+    num_workers=num_workers,
+    dataset=dict(dataset_cfg=dataset_cfg))
+val_dataloader = dict(
+    batch_size=val_batch_size_per_gpu,
+    num_workers=num_workers,
+    dataset=dict(dataset_cfg=dataset_cfg))
+test_dataloader = dict(
+    batch_size=val_batch_size_per_gpu,
+    num_workers=num_workers,
+    dataset=dict(dataset_cfg=test_dataset_cfg))
 
 # ---------------------------------------------------model config start---------------------------------------------------
 model = dict(
@@ -226,24 +249,6 @@ model = dict(
                 mean_distance_threshold=0.35,))),
 )
 # ----------------------------------------------------model config end----------------------------------------------------
-
-total_epochs = 100
-train_cfg = dict(max_epochs=total_epochs)
-param_scheduler = [
-    dict(
-        type='LinearLR',
-        start_factor=1.0 / 3,
-        by_epoch=False,
-        begin=0,
-        end=500),
-    dict(
-        type='CosineAnnealingLR',
-        eta_min=2e-7,
-        T_max=total_epochs,
-        by_epoch=True,
-        begin=0,
-        end=total_epochs),
-]
 
 default_hooks = dict(
     # "brief" prints only key lane/proposal losses; "detailed" additionally

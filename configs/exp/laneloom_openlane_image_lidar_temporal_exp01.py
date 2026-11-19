@@ -1,0 +1,282 @@
+"""OpenLane geometric Q0 fine-tuning from run exp_date_20261018_172527.
+
+The saved initialization combines epoch-43 image/decoder weights with
+step-21000 LiDAR/Q0 weights. The original run used two GPUs and a fresh
+optimizer for five full-data epochs.
+"""
+
+# ---------------------------------------------------base config start---------------------------------------------------
+_base_ = [
+    '../_base_/datasets/openlane_datasets.py',
+    '../_base_/evaluators/openlane_official.py',
+    '../_base_/schedules/schedule_24e_adamw_cosine.py',
+]
+# ----------------------------------------------------base config end----------------------------------------------------
+
+default_scope = 'mmdet3d'
+launcher = 'none'
+# tools/train.py creates a unique exp_date_YYYYMMDD_HHMMSS subdirectory here.
+work_dir = './work_dirs/laneloom_openlane_temporal_geometric_q0_5e'
+load_from = work_dir + '/initialization.pth'
+resume = False
+# Temporal history and LiDAR availability are data-dependent.  A rank can
+# legitimately bypass a temporal or LiDAR projection on an individual step,
+# so DDP must detect unused parameters instead of assuming a static graph.
+model_wrapper_cfg = dict(
+    type='MMDistributedDataParallel',
+    find_unused_parameters=True,
+)
+
+
+# ---------------------------------------------------model common config start---------------------------------------------------
+# Keep dataset filtering, Dynamic Pillar, query references and fusion range
+# in the same metric space.
+point_cloud_range = [-25.0, 0.0, -5.0, 25.0, 100.0, 5.0]
+point_features = {{_base_.point_features}}
+_dim_ = 256
+_lidar_dim_ = 128
+_ffn_dim_ = _dim_ * 2
+_num_levels_ = 1
+# BEVEncoder resamples LiDAR features onto the shared 0.5 m lane-query grid.
+bev_h_ = 200
+bev_w_ = 100
+output_y_steps = [2.0 * i for i in range(1, 51)]
+evidence_y_steps = output_y_steps.copy()
+score_threshold = {{_base_.score_threshold}}
+temporal_sampling_distance = {{_base_.temporal_sampling_distance}}
+
+validation_metric_prefix = {{_base_.temporal_validation_prefix}}
+validation_best_metric = {{_base_.temporal_validation_best_metric}}
+
+# Evaluate detections against current-frame official ground truth.
+val_evaluator = dict(prefix='OpenLaneOfficial', use_temporal_gt_supplement=False)
+test_evaluator = dict(prefix='OpenLaneOfficial', use_temporal_gt_supplement=False)
+
+backbone_init = 'torchvision://resnet50'
+# ----------------------------------------------------model common config end----------------------------------------------------
+
+
+# Two GPUs x four samples = effective batch eight, without accumulation.
+train_dataloader = dict(batch_size=4, num_workers=4, persistent_workers=True,
+                        prefetch_factor=1,
+                        dataset=dict(dataset_cfg=dict(scene_cache_size=16)))
+val_dataloader = dict(batch_size=4, num_workers=4, persistent_workers=True,
+                      prefetch_factor=1,
+                      dataset=dict(dataset_cfg=dict(scene_cache_size=16)))
+test_dataloader = dict(batch_size=4, num_workers=4, persistent_workers=True,
+                       prefetch_factor=1,
+                       dataset=dict(dataset_cfg=dict(scene_cache_size=16)))
+
+# ---------------------------------------------------model config start---------------------------------------------------
+model = dict(
+    type='LaneLoom',
+    freeze_img=False,
+    num_levels=_num_levels_,
+
+    # ---------------------------------------------------image branch start---------------------------------------------------
+    # Shared image encoder for all inferred history frames and the current frame.
+    img_backbone=dict(
+        type='mmdet.ResNet',
+        depth=50,
+        num_stages=4,
+        out_indices=(1,),
+        frozen_stages=1,
+        norm_cfg=dict(type='BN', requires_grad=False),
+        norm_eval=True,
+        style='pytorch',
+        init_cfg=dict(type='Pretrained', checkpoint=backbone_init)),
+    img_neck=dict(
+        type='mmdet.FPN',
+        in_channels=[512],
+        out_channels=_dim_,
+        start_level=0,
+        num_outs=_num_levels_),
+    # ----------------------------------------------------image branch end----------------------------------------------------
+
+    # ---------------------------------------------------lidar branch start---------------------------------------------------
+    # Statistics-enhanced dynamic PFE followed by a PillarNeXt-style sparse
+    # ResNet and single-scale dilated lane neck.
+    pts_bev_encoder=dict(
+        type='DynamicPillarBEVEncoder',
+        point_cloud_range=point_cloud_range,
+        pillar_size=[0.1, 0.2],
+        align_to_lane_ground=True,
+        out_channels=_lidar_dim_,
+        # PillarNeXt-T style sparse widths: 32 -> 64 -> 128.
+        base_channels=32,
+        temporal_sampling_distance=temporal_sampling_distance,
+        use_rgb_pointpainting=True,
+        point_features=point_features),
+    # ----------------------------------------------------lidar branch end----------------------------------------------------
+
+    # ---------------------------------------------------lane head start---------------------------------------------------
+    # LiDAR geometry prior plus curve-aligned temporal FV/LiDAR sampling.
+    lane_head=dict(
+        type='BEVLaneHead',
+        q0_raw_visible_supervision=True,
+        q0_lane_field_loss_weight=1.0,
+        anchor_prior=dict(
+            type='GuidedSpatialBEVShapePrior',
+            supervise_shapes=False,
+            longitudinal_rows=50,
+            spatial_layers=2,
+            num_heads=4,
+            geometric_readout=True,
+            pc_range=[-25, 0, -5, 25, 100, 5],
+            lidar_in_channels=_lidar_dim_,
+            anchor_y_steps=output_y_steps,
+            max_templates=5,
+            hidden_channels=64,
+            lateral_slope_scale=0.1,
+            vertical_slope_scale=0.03,
+            yaw_scale_degrees=5.0,
+            pitch_scale_degrees=1.0,
+            curvature_scale=0.002,
+            vertical_curvature_scale=0.001,
+            shape_softmin_temperature=0.25,
+            # Curves are the same shape only after optimal x/z translation
+            # when P80 <= 0.3m, mean yaw <= 1deg and mean pitch <= 0.5deg.
+            aligned_p80_threshold=0.3,
+            yaw_similarity_degrees=1.0,
+            pitch_similarity_degrees=0.5,
+            min_lane_points=2,
+            min_mode_points=4,
+            short_support_length=20.0,
+            shape_cover_loss_weight=1.0,
+            # Five is a capacity ceiling. GT shape modes are matched one to
+            # one, and only templates assigned to distinct modes are forced
+            # apart; a straight-road sample is not forced to invent 5 modes.
+            shape_mode_loss_weight=1.0,
+            shape_diversity_loss_weight=0.05),
+        # Include both -25m and +25m at an exact 0.5m step:
+        # 5 templates x 101 seeds = 505 unfiltered Q0 queries.
+        proposal_expander=dict(
+            type='ShapeProposalExpander',
+            embed_dims=_dim_,
+            pc_range=point_cloud_range,
+            anchor_y_steps=output_y_steps,
+            num_x_seeds=101,
+            template_feature_channels=64,
+            q0_distance_threshold=0.3,
+            q0_match_ratio=0.8,
+            q0_geometry_loss_weight=1.0),
+        bev_encoder=dict(
+            type='BEVEncoder',
+            bev_h=bev_h_,
+            bev_w=bev_w_,
+            lidar_bev_adapter=dict(
+                type='LiDARBEVAdapter',
+                embed_dims=_lidar_dim_,
+                lidar_in_channels=_lidar_dim_)),
+        query_sampler=dict(
+            type='DualPlaneTemporalSampler',
+            image_in_channels=_dim_,
+            # Project sampled 128-D lane evidence to decoder width only after
+            # curve-aligned sampling, instead of widening the complete map.
+            lidar_in_channels=_lidar_dim_,
+            embed_dims=_dim_,
+            pc_range=point_cloud_range,
+            num_image_levels=_num_levels_,
+            temporal_kernel_size=3,
+            num_image_offsets=4,
+            num_lidar_offsets=4,
+            max_image_offset_pixels=2.0,
+            max_lidar_offset_residual=0.5),
+        lane_decoder=dict(
+            type='LaneQueryDecoder',
+            embed_dims=_dim_,
+            pc_range=point_cloud_range,
+            num_query=505,
+            # OpenLane categories 0..20; category 21 is merged into 20 by dataset.
+            num_category=21,
+            anchor_y_steps=output_y_steps,
+            evidence_y_steps=evidence_y_steps,
+            # Each layer samples temporal FV and LiDAR-BEV along its input
+            # curve. Layer 0 consumes Q0 and emits Q1; Layer 1 consumes Q1.
+            num_layers=2,
+            # Layer 0 sees all 505 Q0 curves. Layer 1 keeps 64 proposals:
+            # 3.2x the dataset's max_lanes=20 and 4x a 16-lane scene.
+            layer_query_budget=64,
+            num_heads=8,
+            feedforward_channels=_ffn_dim_,
+            dropout=0.1,
+            visibility_temperature=0.75,
+            # Median visible interval from the OpenLane training anchors.
+            visibility_start_prior=0.14,
+            visibility_end_prior=0.58,
+            # Start with almost every query at low lane quality.
+            objectness_prior_probability=0.01,
+            tube_radius=0.5,
+            tube_z_weight=1.0,
+            tube_epsilon=1e-6,
+            duplicate_iou_threshold=0.6,
+            duplicate_containment_threshold=0.9,
+            duplicate_score_decay=0.5),
+        loss_module=dict(
+            type='LaneLoss',
+            assigner=dict(type='HungarianAssigner'),
+            score_loss_weight=1.0,
+            category_loss_weight=0.25,
+            # Positive/negative lane scores are normalized separately, so an
+            # equal group weight cannot be amplified by the 505-query count.
+            # Keep near-GT layer-0 proposals available for the 64-query
+            # refinement stage, then suppress unmatched duplicates strongly
+            # after the final decoder layer.
+            negative_objectness_weight=1.0,
+            ambiguous_negative_weight=0.1,
+            auxiliary_ambiguous_negative_weight=0.1,
+            ambiguous_distance_threshold=0.5,
+            ambiguous_match_ratio=0.75,
+            diagnostic_geometry_distance_threshold=0.3,
+            diagnostic_geometry_match_ratio=0.8,
+            x_loss_weight=1.0,
+            z_loss_weight=1.0,
+            visibility_loss_weight=1.0,
+            tube_loss_weight=0.5,
+            tube_radius=0.5,
+            tube_z_weight=1.0,
+            tube_epsilon=1e-6,
+            aux_loss_weight=0.5,
+            smooth_l1_beta=0.5,
+            diagnostic_score_threshold=score_threshold),
+        test_cfg=dict(
+            score_threshold=score_threshold,
+            curve_nms=dict(
+                visibility_threshold=0.5,
+                tube_radius=0.5,
+                z_weight=1.0,
+                epsilon=1e-6,
+                # Omitted Tube thresholds skip final hard Tube-NMS.
+                mean_distance_threshold=0.35,))),
+)
+# ----------------------------------------------------model config end----------------------------------------------------
+
+# Reduce updates on the validated LiDAR/Q0 pair while adapting the decoder.
+learning_rate = 2e-5
+optim_wrapper = dict(
+    accumulative_counts=1,
+    optimizer=dict(lr=learning_rate),
+    paramwise_cfg=dict(custom_keys={
+        'pts_bev_encoder': dict(lr_mult=0.25),
+        'lane_head.anchor_prior': dict(lr_mult=0.25)}))
+total_epochs = 5
+train_cfg = dict(max_epochs=total_epochs, val_interval=1)
+param_scheduler = [
+    dict(type='LinearLR', start_factor=1/3, by_epoch=False, begin=0, end=500),
+    dict(type='CosineAnnealingLR', eta_min=learning_rate*1e-3,
+         T_max=total_epochs, by_epoch=True, begin=0, end=total_epochs)]
+
+default_hooks = dict(
+    # "brief" prints only key lane/proposal losses; "detailed" additionally
+    # prints auxiliary losses and diagnostic fields. TensorBoard always keeps
+    # every returned scalar in both modes.
+    logger=dict(
+        type='TrainingLoggerHook',
+        interval=50,
+        mode='brief',
+        window_size=50,
+        brief_metrics=['loss_score', 'loss_category', 'loss_x', 'loss_z',
+                       'loss_visibility', 'loss_tube', 'loss_q0_raw_geometry',
+                       'loss_bev_lane_position', 'loss_bev_lane_height']),
+    checkpoint=dict(save_best='OpenLaneOfficial/F1', max_keep_ckpts=5, interval=1))
+randomness = dict(seed=7)

@@ -9,9 +9,11 @@ Output
 PYTHONPATH=/workspace CUDA_VISIBLE_DEVICES=0 \
 python vis/output/infer_openlane_sample.py \
   --image data/openlane/images/validation/segment-191862526745161106_1400_000_1420_000_with_camera_labels/155008197294997600.jpg \
-  --checkpoint work_dirs/laneloom_openlane_image_lidar/exp_date_20260803_081030/checkpoints/best_OpenLaneTemporal_F1_epoch_44.pth
+  --checkpoint work_dirs/laneloom_openlane_image_lidar/exp_date_20260803_081030/checkpoints/best_OpenLaneTemporal_F1_epoch.pth
 
-## 训练
+
+## 训练集
+
 汇聚 / 分叉
 data/openlane/images/training/segment-54293441958058219_2335_200_2355_200_with_camera_labels/150732835133340600.jpg
 
@@ -42,7 +44,6 @@ data/openlane/images/training/segment-7920326980177504058_2454_310_2474_310_with
 
 路口 / 弯道 / 分叉
 data/openlane/images/training/segment-809159138284604331_3355_840_3375_840_with_camera_labels/150799869223987300.jpg
-
 
 路口
 data/openlane/images/training/segment-915935412356143375_1740_030_1760_030_with_camera_labels/150897467600324000.jpg
@@ -120,7 +121,6 @@ data/openlane/images/training/segment-4266984864799709257_720_000_740_000_with_c
 
 data/openlane/images/training/segment-6694593639447385226_1040_000_1060_000_with_camera_labels/155389914544669900.jpg
 
-
 极端天气
 data/openlane/images/training/segment-2974991090366925955_4924_000_4944_000_with_camera_labels/151865641038868900.jpg
 
@@ -133,7 +133,7 @@ data/openlane/images/training/segment-5129792222840846899_2145_000_2165_000_with
 
 data/openlane/images/training/segment-6559997992780479765_1039_000_1059_000_with_camera_labels/152156283718398800.jpg
 
-## 验证 ###########################################
+## 验证集
 
 正常
 data/openlane/images/validation/segment-17962792089966876718_2210_933_2230_933_with_camera_labels/150914058009157400.jpg
@@ -151,7 +151,6 @@ data/openlane/images/validation/segment-11450298750351730790_1431_750_1451_750_w
 data/openlane/images/validation/segment-14956919859981065721_1759_980_1779_980_with_camera_labels/150800639619050600.jpg
 
 data/openlane/images/validation/segment-17763730878219536361_3144_635_3164_635_with_camera_labels/150802819567742000.jpg
-
 
 上下坡
 
@@ -173,7 +172,7 @@ data/openlane/images/validation/segment-17703234244970638241_220_000_240_000_wit
 
 data/openlane/images/validation/segment-3731719923709458059_1540_000_1560_000_with_camera_labels/155353214507446100.jpg
 
-
+片段
 data/openlane/images/validation/segment-191862526745161106_1400_000_1420_000_with_camera_labels
 
 data/openlane/images/validation/segment-7253952751374634065_1100_000_1120_000_with_camera_labels
@@ -195,6 +194,7 @@ data/openlane/images/validation/segment-2367305900055174138_1881_827_1901_827_wi
 
 data/openlane/images/validation/segment-15488266120477489949_3162_920_3182_920_with_camera_labels/150897848610835100.jpg
 
+片段
 
 data/openlane/images/validation/segment-2367305900055174138_1881_827_1901_827_with_camera_labels
 
@@ -216,6 +216,7 @@ data/openlane/images/validation/segment-17135518413411879545_1480_000_1500_000_w
 
 data/openlane/images/validation/segment-17135518413411879545_1480_000_1500_000_with_camera_labels/155294853154567600.jpg
 
+片段
 
 data/openlane/images/validation/segment-366934253670232570_2229_530_2249_530_with_camera_labels
 
@@ -242,6 +243,7 @@ data/openlane/images/validation/segment-14811410906788672189_373_113_393_113_wit
 
 data/openlane/images/validation/segment-15021599536622641101_556_150_576_150_with_camera_labels/150724055034445100.jpg
 
+片段
 
 data/openlane/images/validation/segment-5373876050695013404_3817_170_3837_170_with_camera_labels
 
@@ -290,146 +292,13 @@ data/openlane/images/validation/segment-14811410906788672189_373_113_393_113_wit
 
 
 
-
-
-
-
-
-
-
-
-
-------------------------------------------------------------------------------------------------------
-## 论文对比场景
-
-## 验证 ###########################################
-
-正常
-data/openlane/images/validation/segment-17962792089966876718_2210_933_2230_933_with_camera_labels/150914058009157400.jpg
-
-data/openlane/images/validation/segment-18333922070582247333_320_280_340_280_with_camera_labels/150732632032971400.jpg
-
+## 场景对比
 
 遮挡
 
 # data/openlane/images/validation/segment-7732779227944176527_2120_000_2140_000_with_camera_labels/155917227955062700.jpg
 
 # data/openlane/images/validation/segment-7799643635310185714_680_000_700_000_with_camera_labels/155796075837616700.jpg
-
-data/openlane/images/validation/segment-11450298750351730790_1431_750_1451_750_with_camera_labels/150810339526548800.jpg
-
-
-
-
-
-
-上下坡
-
-data/openlane/images/validation/segment-191862526745161106_1400_000_1420_000_with_camera_labels/155008197425042300.jpg
-
-data/openlane/images/validation/segment-191862526745161106_1400_000_1420_000_with_camera_labels/155008197294997600.jpg
-
-data/openlane/images/validation/segment-4575389405178805994_4900_000_4920_000_with_camera_labels/154472453679744900.jpg
-
-data/openlane/images/validation/segment-7253952751374634065_1100_000_1120_000_with_camera_labels/155430640172793700.jpg
-
-data/openlane/images/validation/segment-7650923902987369309_2380_000_2400_000_with_camera_labels/155416421914438100.jpg
-
-data/openlane/images/validation/segment-7650923902987369309_2380_000_2400_000_with_camera_labels/155416423144298400.jpg
-
-# data/openlane/images/validation/segment-17612470202990834368_2800_000_2820_000_with_camera_labels/155364079579344600.jpg
-
-# data/openlane/images/validation/segment-17703234244970638241_220_000_240_000_with_camera_labels/155269221092090800.jpg
-
-交叉路口
-
-data/openlane/images/validation/segment-346889320598157350_798_187_818_187_with_camera_labels/151017746291337600.jpg
-
-# data/openlane/images/validation/segment-2367305900055174138_1881_827_1901_827_with_camera_labels/151293026034628200.jpg
-
-# data/openlane/images/validation/segment-15488266120477489949_3162_920_3182_920_with_camera_labels/150897848610835100.jpg
-
-
-弯道
-
-data/openlane/images/validation/segment-346889320598157350_798_187_818_187_with_camera_labels/151017747578883100.jpg
-
-# data/openlane/images/validation/segment-366934253670232570_2229_530_2249_530_with_camera_labels/150897516671346500.jpg
-
-# data/openlane/images/validation/segment-3039251927598134881_1240_610_1260_610_with_camera_labels/150724631070026400.jpg
-
-data/openlane/images/validation/segment-6707256092020422936_2352_392_2372_392_with_camera_labels/150904220180150200.jpg
-
-data/openlane/images/validation/segment-14931160836268555821_5778_870_5798_870_with_camera_labels/150733834142979700.jpg
-
-data/openlane/images/validation/segment-17135518413411879545_1480_000_1500_000_with_camera_labels/155294852381969200.jpg
-
-data/openlane/images/validation/segment-17135518413411879545_1480_000_1500_000_with_camera_labels/155294853154567600.jpg
-
-汇聚分叉
-# data/openlane/images/validation/segment-5373876050695013404_3817_170_3837_170_with_camera_labels/151026502726599100.jpg
-
-# data/openlane/images/validation/segment-2834723872140855871_1615_000_1635_000_with_camera_labels/150696587520602900.jpg
-
-data/openlane/images/validation/segment-4490196167747784364_616_569_636_569_with_camera_labels/151017532168653900.jpg
-
-data/openlane/images/validation/segment-11434627589960744626_4829_660_4849_660_with_camera_labels/152173812904413300.jpg
-
-data/openlane/images/validation/segment-11434627589960744626_4829_660_4849_660_with_camera_labels/152173813514316600.jpg
-
-# data/openlane/images/validation/segment-14811410906788672189_373_113_393_113_with_camera_labels/150724277455060100.jpg
-
-data/openlane/images/validation/segment-15021599536622641101_556_150_576_150_with_camera_labels/150724055034445100.jpg
-
-
-夜间
-# data/openlane/images/validation/segment-4426410228514970291_1620_000_1640_000_with_camera_labels/155261813071457000.jpg
-
-# data/openlane/images/validation/segment-4816728784073043251_5273_410_5293_410_with_camera_labels/150898058633545100.jpg
-
-data/openlane/images/validation/segment-9164052963393400298_4692_970_4712_970_with_camera_labels/151676913812762200.jpg
-
-data/openlane/images/validation/segment-11387395026864348975_3820_000_3840_000_with_camera_labels/154527207192420800.jpg
-
-# data/openlane/images/validation/segment-11660186733224028707_420_000_440_000_with_camera_labels/154104291157237600.jpg
-
-data/openlane/images/validation/segment-15028688279822984888_1560_000_1580_000_with_camera_labels/154756235504714800.jpg
-
-data/openlane/images/validation/segment-18305329035161925340_4466_730_4486_730_with_camera_labels/151676165022903800.jpg
-
-逆光
-data/openlane/images/validation/segment-15396462829361334065_4265_000_4285_000_with_camera_labels/152267771734844100.jpg
-
-# data/openlane/images/validation/segment-12358364923781697038_2232_990_2252_990_with_camera_labels/150707937345709400.jpg
-
-# data/openlane/images/validation/segment-12358364923781697038_2232_990_2252_990_with_camera_labels/150707937665623300.jpg
-
-极端
-# data/openlane/images/validation/segment-6491418762940479413_6520_000_6540_000_with_camera_labels/151865802416168800.jpg
-
-# data/openlane/images/validation/segment-13415985003725220451_6163_000_6183_000_with_camera_labels/151865764963744700.jpg
-
-# data/openlane/images/validation/segment-13694146168933185611_800_000_820_000_with_camera_labels/154769997459727900.jpg
-
-复杂
-# data/openlane/images/validation/segment-14811410906788672189_373_113_393_113_with_camera_labels/150724276945019300.jpg
-
-
-
-
-
-
-------------------------------------------------------------------------------------------------------
-## 论文对比场景
-
-## 验证 ###########################################
-
-遮挡
-
-# data/openlane/images/validation/segment-7732779227944176527_2120_000_2140_000_with_camera_labels/155917227955062700.jpg
-
-# data/openlane/images/validation/segment-7799643635310185714_680_000_700_000_with_camera_labels/155796075837616700.jpg
-
 
 上下坡
 
@@ -443,12 +312,10 @@ data/openlane/images/validation/segment-15396462829361334065_4265_000_4285_000_w
 
 # data/openlane/images/validation/segment-15488266120477489949_3162_920_3182_920_with_camera_labels/150897848610835100.jpg
 
-
 弯道
 # data/openlane/images/validation/segment-366934253670232570_2229_530_2249_530_with_camera_labels/150897516671346500.jpg
 
 # data/openlane/images/validation/segment-3039251927598134881_1240_610_1260_610_with_camera_labels/150724631070026400.jpg
-
 
 汇聚分叉
 # data/openlane/images/validation/segment-5373876050695013404_3817_170_3837_170_with_camera_labels/151026502726599100.jpg
@@ -456,7 +323,6 @@ data/openlane/images/validation/segment-15396462829361334065_4265_000_4285_000_w
 # data/openlane/images/validation/segment-2834723872140855871_1615_000_1635_000_with_camera_labels/150696587520602900.jpg
 
 # data/openlane/images/validation/segment-14811410906788672189_373_113_393_113_with_camera_labels/150724277455060100.jpg
-
 
 夜间
 # data/openlane/images/validation/segment-4426410228514970291_1620_000_1640_000_with_camera_labels/155261813071457000.jpg
