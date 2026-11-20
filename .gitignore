@@ -52,6 +52,7 @@ tensorboard/
 Tensorboard/
 runs/
 vis/
+ablation_extras/
 
 # Model weights and exported inference engines
 *.pth
